@@ -68,6 +68,7 @@ namespace WindowsFormsApplication1
         TextBox expSensorCountBox;
         TextBox expMapSizeBox;
         TextBox expSimulationTimeBox;
+        TextBox expMaxParallelJobsBox;
         TextBox expInitialEnergyBox;
         TextBox expBackgroundLifetimeBox;
         TextBox expEventRateBox;
@@ -160,6 +161,7 @@ namespace WindowsFormsApplication1
             expSensorCountBox = add_labeled_textbox(dataGroup, "感測器數量", "不含基地台 BS", 18, 98, "");
             expMapSizeBox = add_labeled_textbox(dataGroup, "地圖邊長(m)", "正方形 n x n", 18, 132, "");
             expSimulationTimeBox = add_labeled_textbox(dataGroup, "模擬時間(s)", "每個演算法跑到此時間或首次死亡", 18, 166, "");
+            expMaxParallelJobsBox = add_labeled_textbox(dataGroup, "平行工作數", "0=自動；可手動加速/降載", 18, 200, "MaxParallelJobs");
 
             GroupBox energyGroup = create_group_box("能量、封包與動態耗能", 404, 92, 360, 290);
             expInitialEnergyBox = add_labeled_textbox(energyGroup, "初始能量(J)", "感測器滿電容量", 18, 30, "");
@@ -348,6 +350,7 @@ namespace WindowsFormsApplication1
             expSensorCountBox.Text = experimentSettings.SensorCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
             expMapSizeBox.Text = experimentSettings.MapWidthMeters.ToString(System.Globalization.CultureInfo.InvariantCulture);
             expSimulationTimeBox.Text = experimentSettings.SimulationTimeSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            expMaxParallelJobsBox.Text = experimentSettings.MaxParallelJobs.ToString(System.Globalization.CultureInfo.InvariantCulture);
             expInitialEnergyBox.Text = experimentSettings.InitialEnergyJ.ToString(System.Globalization.CultureInfo.InvariantCulture);
             expBackgroundLifetimeBox.Text = experimentSettings.SensorBackgroundLifetimeSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
             expEventRateBox.Text = experimentSettings.EventRatePerSecond.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -384,6 +387,7 @@ namespace WindowsFormsApplication1
             experimentSettings.MapWidthMeters = mapSize;
             experimentSettings.MapHeightMeters = mapSize;
             experimentSettings.SimulationTimeSeconds = parse_double(expSimulationTimeBox, experimentSettings.SimulationTimeSeconds);
+            experimentSettings.MaxParallelJobs = parse_int(expMaxParallelJobsBox, experimentSettings.MaxParallelJobs);
             experimentSettings.InitialEnergyJ = parse_double(expInitialEnergyBox, experimentSettings.InitialEnergyJ);
             experimentSettings.SensorBackgroundLifetimeSeconds = parse_double(expBackgroundLifetimeBox, experimentSettings.SensorBackgroundLifetimeSeconds);
             experimentSettings.EventRatePerSecond = parse_double(expEventRateBox, experimentSettings.EventRatePerSecond);
@@ -433,7 +437,7 @@ namespace WindowsFormsApplication1
             if (key == "NJF") return "NJF（最近工作優先）";
             if (key == "TADP_LIN") return "TADP/LIN（期限距離線性排序）";
             if (key == "RCSS") return "RCSS（風險與耗能排序）";
-            if (key == "NJF_BPR") return "NJF_BPR（BP&R-inspired risk-based proactive）";
+            if (key == "NJF_BPR") return "NJF_BPR（BP&R-inspired bottleneck proactive）";
             if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（公平版，<=NmaxTask）";
             if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（延伸版，可超過NmaxTask）";
             if (key == "FUZZY") return "FUZZY（模糊推論排程）";

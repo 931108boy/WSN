@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<ExperimentSettings xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+<ExperimentSettings xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <ProjectRoot>C:\Users\931108boy\Desktop\WSN</ProjectRoot>
   <BaseSeed>42</BaseSeed>
   <RunCount>10</RunCount>
@@ -27,7 +27,8 @@
   <TreqSeconds>4620</TreqSeconds>
   <PrateChange>0.2</PrateChange>
   <RateChangeVariationPercent>12.5</RateChangeVariationPercent>
-  <SelectedAlgorithmsCsv>RCSS,NJF_BPR,NJF_BPR_ROUTE_SAFE_LIMITED,NJF_BPR_ROUTE_SAFE_EXTENDED</SelectedAlgorithmsCsv>
+  <SelectedAlgorithmsCsv>EDF,NJF,TADP_LIN,RCSS,NJF_BPR,NJF_BPR_ROUTE_SAFE_LIMITED,NJF_BPR_ROUTE_SAFE_EXTENDED,FUZZY,GENE,PSO,Cuckoo</SelectedAlgorithmsCsv>
   <OutputDirectory>C:\Users\931108boy\Desktop\WSN\outputs</OutputDirectory>
-  <LastOutputWorkbookPath>C:\Users\931108boy\Desktop\WSN\outputs\20260519-145359-187-wsn-comparison-seed42-runs10.xlsx</LastOutputWorkbookPath>
+  <LastOutputWorkbookPath>C:\Users\931108boy\Desktop\WSN\outputs\20260519-172428-908-wsn-comparison-seed42-runs10.xlsx</LastOutputWorkbookPath>
+  <MaxParallelJobs>28</MaxParallelJobs>
 </ExperimentSettings>

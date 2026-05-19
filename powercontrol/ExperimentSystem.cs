@@ -44,6 +44,7 @@ namespace WindowsFormsApplication1
         public string SelectedAlgorithmsCsv { get; set; }
         public string OutputDirectory { get; set; }
         public string LastOutputWorkbookPath { get; set; }
+        public int MaxParallelJobs { get; set; }
 
         public ExperimentSettings()
         {
@@ -77,6 +78,7 @@ namespace WindowsFormsApplication1
             SelectedAlgorithmsCsv = DefaultAlgorithmSelectionCsv();
             OutputDirectory = Path.Combine(ProjectRoot, "outputs");
             LastOutputWorkbookPath = "";
+            MaxParallelJobs = 0;
         }
 
         public static string[] AllAlgorithms()
@@ -240,6 +242,7 @@ namespace WindowsFormsApplication1
             TreqSeconds = Math.Max(1.0, TreqSeconds);
             PrateChange = Clamp(PrateChange, 0.0, 1.0);
             RateChangeVariationPercent = Clamp(RateChangeVariationPercent, 0.0, 99.0);
+            MaxParallelJobs = Math.Max(0, MaxParallelJobs);
             List<string> selectedAlgorithms = GetSelectedAlgorithms();
             if (selectedAlgorithms.Count == 0)
                 SelectedAlgorithmsCsv = DefaultAlgorithmSelectionCsv();
@@ -407,11 +410,13 @@ namespace WindowsFormsApplication1
 
             int totalWork = settings.RunCount * algorithms.Count;
             int completedWork = 0;
-            int maxParallelJobs = Math.Max(1, Math.Min(totalWork, Environment.ProcessorCount));
+            int maxParallelJobs = ResolveMaxParallelJobs(settings, totalWork);
+            RaiseThreadPoolMinimum(maxParallelJobs);
             ExperimentRunBatchResult[] runResults = new ExperimentRunBatchResult[settings.RunCount];
             Report(String.Format(CultureInfo.InvariantCulture,
-                "平行批次啟動：runs={0}, algorithms={1}, max parallel jobs={2}",
-                settings.RunCount, algorithms.Count, maxParallelJobs));
+                "平行批次啟動：runs={0}, algorithms={1}, max parallel jobs={2}{3}",
+                settings.RunCount, algorithms.Count, maxParallelJobs,
+                settings.MaxParallelJobs > 0 ? " (manual)" : " (auto)"));
 
             ParallelOptions options = new ParallelOptions();
             options.MaxDegreeOfParallelism = maxParallelJobs;
@@ -516,6 +521,21 @@ namespace WindowsFormsApplication1
             int baseQuota = MaxTaskRecordsInWorkbook / totalCells;
             int remainder = MaxTaskRecordsInWorkbook % totalCells;
             return baseQuota + (ordinal < remainder ? 1 : 0);
+        }
+
+        private static int ResolveMaxParallelJobs(ExperimentSettings settings, int totalWork)
+        {
+            int requested = settings.MaxParallelJobs > 0 ? settings.MaxParallelJobs : Environment.ProcessorCount;
+            return Math.Max(1, Math.Min(Math.Max(1, totalWork), requested));
+        }
+
+        private static void RaiseThreadPoolMinimum(int maxParallelJobs)
+        {
+            int workerThreads;
+            int completionPortThreads;
+            ThreadPool.GetMinThreads(out workerThreads, out completionPortThreads);
+            if (workerThreads < maxParallelJobs)
+                ThreadPool.SetMinThreads(maxParallelJobs, completionPortThreads);
         }
 
         private class ExperimentRunBatchResult
@@ -855,7 +875,19 @@ namespace WindowsFormsApplication1
                     continue;
                 }
 
+                if (UsesBprBottleneckCandidates() && HasBprBottleneckCandidate())
+                {
+                    ExecuteMission();
+                    continue;
+                }
+
                 double nextTime = FindNextInterestingTime(settings.SimulationTimeSeconds, null);
+                if (UsesBprBottleneckCandidates())
+                {
+                    double bprTime = FindNextBprBottleneckCandidateTime();
+                    if (bprTime >= currentTime - Epsilon)
+                        nextTime = Math.Min(nextTime, bprTime);
+                }
                 if (nextTime <= currentTime + Epsilon)
                     nextTime = Math.Min(settings.SimulationTimeSeconds, currentTime + 1.0);
                 AdvanceTo(nextTime, null);
@@ -991,6 +1023,7 @@ namespace WindowsFormsApplication1
                 record.NodeId = request.NodeId;
                 record.TaskSource = request.IsProactive ? "proactive" : "request";
                 record.IsProactive = request.IsProactive;
+                record.ProactiveReason = request.ProactiveReason ?? "";
                 record.RequestTimeSeconds = request.RequestTimeSeconds;
                 record.DeadlineSeconds = request.DeadlineSeconds;
                 record.DispatchTimeSeconds = dispatchTime;
@@ -1056,6 +1089,7 @@ namespace WindowsFormsApplication1
             record.NodeId = request.NodeId;
             record.TaskSource = request.IsProactive ? "proactive" : "request";
             record.IsProactive = request.IsProactive;
+            record.ProactiveReason = request.ProactiveReason ?? "";
             record.RequestTimeSeconds = request.RequestTimeSeconds;
             record.DeadlineSeconds = request.DeadlineSeconds;
             record.DispatchTimeSeconds = dispatchTime;
@@ -1109,7 +1143,13 @@ namespace WindowsFormsApplication1
             if (algorithm == "NJF_BPR_ROUTE_SAFE_EXTENDED")
                 return BuildRouteSafeNjfBpr(pool, maxTask, false);
 
-            if (algorithm == "NJF_BPR" || algorithm == "FUZZY")
+            if (algorithm == "NJF_BPR")
+            {
+                AddBprBottleneckCandidates(pool, maxTask);
+                return BuildNearestRoute(pool, maxTask);
+            }
+
+            if (algorithm == "FUZZY")
                 AddProactiveCandidates(pool, maxTask);
 
             if (pool.Count == 0)
@@ -1123,8 +1163,6 @@ namespace WindowsFormsApplication1
                 return BuildCompositeRoute(pool, maxTask, 0.50, 0.50, 0.00);
             if (algorithm == "RCSS")
                 return BuildCompositeRoute(pool, maxTask, 0.20, 0.25, 0.55);
-            if (algorithm == "NJF_BPR")
-                return BuildNearestRoute(pool, maxTask);
             if (algorithm == "FUZZY")
                 return BuildFuzzyRoute(pool, maxTask);
             if (algorithm == "GENE")
@@ -1147,12 +1185,83 @@ namespace WindowsFormsApplication1
             return Math.Max(1, Math.Min(settings.NmaxTask, energyLimited));
         }
 
+        private bool UsesBprBottleneckCandidates()
+        {
+            return algorithm == "NJF_BPR" ||
+                algorithm == "NJF_BPR_ROUTE_SAFE_LIMITED" ||
+                algorithm == "NJF_BPR_ROUTE_SAFE_EXTENDED";
+        }
+
+        private bool HasBprBottleneckCandidate()
+        {
+            if (!UsesBprBottleneckCandidates())
+                return false;
+
+            HashSet<int> used = new HashSet<int>();
+            for (int i = 0; i < activeRequests.Count; i++)
+                used.Add(activeRequests[i].NodeId);
+
+            for (int id = 1; id < sensors.Length; id++)
+            {
+                ChargingRequest ignored;
+                if (TryCreateBprBottleneckCandidate(id, used, out ignored))
+                    return true;
+            }
+            return false;
+        }
+
+        private double FindNextBprBottleneckCandidateTime()
+        {
+            double best = Double.PositiveInfinity;
+            for (int id = 1; id < sensors.Length; id++)
+            {
+                SensorState sensor = sensors[id];
+                if (!sensor.Alive || sensor.HasPendingRequest || sensor.ConsumeRateJPerSecond <= 0.0)
+                    continue;
+
+                double threshold = GetRequestThresholdJ(sensor);
+                double timeToRequest = Math.Max(0.0, (sensor.EnergyJ - threshold) / sensor.ConsumeRateJPerSecond);
+                double timeToDeath = Math.Max(0.0, sensor.EnergyJ / sensor.ConsumeRateJPerSecond);
+                double density = ComputeCriticalNodeDensity(id);
+
+                if (timeToRequest <= settings.TreqSeconds ||
+                    timeToDeath <= settings.TreqSeconds * 2.0 ||
+                    (density >= 0.35 && timeToRequest <= settings.TreqSeconds * 2.5))
+                    return currentTime;
+
+                best = Math.Min(best, currentTime + Math.Max(0.0, timeToRequest - settings.TreqSeconds));
+                best = Math.Min(best, currentTime + Math.Max(0.0, timeToDeath - settings.TreqSeconds * 2.0));
+                if (density >= 0.35)
+                    best = Math.Min(best, currentTime + Math.Max(0.0, timeToRequest - settings.TreqSeconds * 2.5));
+
+                double criticalDensityThreshold = threshold * 1.25;
+                if (sensor.EnergyJ > criticalDensityThreshold + Epsilon)
+                    best = Math.Min(best, currentTime + (sensor.EnergyJ - criticalDensityThreshold) / sensor.ConsumeRateJPerSecond);
+            }
+
+            return best;
+        }
+
+        private void AddBprBottleneckCandidates(List<ChargingRequest> pool, int maxTask)
+        {
+            if (pool.Count >= maxTask)
+                return;
+
+            HashSet<int> used = new HashSet<int>();
+            for (int i = 0; i < pool.Count; i++)
+                used.Add(pool[i].NodeId);
+
+            List<ChargingRequest> candidates = BuildBprBottleneckCandidates(used, maxTask - pool.Count);
+            for (int i = 0; i < candidates.Count && pool.Count < maxTask; i++)
+                pool.Add(candidates[i]);
+        }
+
         private void AddProactiveCandidates(List<ChargingRequest> pool, int maxTask)
         {
             if (pool.Count >= maxTask)
                 return;
 
-            // BP&R-inspired risk selection, not the full ZHENG Algorithm 3 sliding-window bottleneck scan.
+            // FUZZY keeps the legacy risk-based proactive supplement.
             HashSet<int> used = new HashSet<int>();
             for (int i = 0; i < pool.Count; i++)
                 used.Add(pool[i].NodeId);
@@ -1181,6 +1290,7 @@ namespace WindowsFormsApplication1
                 proactive.RequestEnergyJ = sensor.EnergyJ;
                 proactive.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
                 proactive.IsProactive = true;
+                proactive.ProactiveReason = "FUZZY_RISK";
                 proactive.CriticalDensity = ComputeCriticalNodeDensity(id);
                 candidates.Add(proactive);
             }
@@ -1196,9 +1306,6 @@ namespace WindowsFormsApplication1
 
         private List<ChargingRequest> BuildRouteSafeNjfBpr(List<ChargingRequest> requiredRequests, int maxTask, bool enforceTaskLimit)
         {
-            if (requiredRequests.Count == 0)
-                return requiredRequests;
-
             List<ChargingRequest> selected = enforceTaskLimit
                 ? BuildNearestRoute(requiredRequests, maxTask)
                 : new List<ChargingRequest>();
@@ -1212,7 +1319,8 @@ namespace WindowsFormsApplication1
                 used.Add(selected[i].NodeId);
 
             List<ChargingRequest> currentRoute = BuildNearestRoute(selected, selected.Count);
-            List<ChargingRequest> candidates = BuildBprRiskCandidates(used);
+            int shortlistLimit = Math.Max(GetRouteSafeProactiveLimit() * 3, GetRouteSafeProactiveLimit() + 20);
+            List<ChargingRequest> candidates = BuildBprBottleneckCandidates(used, shortlistLimit);
             int proactiveAddLimit = enforceTaskLimit ? Math.Max(0, maxTask - selected.Count) : GetRouteSafeProactiveLimit();
             int proactiveAdded = 0;
 
@@ -1267,54 +1375,62 @@ namespace WindowsFormsApplication1
             return Math.Max(20, Math.Min(120, Math.Max(1, sensors.Length - 1) / 10));
         }
 
-        private List<ChargingRequest> BuildBprRiskCandidates(HashSet<int> used)
+        private List<ChargingRequest> BuildBprBottleneckCandidates(HashSet<int> used, int shortlistLimit)
         {
-            // Risk-based proactive shortlist inspired by BP&R terminology. It does not implement
-            // ZHENG's sliding future-window bottleneck prediction/removal procedure.
             List<ChargingRequest> candidates = new List<ChargingRequest>();
             for (int id = 1; id < sensors.Length; id++)
             {
-                SensorState sensor = sensors[id];
-                if (!sensor.Alive || sensor.HasPendingRequest || used.Contains(id) || sensor.ConsumeRateJPerSecond <= 0.0)
-                    continue;
-
-                double threshold = GetRequestThresholdJ(sensor);
-                double timeToRequest = Math.Max(0.0, (sensor.EnergyJ - threshold) / sensor.ConsumeRateJPerSecond);
-                double timeToDeath = Math.Max(0.0, sensor.EnergyJ / sensor.ConsumeRateJPerSecond);
-                double energyRatio = sensor.CapacityJ <= 0.0 ? 0.0 : sensor.EnergyJ / sensor.CapacityJ;
-                double density = ComputeCriticalNodeDensity(id);
-                double thresholdRatio = sensor.CapacityJ <= 0.0 ? 0.0 : threshold / sensor.CapacityJ;
-                bool directlyDangerous = timeToRequest <= settings.TreqSeconds ||
-                    timeToDeath <= settings.TreqSeconds * 2.0 ||
-                    energyRatio <= Math.Max(0.20, thresholdRatio * 1.8);
-                bool bottleneckDangerous = density >= 0.35 && timeToRequest <= settings.TreqSeconds * 2.5;
-                bool dangerous = directlyDangerous || bottleneckDangerous;
-                if (!dangerous)
-                    continue;
-
-                ChargingRequest proactive = new ChargingRequest();
-                proactive.RequestId = -id;
-                proactive.NodeId = id;
-                proactive.RequestTimeSeconds = currentTime;
-                proactive.DeadlineSeconds = currentTime + timeToDeath;
-                proactive.RequestEnergyJ = sensor.EnergyJ;
-                proactive.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
-                proactive.IsProactive = true;
-                proactive.CriticalDensity = density;
-                candidates.Add(proactive);
+                ChargingRequest proactive;
+                if (TryCreateBprBottleneckCandidate(id, used, out proactive))
+                    candidates.Add(proactive);
             }
 
             candidates.Sort(delegate (ChargingRequest a, ChargingRequest b)
             {
-                int compare = BprRiskScore(b).CompareTo(BprRiskScore(a));
+                int compare = a.DeadlineSeconds.CompareTo(b.DeadlineSeconds);
                 if (compare != 0)
                     return compare;
-                return a.DeadlineSeconds.CompareTo(b.DeadlineSeconds);
+                compare = BprRiskScore(b).CompareTo(BprRiskScore(a));
+                if (compare != 0)
+                    return compare;
+                return a.NodeId.CompareTo(b.NodeId);
             });
-            int shortlistLimit = Math.Max(GetRouteSafeProactiveLimit() * 3, GetRouteSafeProactiveLimit() + 20);
-            if (candidates.Count > shortlistLimit)
+            if (shortlistLimit > 0 && candidates.Count > shortlistLimit)
                 candidates.RemoveRange(shortlistLimit, candidates.Count - shortlistLimit);
             return candidates;
+        }
+
+        private bool TryCreateBprBottleneckCandidate(int id, HashSet<int> used, out ChargingRequest proactive)
+        {
+            proactive = null;
+            if (id <= 0 || id >= sensors.Length || (used != null && used.Contains(id)))
+                return false;
+
+            SensorState sensor = sensors[id];
+            if (!sensor.Alive || sensor.HasPendingRequest || sensor.ConsumeRateJPerSecond <= 0.0)
+                return false;
+
+            double threshold = GetRequestThresholdJ(sensor);
+            double timeToRequest = Math.Max(0.0, (sensor.EnergyJ - threshold) / sensor.ConsumeRateJPerSecond);
+            double timeToDeath = Math.Max(0.0, sensor.EnergyJ / sensor.ConsumeRateJPerSecond);
+            double density = ComputeCriticalNodeDensity(id);
+            bool requestSoon = timeToRequest <= settings.TreqSeconds;
+            bool deathSoon = timeToDeath <= settings.TreqSeconds * 2.0;
+            bool denseBottleneck = density >= 0.35 && timeToRequest <= settings.TreqSeconds * 2.5;
+            if (!requestSoon && !deathSoon && !denseBottleneck)
+                return false;
+
+            proactive = new ChargingRequest();
+            proactive.RequestId = -id;
+            proactive.NodeId = id;
+            proactive.RequestTimeSeconds = currentTime;
+            proactive.DeadlineSeconds = currentTime + timeToDeath;
+            proactive.RequestEnergyJ = sensor.EnergyJ;
+            proactive.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
+            proactive.CriticalDensity = density;
+            proactive.IsProactive = true;
+            proactive.ProactiveReason = "BPR_BOTTLENECK";
+            return true;
         }
 
         private bool IsTrialRouteSafe(List<ChargingRequest> route)
@@ -2040,6 +2156,7 @@ namespace WindowsFormsApplication1
                     request.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
                     request.CriticalDensity = ComputeCriticalNodeDensity(id);
                     request.IsProactive = false;
+                    request.ProactiveReason = "";
                     sensor.HasPendingRequest = true;
                     activeRequests.Add(request);
                     summary.NaturalRequestCount++;
@@ -2211,6 +2328,7 @@ namespace WindowsFormsApplication1
         public double ConsumeRateJPerSecond;
         public double CriticalDensity;
         public bool IsProactive;
+        public string ProactiveReason;
 
         public ChargingRequest Clone()
         {
@@ -2223,6 +2341,7 @@ namespace WindowsFormsApplication1
             clone.ConsumeRateJPerSecond = ConsumeRateJPerSecond;
             clone.CriticalDensity = CriticalDensity;
             clone.IsProactive = IsProactive;
+            clone.ProactiveReason = ProactiveReason;
             return clone;
         }
     }
@@ -2283,6 +2402,7 @@ namespace WindowsFormsApplication1
         public int NodeId;
         public string TaskSource;
         public bool IsProactive;
+        public string ProactiveReason;
         public double RequestTimeSeconds;
         public double DeadlineSeconds;
         public double DispatchTimeSeconds;
@@ -2342,6 +2462,7 @@ namespace WindowsFormsApplication1
             rows.Add(Row("實作根目錄", s.ProjectRoot, "所有修改與輸出都在 WSN 目錄"));
             rows.Add(Row("基礎亂數種子", s.BaseSeed, "第 i 個 run 使用 seed+i-1"));
             rows.Add(Row("Run 次數", s.RunCount, ""));
+            rows.Add(Row("最大平行工作數", s.MaxParallelJobs == 0 ? "自動" : s.MaxParallelJobs.ToString(CultureInfo.InvariantCulture), "0=自動使用 CPU 邏輯核心數；可手動調高或降低"));
             rows.Add(Row("感測器數量", s.SensorCount, ""));
             rows.Add(Row("地圖邊長(m)", s.MapWidthMeters, "地圖固定為 n x n 正方形"));
             rows.Add(Row("模擬時間(s)", s.SimulationTimeSeconds, ""));
@@ -2372,7 +2493,7 @@ namespace WindowsFormsApplication1
             rows.Add(Row("ZHENG-inspired 耗能率倍率", RateMultiplierRangeText(s), "由耗能變動幅度決定"));
             rows.Add(Row("基地台", "sink + 充電中心", "固定單台 WCV，每趟 mission 後回 BS"));
             rows.Add(Row("FUZZY", "Mamdani 模糊推論", "剩餘能量、距離、耗能率、臨界節點密度"));
-            rows.Add(Row("BP&R 標註", "BP&R-inspired risk-based proactive", "目前未實作 ZHENG Algorithm 3 sliding-window bottleneck removal"));
+            rows.Add(Row("BP&R 標註", "BP&R-inspired bottleneck proactive", "依 request/death horizon 與臨界密度挑選 proactive candidate；仍不是完整 ZHENG Algorithm 3 sliding-window removal"));
             rows.Add(Row("GENE/PSO/Cuckoo 標註", "simplified wrapper baselines", "不是完整移植舊版最佳化流程"));
             rows.Add(Row("任務明細總列數", result.TotalTaskRecordCount, result.TaskRecordsTruncated ? "Excel 任務明細過大，已用 deterministic run/algorithm quota 保留部分資料" : "完整輸出"));
             rows.Add(Row("任務明細保留列數", result.TaskRecords.Count, "目前記憶體保護上限 " + ExperimentBatchRunner.MaxTaskRecordsInWorkbook.ToString(CultureInfo.InvariantCulture) + " 列"));
@@ -2454,14 +2575,14 @@ namespace WindowsFormsApplication1
         private static List<List<object>> BuildTaskRows(ExperimentBatchResult result)
         {
             List<List<object>> rows = new List<List<object>>();
-            rows.Add(Row("Run", "Seed", "演算法", "Mission", "順序", "節點", "來源", "proactive",
+            rows.Add(Row("Run", "Seed", "演算法", "Mission", "順序", "節點", "來源", "proactive", "proactive reason",
                 "request時間(s)", "deadline(s)", "出發時間(s)", "抵達(s)", "等待(s)", "開始充電(s)",
                 "結束充電(s)", "充電前(J)", "充電後(J)", "充電前(nJ)", "充電後(nJ)", "耗能率(J/s)",
                 "耗能率(nJ/tick)", "充入能量(J)", "前段距離(m)", "成功", "失敗原因", "WCV剩餘能量(J)",
                 "共用資料hash"));
             if (result.TaskRecordsTruncated)
             {
-                rows.Add(Row("注意", "", "", "", "", "", "", "",
+                rows.Add(Row("注意", "", "", "", "", "", "", "", "",
                     "任務明細總列數 " + result.TotalTaskRecordCount.ToString(CultureInfo.InvariantCulture) +
                     " 超過 Excel 記憶體保護上限，本工作表以 run/algorithm 固定配額保留 " +
                     result.TaskRecords.Count.ToString(CultureInfo.InvariantCulture) + " 列；彙總統計仍使用完整模擬結果。",
@@ -2472,7 +2593,7 @@ namespace WindowsFormsApplication1
             {
                 ExperimentTaskRecord t = result.TaskRecords[i];
                 rows.Add(Row(t.RunIndex, t.Seed, AlgorithmDisplayName(t.Algorithm), t.MissionId, t.TaskOrder, t.NodeId, t.TaskSource,
-                    t.IsProactive ? "是" : "否", t.RequestTimeSeconds, t.DeadlineSeconds, t.DispatchTimeSeconds,
+                    t.IsProactive ? "是" : "否", t.ProactiveReason ?? "", t.RequestTimeSeconds, t.DeadlineSeconds, t.DispatchTimeSeconds,
                     t.ArrivalTimeSeconds, t.WaitSeconds, t.ChargeStartSeconds, t.ChargeEndSeconds, t.EnergyBeforeJ,
                     t.EnergyAfterJ, t.InternalEnergyBeforeNj, t.InternalEnergyAfterNj, t.ConsumeRateJPerSecond,
                     t.InternalRateNjPerTick, t.DeliveredEnergyJ, t.DistanceFromPreviousMeters,
@@ -2512,7 +2633,7 @@ namespace WindowsFormsApplication1
             if (key == "NJF") return "NJF（最近工作優先）";
             if (key == "TADP_LIN") return "TADP/LIN（時間與距離優先）";
             if (key == "RCSS") return "RCSS（風險與耗能排序）";
-            if (key == "NJF_BPR") return "NJF_BPR（BP&R-inspired risk-based proactive）";
+            if (key == "NJF_BPR") return "NJF_BPR（BP&R-inspired bottleneck proactive）";
             if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（公平版，<=NmaxTask）";
             if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（延伸版，可超過NmaxTask）";
             if (key == "FUZZY") return "FUZZY（模糊推論排程）";
@@ -2797,6 +2918,7 @@ namespace WindowsFormsApplication1
             AddTextBox(panel, "SensorCount", "感測器數量", y); y += 30;
             AddTextBox(panel, "MapWidthMeters", "地圖邊長(m)", y); y += 30;
             AddTextBox(panel, "SimulationTimeSeconds", "模擬時間(s)", y); y += 30;
+            AddTextBox(panel, "MaxParallelJobs", "最大平行工作數", y); y += 30;
             AddTextBox(panel, "InitialEnergyJ", "初始能量(J)", y); y += 30;
             AddTextBox(panel, "SensorBackgroundLifetimeSeconds", "背景壽命(s)", y); y += 30;
             AddTextBox(panel, "InitialResidualJitterPercent", "初始能量擾動(%)", y); y += 30;
@@ -2885,6 +3007,7 @@ namespace WindowsFormsApplication1
             boxes["SensorCount"].Text = settings.SensorCount.ToString(CultureInfo.InvariantCulture);
             boxes["MapWidthMeters"].Text = settings.MapWidthMeters.ToString(CultureInfo.InvariantCulture);
             boxes["SimulationTimeSeconds"].Text = settings.SimulationTimeSeconds.ToString(CultureInfo.InvariantCulture);
+            boxes["MaxParallelJobs"].Text = settings.MaxParallelJobs.ToString(CultureInfo.InvariantCulture);
             boxes["InitialEnergyJ"].Text = settings.InitialEnergyJ.ToString(CultureInfo.InvariantCulture);
             boxes["SensorBackgroundLifetimeSeconds"].Text = settings.SensorBackgroundLifetimeSeconds.ToString(CultureInfo.InvariantCulture);
             boxes["InitialResidualJitterPercent"].Text = settings.InitialResidualJitterPercent.ToString(CultureInfo.InvariantCulture);
@@ -2922,6 +3045,7 @@ namespace WindowsFormsApplication1
             settings.MapWidthMeters = mapSizeMeters;
             settings.MapHeightMeters = mapSizeMeters;
             settings.SimulationTimeSeconds = ParseDouble("SimulationTimeSeconds", settings.SimulationTimeSeconds);
+            settings.MaxParallelJobs = ParseInt("MaxParallelJobs", settings.MaxParallelJobs);
             settings.InitialEnergyJ = ParseDouble("InitialEnergyJ", settings.InitialEnergyJ);
             settings.SensorBackgroundLifetimeSeconds = ParseDouble("SensorBackgroundLifetimeSeconds", settings.SensorBackgroundLifetimeSeconds);
             settings.InitialResidualJitterPercent = ParseDouble("InitialResidualJitterPercent", settings.InitialResidualJitterPercent);
@@ -2967,7 +3091,7 @@ namespace WindowsFormsApplication1
             if (key == "NJF") return "NJF（最近工作優先）";
             if (key == "TADP_LIN") return "TADP/LIN（時間與距離優先）";
             if (key == "RCSS") return "RCSS（風險與耗能排序）";
-            if (key == "NJF_BPR") return "NJF_BPR（BP&R-inspired risk-based proactive）";
+            if (key == "NJF_BPR") return "NJF_BPR（BP&R-inspired bottleneck proactive）";
             if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（公平版，<=NmaxTask）";
             if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（延伸版，可超過NmaxTask）";
             if (key == "FUZZY") return "FUZZY（模糊推論排程）";

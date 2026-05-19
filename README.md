@@ -1,6 +1,6 @@
 # WSN / MyWSN / ZHENG-Inspired Extension Experiment System
 
-本專案是一套 Wireless Rechargeable Sensor Network（WRSN）實驗系統，建置於 `C:\Users\931108boy\Desktop\WSN`。系統以 MyWSN rechargeable 版本的 WinForms 專案為基礎，加入參考 ZHENG single-WCV 架構的動態耗能、BP&R-inspired risk-based proactive 概念，以及 FUZZY 排程方法，用來比較多個充電排程演算法在相同實驗條件下的表現。
+本專案是一套 Wireless Rechargeable Sensor Network（WRSN）實驗系統，建置於 `C:\Users\931108boy\Desktop\WSN`。系統以 MyWSN rechargeable 版本的 WinForms 專案為基礎，加入參考 ZHENG single-WCV 架構的動態耗能、BP&R-inspired bottleneck proactive 概念，以及 FUZZY 排程方法，用來比較多個充電排程演算法在相同實驗條件下的表現。
 
 重要定位：目前參數與實作是「參考 ZHENG single-WCV 架構的延伸實驗」，不是 ZHENG 原始實驗重現；sensor 數量、sensor energy、simulation time、packet/routing 設定都可由本系統自訂。
 
@@ -9,6 +9,8 @@
 批次實驗會以 run 為單位平行執行，以使用多核心 CPU；同一個 run 內的 algorithm 與 sensor 狀態推進仍維持序列，以避免破壞模擬時間順序。所有 run 完成後才由單一執行緒合併結果並寫出同一份 Excel。
 
 大型實驗的 `任務明細` 工作表只保留固定上限內的 deterministic run/algorithm 配額資料，以避免 32-bit WinForms 程序在 Excel 寫出階段發生 OutOfMemory；`執行比較` 與 `彙總統計` 仍使用完整模擬結果。
+
+新版雙擊啟動檔會建置/啟動 x64 `HighCpu` 版本。`MaxParallelJobs=0` 表示自動使用 CPU 邏輯核心數；若想更積極使用 CPU，可在 UI 填入較大的平行工作數，若電腦變頓則調低。
 
 ---
 
@@ -192,8 +194,8 @@ if random <= Prate_change:
 | NJF | Nearest Job First，依目前 WCV 位置選最近的下一個節點 |
 | TADP_LIN | 用 deadline urgency 與距離做線性綜合排序 |
 | RCSS | 加入耗能率因素，偏向高風險、高耗能節點 |
-| NJF_BPR | NJF 加上 BP&R-inspired risk-based proactive candidate；目前不是完整 ZHENG sliding-window bottleneck prediction/removal |
-| NJF_BPR_ROUTE_SAFE_LIMITED | 公平比較版 RouteSafe：先用 NJF 從既有 request 中選到 `NmaxTask` 上限，再從 risk-based proactive 候選挑離目前路線最近且通過 route safety trial 的節點；每趟 mission 嚴格不超過 `NmaxTask` |
+| NJF_BPR | NJF 加上 BP&R-inspired bottleneck proactive candidate；依 request/death horizon 與臨界密度提前挑選節點，目前仍不是完整 ZHENG sliding-window bottleneck prediction/removal |
+| NJF_BPR_ROUTE_SAFE_LIMITED | 公平比較版 RouteSafe：先用 NJF 從既有 request 中選到 `NmaxTask` 上限，再從 BP&R bottleneck proactive 候選挑離目前路線最近且通過 route safety trial 的節點；每趟 mission 嚴格不超過 `NmaxTask` |
 | NJF_BPR_ROUTE_SAFE_EXTENDED | 延伸版 RouteSafe：保留原 `NJF_BPR_ROUTE_SAFE` 行為，會先納入所有既有 request，再加入安全 proactive 候選，因此 active request 已超過 `NmaxTask` 時一趟 mission 可超過上限；不建議列入公平比較 |
 | FUZZY | Mamdani fuzzy inference 排程優先度 |
 
@@ -205,7 +207,7 @@ if random <= Prate_change:
 | PSO | 新版 ExperimentSystem 中的 simplified wrapper baseline：使用偏耗能風險的 composite score，非完整舊版 PSO 最佳化流程 |
 | Cuckoo | 新版 ExperimentSystem 中的 simplified wrapper baseline：使用 deadline + distance 的 deterministic random candidate selection，非完整舊版 Cuckoo 最佳化流程 |
 
-注意：`NJF_BPR` 與 RouteSafe 系列目前只採用 BP&R 概念中的 proactive/risk/bottleneck intuition，未實作 ZHENG Algorithm 3 的未來時間窗掃描、BottleList 與 sliding-window removal。GENE、PSO、Cuckoo 在新版 ExperimentSystem 中也只作為 simplified baseline，不應當成完整 GA / PSO / Cuckoo 最佳化演算法做正式比較。
+注意：`NJF_BPR` 與 RouteSafe 系列目前採用 BP&R 概念中的 request/death horizon 與 critical-density bottleneck proactive candidate，未實作 ZHENG Algorithm 3 的未來時間窗掃描、BottleList 與 sliding-window removal。GENE、PSO、Cuckoo 在新版 ExperimentSystem 中也只作為 simplified baseline，不應當成完整 GA / PSO / Cuckoo 最佳化演算法做正式比較。
 
 ---
 
