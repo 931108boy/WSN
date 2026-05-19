@@ -124,7 +124,7 @@ C:\Users\931108boy\Desktop\WSN
    - 安全限制觸發。
 5. mission 結束後 WCV 回到 BS。
 
-例外：`NJF_BPR_ROUTE_SAFE_EXTENDED` 是容量放寬實驗版，會使用同一套 ZHENG BP&R BottleList 偵測，但允許 `cplist` 超過 `NmaxTask`，因此不應混入公平比較；公平比較請使用 `NJF_BPR_ROUTE_SAFE_LIMITED`。
+例外：`NJF_ROUTE_ZHENG_BPR_EXTENDED` 與 `NJF_ROUTE_YU_BPR_EXTENDED` 是容量放寬實驗版，允許 `cplist` 超過 `NmaxTask`，因此不應混入公平比較；公平比較請使用對應的 `*_LIMITED` 版本。
 
 ### 能量單位
 
@@ -194,9 +194,11 @@ if random <= Prate_change:
 | NJF | Nearest Job First，依目前 WCV 位置選最近的下一個節點 |
 | TADP_LIN | 用 deadline urgency 與距離做線性綜合排序 |
 | RCSS | 加入耗能率因素，偏向高風險、高耗能節點 |
-| NJF_BPR | NJF 加上完整 ZHENG BP&R 偵測；使用 STable deadline、TdeadlineThreshold、Tjob(NmaxTask) sliding window、BottleList 與 cplist，BottleList 內以 deterministic deadline/node-id 選點取代原論文 random selection |
-| NJF_BPR_ROUTE_SAFE_LIMITED | 公平比較版 RouteSafe：使用完整 ZHENG BP&R 偵測 BottleList，再從 BottleList 中優先選擇加入目前路線後額外路徑成本最小的 sensor；`cplist.Count` 嚴格不超過 `NmaxTask` |
-| NJF_BPR_ROUTE_SAFE_EXTENDED | 容量放寬 RouteSafe：使用同一套完整 ZHENG BP&R 偵測與 route-cost BottleList 選點，但允許 `cplist.Count` 超過 `NmaxTask`；不建議列入公平比較 |
+| NJF_ZHENG_BPR | ZHENG BP&R deterministic；使用 persistent STable、LatestReportedDeadlineSeconds、BprDeadlineThresholdSeconds、BottleList，BottleList 內以 deadline / NodeId deterministic 選點 |
+| NJF_ROUTE_ZHENG_BPR_LIMITED | Route + ZHENG BP&R；沿用 ZHENG deadline interval 與 BottleList，只把 BottleList 內選點改成 route insertion cost；`cplist.Count <= NmaxTask` |
+| NJF_ROUTE_ZHENG_BPR_EXTENDED | Route + ZHENG BP&R 容量放寬版；同上，但允許 `cplist.Count > NmaxTask` |
+| NJF_ROUTE_YU_BPR_LIMITED | Route + YU interval BP&R；使用 YU-inspired request interval / dangerous interval detector，再以 route insertion cost 選點；`cplist.Count <= NmaxTask` |
+| NJF_ROUTE_YU_BPR_EXTENDED | Route + YU interval BP&R 容量放寬版；同上，但允許 `cplist.Count > NmaxTask` |
 | FUZZY | Mamdani fuzzy inference 排程優先度 |
 
 可選演算法：
@@ -207,7 +209,7 @@ if random <= Prate_change:
 | PSO | Random-key Particle Swarm Optimization：每個 task 對應 position/velocity，依 position 排序成 route，使用 inertia/cognitive/social 更新 |
 | Cuckoo | Cuckoo Search route optimization：nest 為任務排列，使用 swap/insertion/inversion 擾動與 abandonment probability 淘汰較差 nests |
 
-注意：`NJF_BPR` 與 RouteSafe 系列現在共用完整 ZHENG Algorithm 3 風格的 BP&R 危險區間偵測流程；禁止以 risk-score、density 或 time-to-death heuristic 直接替代 BottleList 偵測。`ExperimentSimulation` 會維護 persistent STable，rate-change / packet energy / natural request / mission scheduled / charged / dead 狀態都會更新 STable；BP&R 不再於每次 mission 前即時計算 snapshot STable。GENE、PSO、Cuckoo 目前已改為正式 route optimization baseline，三者共用同一套 route fitness。
+注意：`NJF` 是沒有 proactive prediction 的 baseline，只等自然 request 並用 nearest-job-first 排路線。`NJF_ZHENG_BPR` 使用 ZHENG-style persistent STable deadline interval；`NJF_ROUTE_ZHENG_BPR_*` 仍使用同一套 ZHENG deadline interval 與 BottleList，只把 BottleList 內選點改成 route insertion cost。`NJF_ROUTE_YU_BPR_*` 使用 YU-inspired request interval / dangerous interval detector，再以 route insertion cost 選點；此版本不是完整 YU WCV+WCD 系統。舊 key `NJF_BPR`、`NJF_BPR_ROUTE_SAFE_LIMITED`、`NJF_BPR_ROUTE_SAFE_EXTENDED` 仍可讀取，會分別對應到新的 ZHENG key。GENE、PSO、Cuckoo 目前已改為正式 route optimization baseline，三者共用同一套 route fitness。
 
 ---
 
@@ -351,9 +353,12 @@ C:\Users\931108boy\Desktop\WSN\experiment-last-settings.xml
 | `RequestThresholdPercent` | 低電量 request 門檻百分比 | 10 |
 | `TreqSeconds` | Treq 模式使用的剩餘秒數 | 4620 |
 | `BprDeadlineThresholdSeconds` | BP&R persistent STable deadline maintenance threshold；rate-change 會重新計算 request-threshold deadline，只有變化達到此秒數才更新 `LatestReportedDeadlineSeconds`；其他 snapshot 欄位仍會更新 | 4620 |
+| `YuDangerWindowSeconds` | YU-inspired dangerous interval 掃描視窗；0 表示使用 `EstimateBprTjobSeconds(NmaxTask)` | 0 |
+| `YuDangerThresholdK` | YU-inspired dangerous interval 的重疊門檻；0 表示使用 `NmaxTask + 1` | 0 |
+| `YuIntervalUncertaintySeconds` | YU-inspired request interval 半寬；0 表示使用 `BprDeadlineThresholdSeconds` | 0 |
 | `PrateChange` | 動態耗能變動機率 | 0.2 |
 | `RateChangeVariationPercent` | 動態耗能變動幅度百分比，倍率範圍為 `1 ± 此百分比` | 12.5 |
-| `SelectedAlgorithmsCsv` | 選擇演算法 | EDF,NJF,TADP_LIN,RCSS,NJF_BPR,NJF_BPR_ROUTE_SAFE_LIMITED,FUZZY |
+| `SelectedAlgorithmsCsv` | 選擇演算法 | EDF,NJF,TADP_LIN,RCSS,NJF_ZHENG_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_YU_BPR_LIMITED,FUZZY |
 | `OutputDirectory` | Excel 輸出資料夾 | `C:\Users\931108boy\Desktop\WSN\outputs` |
 
 ---
@@ -432,7 +437,7 @@ CLI 執行會輸出類似：
 執行 NJF run 1/1
 執行 TADP_LIN run 1/1
 執行 RCSS run 1/1
-執行 NJF_BPR run 1/1
+執行 NJF_ZHENG_BPR run 1/1
 執行 FUZZY run 1/1
 Excel 已輸出：C:\Users\931108boy\Desktop\WSN\outputs\...
 WORKBOOK=C:\Users\931108boy\Desktop\WSN\outputs\...
