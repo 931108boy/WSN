@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
@@ -824,6 +825,23 @@ namespace WindowsFormsApplication1
         private int missionId;
         private double currentTime;
         private bool stopForFirstDeath;
+        private HashSet<int> plannedMissionNodeIds;
+
+        private enum BprProactiveSelectionMode
+        {
+            Deterministic,
+            RouteInsertionCost
+        }
+
+        private sealed class BprSTableEntry
+        {
+            public int NodeId;
+            public double RemainingWorkSeconds;
+            public double RequestDeadlineSeconds;
+            public double DepletionDeadlineSeconds;
+            public double EnergyJ;
+            public double ConsumeRateJPerSecond;
+        }
 
         public ExperimentSimulation(ExperimentSettings experimentSettings, ExperimentArtifact sharedArtifact, string schedulerName)
             : this(experimentSettings, sharedArtifact, schedulerName, null)
@@ -929,6 +947,8 @@ namespace WindowsFormsApplication1
             missionId++;
             double dispatchTime = currentTime;
             List<ChargingRequest> route = BuildMissionRoute();
+            int deduplicatedTaskCount;
+            route = DeduplicateMissionRoute(route, out deduplicatedTaskCount);
             if (route.Count == 0)
             {
                 currentTime = Math.Min(settings.SimulationTimeSeconds, currentTime + 1.0);
@@ -941,7 +961,15 @@ namespace WindowsFormsApplication1
             mission.Algorithm = algorithm;
             mission.MissionId = missionId;
             mission.DispatchTimeSeconds = dispatchTime;
+            mission.DeduplicatedTaskCount = deduplicatedTaskCount;
             mission.RouteNodeIds = new List<int>();
+            if (deduplicatedTaskCount > 0)
+            {
+                Debug.WriteLine(String.Format(CultureInfo.InvariantCulture,
+                    "Mission {0} deduplicated {1} repeated SensorId task(s).",
+                    missionId, deduplicatedTaskCount));
+            }
+            plannedMissionNodeIds = BuildPlannedMissionNodeSet(route);
             int startPacketSent = summary.PacketSent;
             int startPacketReceived = summary.PacketReceived;
             int startPacketLost = summary.PacketLost;
@@ -1076,8 +1104,6 @@ namespace WindowsFormsApplication1
 
                 summary.DeliveredEnergyJ += context.DeliveredEnergyJ;
                 mission.DeliveredEnergyJ += context.DeliveredEnergyJ;
-                if (record.IsProactive)
-                    summary.ProactiveTaskCount++;
                 if (record.Success)
                 {
                     summary.SuccessfulCharges++;
@@ -1088,7 +1114,7 @@ namespace WindowsFormsApplication1
                     summary.FailedOrLateTasks++;
                 }
 
-                CompleteRequestForNode(request.NodeId);
+                CompleteRequestForTask(request);
                 posX = sensor.X;
                 posY = sensor.Y;
             }
@@ -1120,6 +1146,7 @@ namespace WindowsFormsApplication1
                 : 0.0;
             if (csvWriter != null)
                 csvWriter.WriteMission(mission);
+            plannedMissionNodeIds = null;
         }
 
         private void AccumulateMissionTask(MissionRecord mission, ExperimentTaskRecord record)
@@ -1129,9 +1156,14 @@ namespace WindowsFormsApplication1
 
             mission.NodeCount++;
             if (record.IsProactive)
+            {
                 mission.ProactiveCount++;
+                summary.ProactiveTaskCount++;
+            }
             else
+            {
                 mission.RequestCount++;
+            }
 
             if (record.Success)
             {
@@ -1186,14 +1218,109 @@ namespace WindowsFormsApplication1
                 csvWriter.WriteTask(record);
         }
 
-        private void CompleteRequestForNode(int nodeId)
+        private void CompleteRequestForTask(ChargingRequest request)
         {
-            for (int i = activeRequests.Count - 1; i >= 0; i--)
+            if (request == null || request.NodeId <= 0 || request.NodeId >= sensors.Length)
+                return;
+
+            if (!request.IsProactive)
             {
-                if (activeRequests[i].NodeId == nodeId)
-                    activeRequests.RemoveAt(i);
+                int index = FindActiveRequestIndex(request.NodeId, request.RequestId);
+                if (index < 0)
+                    index = FindActiveRequestIndex(request.NodeId, -1);
+                if (index >= 0)
+                    activeRequests.RemoveAt(index);
             }
-            sensors[nodeId].HasPendingRequest = false;
+
+            sensors[request.NodeId].HasPendingRequest = HasActiveRequestForNode(request.NodeId);
+        }
+
+        private int FindActiveRequestIndex(int nodeId, int requestId)
+        {
+            for (int i = 0; i < activeRequests.Count; i++)
+            {
+                ChargingRequest request = activeRequests[i];
+                if (request.NodeId != nodeId)
+                    continue;
+                if (requestId < 0 || request.RequestId == requestId)
+                    return i;
+            }
+            return -1;
+        }
+
+        private bool HasActiveRequestForNode(int nodeId)
+        {
+            return FindActiveRequestIndex(nodeId, -1) >= 0;
+        }
+
+        private HashSet<int> BuildPlannedMissionNodeSet(List<ChargingRequest> route)
+        {
+            HashSet<int> planned = new HashSet<int>();
+            if (route == null)
+                return planned;
+
+            for (int i = 0; i < route.Count; i++)
+            {
+                if (route[i] != null)
+                    planned.Add(route[i].NodeId);
+            }
+            return planned;
+        }
+
+        private bool IsNodeReservedForCurrentMission(int nodeId)
+        {
+            return plannedMissionNodeIds != null && plannedMissionNodeIds.Contains(nodeId);
+        }
+
+        private List<ChargingRequest> DeduplicateMissionRoute(List<ChargingRequest> route, out int duplicateCount)
+        {
+            duplicateCount = 0;
+            if (route == null || route.Count <= 1)
+                return route ?? new List<ChargingRequest>();
+
+            List<ChargingRequest> deduplicated = new List<ChargingRequest>();
+            Dictionary<int, int> indexByNodeId = new Dictionary<int, int>();
+            for (int i = 0; i < route.Count; i++)
+            {
+                ChargingRequest request = route[i];
+                if (request == null)
+                    continue;
+
+                int existingIndex;
+                if (!indexByNodeId.TryGetValue(request.NodeId, out existingIndex))
+                {
+                    indexByNodeId[request.NodeId] = deduplicated.Count;
+                    deduplicated.Add(request);
+                    continue;
+                }
+
+                duplicateCount++;
+                ChargingRequest existing = deduplicated[existingIndex];
+                if (HasHigherTaskSourcePriority(request, existing))
+                    deduplicated[existingIndex] = request;
+            }
+
+            return deduplicated;
+        }
+
+        private bool HasHigherTaskSourcePriority(ChargingRequest candidate, ChargingRequest existing)
+        {
+            if (candidate == null)
+                return false;
+            if (existing == null)
+                return true;
+
+            if (existing.IsProactive && !candidate.IsProactive)
+                return true;
+            if (!existing.IsProactive && candidate.IsProactive)
+                return false;
+
+            if (candidate.DeadlineSeconds < existing.DeadlineSeconds - Epsilon)
+                return true;
+            if (Math.Abs(candidate.DeadlineSeconds - existing.DeadlineSeconds) <= Epsilon &&
+                candidate.RequestTimeSeconds < existing.RequestTimeSeconds - Epsilon)
+                return true;
+            return false;
         }
 
         private List<ChargingRequest> BuildMissionRoute()
@@ -1213,8 +1340,12 @@ namespace WindowsFormsApplication1
 
             if (algorithm == "NJF_BPR")
             {
-                AddBprBottleneckCandidates(pool, maxTask);
-                return BuildNearestRoute(pool, maxTask);
+                List<ChargingRequest> cplist = BuildZhengBprCplist(
+                    pool,
+                    maxTask,
+                    BprProactiveSelectionMode.Deterministic,
+                    false);
+                return BuildNearestRoute(cplist, maxTask);
             }
 
             if (algorithm == "FUZZY")
@@ -1265,63 +1396,22 @@ namespace WindowsFormsApplication1
             if (!UsesBprBottleneckCandidates())
                 return false;
 
-            HashSet<int> used = new HashSet<int>();
-            for (int i = 0; i < activeRequests.Count; i++)
-                used.Add(activeRequests[i].NodeId);
-
-            for (int id = 1; id < sensors.Length; id++)
-            {
-                ChargingRequest ignored;
-                if (TryCreateBprBottleneckCandidate(id, used, out ignored))
-                    return true;
-            }
-            return false;
+            int maxTask = GetMissionTaskLimit();
+            bool allowCapacityOverflow = algorithm == "NJF_BPR_ROUTE_SAFE_EXTENDED";
+            BprProactiveSelectionMode selectionMode = algorithm == "NJF_BPR"
+                ? BprProactiveSelectionMode.Deterministic
+                : BprProactiveSelectionMode.RouteInsertionCost;
+            List<ChargingRequest> cplist = BuildZhengBprCplist(
+                new List<ChargingRequest>(),
+                maxTask,
+                selectionMode,
+                allowCapacityOverflow);
+            return cplist.Count > 0;
         }
 
         private double FindNextBprBottleneckCandidateTime()
         {
-            double best = Double.PositiveInfinity;
-            for (int id = 1; id < sensors.Length; id++)
-            {
-                SensorState sensor = sensors[id];
-                if (!sensor.Alive || sensor.HasPendingRequest || sensor.ConsumeRateJPerSecond <= 0.0)
-                    continue;
-
-                double threshold = GetRequestThresholdJ(sensor);
-                double timeToRequest = Math.Max(0.0, (sensor.EnergyJ - threshold) / sensor.ConsumeRateJPerSecond);
-                double timeToDeath = Math.Max(0.0, sensor.EnergyJ / sensor.ConsumeRateJPerSecond);
-                double density = ComputeCriticalNodeDensity(id);
-
-                if (timeToRequest <= settings.TreqSeconds ||
-                    timeToDeath <= settings.TreqSeconds * 2.0 ||
-                    (density >= 0.35 && timeToRequest <= settings.TreqSeconds * 2.5))
-                    return currentTime;
-
-                best = Math.Min(best, currentTime + Math.Max(0.0, timeToRequest - settings.TreqSeconds));
-                best = Math.Min(best, currentTime + Math.Max(0.0, timeToDeath - settings.TreqSeconds * 2.0));
-                if (density >= 0.35)
-                    best = Math.Min(best, currentTime + Math.Max(0.0, timeToRequest - settings.TreqSeconds * 2.5));
-
-                double criticalDensityThreshold = threshold * 1.25;
-                if (sensor.EnergyJ > criticalDensityThreshold + Epsilon)
-                    best = Math.Min(best, currentTime + (sensor.EnergyJ - criticalDensityThreshold) / sensor.ConsumeRateJPerSecond);
-            }
-
-            return best;
-        }
-
-        private void AddBprBottleneckCandidates(List<ChargingRequest> pool, int maxTask)
-        {
-            if (pool.Count >= maxTask)
-                return;
-
-            HashSet<int> used = new HashSet<int>();
-            for (int i = 0; i < pool.Count; i++)
-                used.Add(pool[i].NodeId);
-
-            List<ChargingRequest> candidates = BuildBprBottleneckCandidates(used, maxTask - pool.Count);
-            for (int i = 0; i < candidates.Count && pool.Count < maxTask; i++)
-                pool.Add(candidates[i]);
+            return HasBprBottleneckCandidate() ? currentTime : Double.PositiveInfinity;
         }
 
         private void AddProactiveCandidates(List<ChargingRequest> pool, int maxTask)
@@ -1338,7 +1428,7 @@ namespace WindowsFormsApplication1
             for (int id = 1; id < sensors.Length; id++)
             {
                 SensorState sensor = sensors[id];
-                if (!sensor.Alive || sensor.HasPendingRequest || used.Contains(id))
+                if (!sensor.Alive || sensor.HasPendingRequest || used.Contains(id) || HasActiveRequestForNode(id))
                     continue;
 
                 double threshold = GetRequestThresholdJ(sensor);
@@ -1374,274 +1464,301 @@ namespace WindowsFormsApplication1
 
         private List<ChargingRequest> BuildRouteSafeNjfBpr(List<ChargingRequest> requiredRequests, int maxTask, bool enforceTaskLimit)
         {
-            List<ChargingRequest> selected = enforceTaskLimit
+            List<ChargingRequest> clist = enforceTaskLimit
                 ? BuildNearestRoute(requiredRequests, maxTask)
                 : new List<ChargingRequest>();
-            HashSet<int> used = new HashSet<int>();
             if (!enforceTaskLimit)
             {
                 for (int i = 0; i < requiredRequests.Count; i++)
-                    selected.Add(requiredRequests[i].Clone());
+                    clist.Add(requiredRequests[i].Clone());
             }
-            for (int i = 0; i < selected.Count; i++)
-                used.Add(selected[i].NodeId);
 
-            List<ChargingRequest> currentRoute = BuildNearestRoute(selected, selected.Count);
-            int shortlistLimit = Math.Max(GetRouteSafeProactiveLimit() * 3, GetRouteSafeProactiveLimit() + 20);
-            List<ChargingRequest> candidates = BuildBprBottleneckCandidates(used, shortlistLimit);
-            int proactiveAddLimit = enforceTaskLimit ? Math.Max(0, maxTask - selected.Count) : GetRouteSafeProactiveLimit();
-            int proactiveAdded = 0;
+            List<ChargingRequest> cplist = BuildZhengBprCplist(
+                clist,
+                maxTask,
+                BprProactiveSelectionMode.RouteInsertionCost,
+                !enforceTaskLimit);
+            return BuildNearestRoute(cplist, enforceTaskLimit ? maxTask : cplist.Count);
+        }
 
-            while (candidates.Count > 0 && proactiveAdded < proactiveAddLimit &&
-                (!enforceTaskLimit || selected.Count < maxTask))
+        private List<ChargingRequest> BuildZhengBprCplist(
+            List<ChargingRequest> clist,
+            int maxTask,
+            BprProactiveSelectionMode selectionMode,
+            bool allowCapacityOverflow)
+        {
+            maxTask = Math.Max(1, maxTask);
+            List<ChargingRequest> cplist = new List<ChargingRequest>();
+            HashSet<int> reservedNodeIds = new HashSet<int>();
+            if (clist != null)
             {
-                candidates.Sort(delegate (ChargingRequest a, ChargingRequest b)
+                for (int i = 0; i < clist.Count; i++)
                 {
-                    double da = DistanceToRouteSegments(a.NodeId, currentRoute);
-                    double db = DistanceToRouteSegments(b.NodeId, currentRoute);
+                    if (clist[i] == null)
+                        continue;
+                    ChargingRequest copy = clist[i].Clone();
+                    cplist.Add(copy);
+                    reservedNodeIds.Add(copy.NodeId);
+                }
+            }
+
+            if (!allowCapacityOverflow && cplist.Count >= maxTask)
+                return cplist;
+
+            List<BprSTableEntry> sTable = BuildBprSTable(reservedNodeIds);
+            if (sTable.Count == 0)
+                return cplist;
+
+            double tjob = EstimateBprTjobSeconds(maxTask);
+            double tdeadlineThreshold = GetBprDeadlineThresholdSeconds();
+            int scanIndex = 0;
+            int safety = 0;
+            while (scanIndex < sTable.Count && safety < sensors.Length * sensors.Length + sensors.Length)
+            {
+                safety++;
+                BprSTableEntry anchor = sTable[scanIndex];
+                double windowStart = anchor.RequestDeadlineSeconds;
+                double windowEnd = windowStart + tjob;
+                List<BprSTableEntry> bottleList = BuildBprBottleList(
+                    sTable,
+                    windowStart,
+                    windowEnd,
+                    tdeadlineThreshold);
+
+                if (bottleList.Count <= maxTask)
+                {
+                    scanIndex++;
+                    continue;
+                }
+
+                int removalCount = bottleList.Count - maxTask;
+                int capacityLeft = allowCapacityOverflow ? removalCount : Math.Max(0, maxTask - cplist.Count);
+                int addCount = Math.Min(removalCount, capacityLeft);
+                if (addCount <= 0)
+                    return cplist;
+
+                List<BprSTableEntry> addList = SelectBprProactiveEntries(
+                    bottleList,
+                    addCount,
+                    cplist,
+                    selectionMode);
+                if (addList.Count == 0)
+                {
+                    scanIndex++;
+                    continue;
+                }
+
+                for (int i = 0; i < addList.Count; i++)
+                {
+                    BprSTableEntry entry = addList[i];
+                    cplist.Add(CreateBprProactiveRequest(entry));
+                    reservedNodeIds.Add(entry.NodeId);
+                }
+
+                sTable.RemoveAll(delegate (BprSTableEntry entry)
+                {
+                    return reservedNodeIds.Contains(entry.NodeId);
+                });
+                scanIndex = 0;
+            }
+
+            return cplist;
+        }
+
+        private List<BprSTableEntry> BuildBprSTable(HashSet<int> reservedNodeIds)
+        {
+            List<BprSTableEntry> sTable = new List<BprSTableEntry>();
+            for (int id = 1; id < sensors.Length; id++)
+            {
+                if (reservedNodeIds != null && reservedNodeIds.Contains(id))
+                    continue;
+
+                SensorState sensor = sensors[id];
+                if (!sensor.Alive || sensor.HasPendingRequest || HasActiveRequestForNode(id) ||
+                    sensor.ConsumeRateJPerSecond <= 1e-12)
+                    continue;
+
+                double threshold = GetRequestThresholdJ(sensor);
+                if (sensor.EnergyJ <= threshold + Epsilon)
+                    continue;
+
+                double remainingWork = (sensor.EnergyJ - threshold) / sensor.ConsumeRateJPerSecond;
+                if (Double.IsNaN(remainingWork) || Double.IsInfinity(remainingWork) || remainingWork < 0.0)
+                    continue;
+
+                BprSTableEntry entry = new BprSTableEntry();
+                entry.NodeId = id;
+                entry.RemainingWorkSeconds = remainingWork;
+                entry.RequestDeadlineSeconds = currentTime + remainingWork;
+                entry.DepletionDeadlineSeconds = currentTime + sensor.EnergyJ / sensor.ConsumeRateJPerSecond;
+                entry.EnergyJ = sensor.EnergyJ;
+                entry.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
+                sTable.Add(entry);
+            }
+
+            sTable.Sort(CompareBprSTableByDeadline);
+            return sTable;
+        }
+
+        private static int CompareBprSTableByDeadline(BprSTableEntry a, BprSTableEntry b)
+        {
+            int compare = a.RequestDeadlineSeconds.CompareTo(b.RequestDeadlineSeconds);
+            if (compare != 0)
+                return compare;
+            return a.NodeId.CompareTo(b.NodeId);
+        }
+
+        private List<BprSTableEntry> BuildBprBottleList(
+            List<BprSTableEntry> sTable,
+            double windowStart,
+            double windowEnd,
+            double tdeadlineThreshold)
+        {
+            List<BprSTableEntry> bottleList = new List<BprSTableEntry>();
+            for (int i = 0; i < sTable.Count; i++)
+            {
+                BprSTableEntry entry = sTable[i];
+                double intervalStart = entry.RequestDeadlineSeconds - tdeadlineThreshold;
+                double intervalEnd = entry.RequestDeadlineSeconds + tdeadlineThreshold;
+                if (intervalEnd >= windowStart - Epsilon && intervalStart <= windowEnd + Epsilon)
+                    bottleList.Add(entry);
+            }
+            return bottleList;
+        }
+
+        private List<BprSTableEntry> SelectBprProactiveEntries(
+            List<BprSTableEntry> bottleList,
+            int addCount,
+            List<ChargingRequest> cplist,
+            BprProactiveSelectionMode selectionMode)
+        {
+            List<BprSTableEntry> selected = new List<BprSTableEntry>();
+            if (bottleList == null || addCount <= 0)
+                return selected;
+
+            List<BprSTableEntry> selectable = new List<BprSTableEntry>(bottleList);
+            if (selectionMode == BprProactiveSelectionMode.Deterministic)
+            {
+                selectable.Sort(CompareBprSTableByDeadline);
+                for (int i = 0; i < selectable.Count && selected.Count < addCount; i++)
+                    selected.Add(selectable[i]);
+                return selected;
+            }
+
+            List<ChargingRequest> previewCplist = new List<ChargingRequest>();
+            if (cplist != null)
+            {
+                for (int i = 0; i < cplist.Count; i++)
+                    previewCplist.Add(cplist[i].Clone());
+            }
+
+            while (selectable.Count > 0 && selected.Count < addCount)
+            {
+                List<ChargingRequest> currentRoute = BuildNearestRoute(previewCplist, previewCplist.Count);
+                selectable.Sort(delegate (BprSTableEntry a, BprSTableEntry b)
+                {
+                    double da = ComputeRouteInsertionCost(a.NodeId, currentRoute);
+                    double db = ComputeRouteInsertionCost(b.NodeId, currentRoute);
                     int compare = da.CompareTo(db);
                     if (compare != 0)
                         return compare;
-                    compare = BprRiskScore(b).CompareTo(BprRiskScore(a));
+                    compare = a.RequestDeadlineSeconds.CompareTo(b.RequestDeadlineSeconds);
                     if (compare != 0)
                         return compare;
                     return a.NodeId.CompareTo(b.NodeId);
                 });
 
-                bool accepted = false;
-                for (int i = 0; i < candidates.Count; i++)
-                {
-                    ChargingRequest candidate = candidates[i];
-                    List<ChargingRequest> trialPool = new List<ChargingRequest>(selected);
-                    trialPool.Add(candidate);
-                    List<ChargingRequest> trialRoute = BuildNearestRoute(trialPool, trialPool.Count);
-
-                    candidates.RemoveAt(i);
-                    if (!IsTrialRouteSafe(trialRoute))
-                    {
-                        i--;
-                        continue;
-                    }
-
-                    selected.Add(candidate);
-                    used.Add(candidate.NodeId);
-                    proactiveAdded++;
-                    currentRoute = BuildNearestRoute(selected, selected.Count);
-                    accepted = true;
-                    break;
-                }
-
-                if (!accepted)
-                    break;
+                BprSTableEntry picked = selectable[0];
+                selectable.RemoveAt(0);
+                selected.Add(picked);
+                previewCplist.Add(CreateBprProactiveRequest(picked));
             }
 
-            return BuildNearestRoute(selected, enforceTaskLimit ? maxTask : selected.Count);
+            return selected;
         }
 
-        private int GetRouteSafeProactiveLimit()
+        private ChargingRequest CreateBprProactiveRequest(BprSTableEntry entry)
         {
-            return Math.Max(20, Math.Min(120, Math.Max(1, sensors.Length - 1) / 10));
-        }
-
-        private List<ChargingRequest> BuildBprBottleneckCandidates(HashSet<int> used, int shortlistLimit)
-        {
-            List<ChargingRequest> candidates = new List<ChargingRequest>();
-            for (int id = 1; id < sensors.Length; id++)
-            {
-                ChargingRequest proactive;
-                if (TryCreateBprBottleneckCandidate(id, used, out proactive))
-                    candidates.Add(proactive);
-            }
-
-            candidates.Sort(delegate (ChargingRequest a, ChargingRequest b)
-            {
-                int compare = a.DeadlineSeconds.CompareTo(b.DeadlineSeconds);
-                if (compare != 0)
-                    return compare;
-                compare = BprRiskScore(b).CompareTo(BprRiskScore(a));
-                if (compare != 0)
-                    return compare;
-                return a.NodeId.CompareTo(b.NodeId);
-            });
-            if (shortlistLimit > 0 && candidates.Count > shortlistLimit)
-                candidates.RemoveRange(shortlistLimit, candidates.Count - shortlistLimit);
-            return candidates;
-        }
-
-        private bool TryCreateBprBottleneckCandidate(int id, HashSet<int> used, out ChargingRequest proactive)
-        {
-            proactive = null;
-            if (id <= 0 || id >= sensors.Length || (used != null && used.Contains(id)))
-                return false;
-
-            SensorState sensor = sensors[id];
-            if (!sensor.Alive || sensor.HasPendingRequest || sensor.ConsumeRateJPerSecond <= 0.0)
-                return false;
-
-            double threshold = GetRequestThresholdJ(sensor);
-            double timeToRequest = Math.Max(0.0, (sensor.EnergyJ - threshold) / sensor.ConsumeRateJPerSecond);
-            double timeToDeath = Math.Max(0.0, sensor.EnergyJ / sensor.ConsumeRateJPerSecond);
-            double density = ComputeCriticalNodeDensity(id);
-            bool requestSoon = timeToRequest <= settings.TreqSeconds;
-            bool deathSoon = timeToDeath <= settings.TreqSeconds * 2.0;
-            bool denseBottleneck = density >= 0.35 && timeToRequest <= settings.TreqSeconds * 2.5;
-            if (!requestSoon && !deathSoon && !denseBottleneck)
-                return false;
-
-            proactive = new ChargingRequest();
-            proactive.RequestId = -id;
-            proactive.NodeId = id;
+            ChargingRequest proactive = new ChargingRequest();
+            proactive.RequestId = -entry.NodeId;
+            proactive.NodeId = entry.NodeId;
             proactive.RequestTimeSeconds = currentTime;
-            proactive.DeadlineSeconds = currentTime + timeToDeath;
-            proactive.RequestEnergyJ = sensor.EnergyJ;
-            proactive.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
-            proactive.CriticalDensity = density;
+            proactive.DeadlineSeconds = entry.RequestDeadlineSeconds;
+            proactive.RequestEnergyJ = entry.EnergyJ;
+            proactive.ConsumeRateJPerSecond = entry.ConsumeRateJPerSecond;
+            proactive.CriticalDensity = 0.0;
             proactive.IsProactive = true;
-            proactive.ProactiveReason = "BPR_BOTTLENECK";
-            return true;
+            proactive.ProactiveReason = "ZHENG_BPR_BOTTLENECK";
+            return proactive;
         }
 
-        private bool IsTrialRouteSafe(List<ChargingRequest> route)
+        private double GetBprDeadlineThresholdSeconds()
         {
-            if (route.Count == 0)
-                return true;
+            return Math.Max(1.0, settings.TreqSeconds);
+        }
 
-            double[] energy = new double[sensors.Length];
-            for (int id = 1; id < sensors.Length; id++)
-                energy[id] = sensors[id].EnergyJ;
-
-            double trialTime = currentTime;
-            double wcvEnergy = settings.WcvCapacityJ;
-            double x = artifact.BaseX;
-            double y = artifact.BaseY;
-
-            for (int i = 0; i < route.Count; i++)
+        private double EstimateBprTjobSeconds(int maxTask)
+        {
+            maxTask = Math.Max(1, maxTask);
+            double side = Math.Max(1.0, Math.Max(settings.MapWidthMeters, settings.MapHeightMeters));
+            double pathLength;
+            if (maxTask <= 1)
             {
-                ChargingRequest request = route[i];
-                if (request.NodeId <= 0 || request.NodeId >= sensors.Length || !sensors[request.NodeId].Alive)
-                    return false;
-
-                SensorState sensor = sensors[request.NodeId];
-                double distance = ExperimentArtifact.Distance(x, y, sensor.X, sensor.Y);
-                double returnDistance = ExperimentArtifact.Distance(sensor.X, sensor.Y, artifact.BaseX, artifact.BaseY);
-                double moveEnergy = distance * settings.WcvMoveCostJPerMeter;
-                double returnEnergy = returnDistance * settings.WcvMoveCostJPerMeter;
-                if (wcvEnergy < moveEnergy + returnEnergy)
-                    return false;
-
-                wcvEnergy -= moveEnergy;
-                if (!ApplyTrialTravel(energy, distance / settings.WcvSpeedMetersPerSecond, ref trialTime))
-                    return false;
-                if (trialTime > request.DeadlineSeconds + Epsilon || energy[request.NodeId] <= Epsilon)
-                    return false;
-                if (!ApplyTrialCharge(energy, request.NodeId, ref trialTime, ref wcvEnergy))
-                    return false;
-
-                x = sensor.X;
-                y = sensor.Y;
+                pathLength = 2.0 * Math.Sqrt(2.0) * side;
+            }
+            else
+            {
+                double denominator = Math.Sqrt(maxTask) - 1.0;
+                if (denominator <= 0.0)
+                    pathLength = (maxTask + 1) * Math.Sqrt(2.0) * side;
+                else
+                    pathLength = ((maxTask - 1) * side) / denominator + 2.0 * Math.Sqrt(2.0) * side;
             }
 
-            double backDistance = ExperimentArtifact.Distance(x, y, artifact.BaseX, artifact.BaseY);
-            double backMoveEnergy = backDistance * settings.WcvMoveCostJPerMeter;
-            if (wcvEnergy < backMoveEnergy)
-                return false;
-            wcvEnergy -= backMoveEnergy;
-            return ApplyTrialTravel(energy, backDistance / settings.WcvSpeedMetersPerSecond, ref trialTime);
+            double travelSeconds = pathLength / Math.Max(1e-9, settings.WcvSpeedMetersPerSecond);
+            double fullChargeSeconds = settings.InitialEnergyJ / Math.Max(1e-9, settings.WcvChargeRateJPerSecond);
+            return Math.Max(1.0, travelSeconds + fullChargeSeconds * maxTask);
         }
 
-        private bool ApplyTrialTravel(double[] energy, double deltaSeconds, ref double trialTime)
+        private double ComputeRouteInsertionCost(int nodeId, List<ChargingRequest> route)
         {
-            if (deltaSeconds <= 0.0)
-                return true;
+            if (nodeId <= 0 || nodeId >= sensors.Length)
+                return Double.MaxValue;
 
-            trialTime += deltaSeconds;
-            for (int id = 1; id < sensors.Length; id++)
-            {
-                if (!sensors[id].Alive)
-                    continue;
-                energy[id] -= sensors[id].ConsumeRateJPerSecond * deltaSeconds;
-                if (energy[id] <= Epsilon)
-                    return false;
-            }
-            return true;
-        }
-
-        private bool ApplyTrialCharge(double[] energy, int nodeId, ref double trialTime, ref double wcvEnergy)
-        {
-            SensorState target = sensors[nodeId];
-            int safety = 0;
-            while (energy[nodeId] < target.CapacityJ - 1e-6 && wcvEnergy > 1e-9 && safety < 10000)
-            {
-                safety++;
-                double netRate = settings.WcvChargeRateJPerSecond - target.ConsumeRateJPerSecond;
-                if (netRate <= 1e-9)
-                    return false;
-
-                double timeToFull = (target.CapacityJ - energy[nodeId]) / netRate;
-                double timeToEmptyWcv = wcvEnergy / settings.WcvChargeRateJPerSecond;
-                double deltaSeconds = Math.Min(timeToFull, timeToEmptyWcv);
-                if (deltaSeconds <= 1e-9)
-                    return false;
-
-                trialTime += deltaSeconds;
-                for (int id = 1; id < sensors.Length; id++)
-                {
-                    if (!sensors[id].Alive)
-                        continue;
-                    if (id == nodeId)
-                        continue;
-                    energy[id] -= sensors[id].ConsumeRateJPerSecond * deltaSeconds;
-                    if (energy[id] <= Epsilon)
-                        return false;
-                }
-
-                energy[nodeId] += netRate * deltaSeconds;
-                wcvEnergy -= settings.WcvChargeRateJPerSecond * deltaSeconds;
-                if (energy[nodeId] <= Epsilon)
-                    return false;
-            }
-
-            return energy[nodeId] >= target.CapacityJ - 1e-5;
-        }
-
-        private double DistanceToRouteSegments(int nodeId, List<ChargingRequest> route)
-        {
-            if (route.Count == 0)
-                return DistanceFrom(artifact.BaseX, artifact.BaseY, nodeId);
-
-            SensorState target = sensors[nodeId];
-            if (route.Count == 1)
-                return DistanceFrom(sensors[route[0].NodeId].X, sensors[route[0].NodeId].Y, nodeId);
+            SensorState candidate = sensors[nodeId];
+            int routeCount = route == null ? 0 : route.Count;
+            if (routeCount == 0)
+                return 2.0 * ExperimentArtifact.Distance(artifact.BaseX, artifact.BaseY, candidate.X, candidate.Y);
 
             double best = Double.MaxValue;
-            for (int i = 1; i < route.Count; i++)
+            for (int position = 0; position <= routeCount; position++)
             {
-                SensorState a = sensors[route[i - 1].NodeId];
-                SensorState b = sensors[route[i].NodeId];
-                best = Math.Min(best, DistancePointToSegment(target.X, target.Y, a.X, a.Y, b.X, b.Y));
+                double prevX = artifact.BaseX;
+                double prevY = artifact.BaseY;
+                if (position > 0)
+                {
+                    SensorState prev = sensors[route[position - 1].NodeId];
+                    prevX = prev.X;
+                    prevY = prev.Y;
+                }
+
+                double nextX = artifact.BaseX;
+                double nextY = artifact.BaseY;
+                if (position < routeCount)
+                {
+                    SensorState next = sensors[route[position].NodeId];
+                    nextX = next.X;
+                    nextY = next.Y;
+                }
+
+                double original = ExperimentArtifact.Distance(prevX, prevY, nextX, nextY);
+                double inserted =
+                    ExperimentArtifact.Distance(prevX, prevY, candidate.X, candidate.Y) +
+                    ExperimentArtifact.Distance(candidate.X, candidate.Y, nextX, nextY);
+                best = Math.Min(best, inserted - original);
             }
+
             return best;
-        }
-
-        private static double DistancePointToSegment(double px, double py, double ax, double ay, double bx, double by)
-        {
-            double dx = bx - ax;
-            double dy = by - ay;
-            double lengthSquared = dx * dx + dy * dy;
-            if (lengthSquared <= 1e-9)
-                return ExperimentArtifact.Distance(px, py, ax, ay);
-
-            double t = ((px - ax) * dx + (py - ay) * dy) / lengthSquared;
-            t = ExperimentSettings.Clamp(t, 0.0, 1.0);
-            return ExperimentArtifact.Distance(px, py, ax + t * dx, ay + t * dy);
-        }
-
-        private double BprRiskScore(ChargingRequest request)
-        {
-            SensorState sensor = sensors[request.NodeId];
-            double energyRisk = 1.0 - (sensor.CapacityJ <= 0.0 ? 0.0 : sensor.EnergyJ / sensor.CapacityJ);
-            double deadlineRisk = 1.0 / Math.Max(1.0, request.DeadlineSeconds - currentTime);
-            return energyRisk + request.CriticalDensity + deadlineRisk * settings.TreqSeconds;
         }
 
         private static int CompareByDeadline(ChargingRequest a, ChargingRequest b)
@@ -2690,8 +2807,13 @@ namespace WindowsFormsApplication1
             for (int id = 1; id < sensors.Length; id++)
             {
                 SensorState sensor = sensors[id];
-                if (!sensor.Alive || sensor.HasPendingRequest)
+                if (!sensor.Alive || sensor.HasPendingRequest || IsNodeReservedForCurrentMission(id))
                     continue;
+                if (HasActiveRequestForNode(id))
+                {
+                    sensor.HasPendingRequest = true;
+                    continue;
+                }
 
                 double threshold = GetRequestThresholdJ(sensor);
                 if (sensor.EnergyJ <= threshold + Epsilon)
@@ -2876,8 +2998,13 @@ namespace WindowsFormsApplication1
             for (int id = 1; id < sensors.Length; id++)
             {
                 SensorState sensor = sensors[id];
-                if (!sensor.Alive || sensor.HasPendingRequest)
+                if (!sensor.Alive || sensor.HasPendingRequest || IsNodeReservedForCurrentMission(id))
                     continue;
+                if (HasActiveRequestForNode(id))
+                {
+                    sensor.HasPendingRequest = true;
+                    continue;
+                }
 
                 double threshold = GetRequestThresholdJ(sensor);
                 if (sensor.EnergyJ <= threshold + Epsilon)
@@ -2997,6 +3124,126 @@ namespace WindowsFormsApplication1
                 if (!sensors[activeRequests[i].NodeId].Alive)
                     activeRequests.RemoveAt(i);
             }
+        }
+
+        internal static void RunReservedNodeRequestSelfTest()
+        {
+            string tempDirectory = Path.Combine(Path.GetTempPath(),
+                "wsn-reserved-node-test-" + Guid.NewGuid().ToString("N"));
+            ExperimentSimulation simulation = null;
+            try
+            {
+                ExperimentSettings settings = ExperimentSettings.CreateDefault();
+                settings.BaseSeed = 777;
+                settings.RunCount = 1;
+                settings.SensorCount = 2;
+                settings.MapWidthMeters = 30.0;
+                settings.MapHeightMeters = 1.0;
+                settings.SimulationTimeSeconds = 60.0;
+                settings.InitialEnergyJ = 100.0;
+                settings.SensorBackgroundLifetimeSeconds = 100.0;
+                settings.InitialResidualJitterPercent = 0.0;
+                settings.EventRatePerSecond = 0.0;
+                settings.PacketBits = 1.0;
+                settings.RadioRangeMeters = 100.0;
+                settings.WcvSpeedMetersPerSecond = 1.0;
+                settings.WcvChargeRateJPerSecond = 10.0;
+                settings.WcvCapacityJ = 10000.0;
+                settings.WcvMoveCostJPerMeter = 0.0;
+                settings.NmaxTask = 1;
+                settings.DynamicNmaxTask = false;
+                settings.ThresholdMode = "Percent";
+                settings.RequestThresholdPercent = 50.0;
+                settings.TreqSeconds = 10.0;
+                settings.PrateChange = 0.0;
+                settings.RateChangeVariationPercent = 0.0;
+                settings.SelectedAlgorithmsCsv = "NJF_BPR_ROUTE_SAFE_LIMITED";
+                settings.OutputDirectory = tempDirectory;
+                settings.Normalize();
+
+                ExperimentArtifact artifact = new ExperimentArtifact();
+                artifact.RunIndex = 1;
+                artifact.Seed = 777;
+                artifact.ArtifactHash = "SELFTEST";
+                artifact.BaseX = 0.0;
+                artifact.BaseY = 0.0;
+
+                SensorTemplate baseStation = new SensorTemplate();
+                baseStation.Id = 0;
+                baseStation.X = 0.0;
+                baseStation.Y = 0.0;
+                baseStation.InitialEnergyJ = Double.PositiveInfinity;
+                baseStation.ParentId = -1;
+                artifact.Sensors.Add(baseStation);
+
+                SensorTemplate sensor = new SensorTemplate();
+                sensor.Id = 1;
+                sensor.X = 10.0;
+                sensor.Y = 0.0;
+                sensor.InitialEnergyJ = 55.0;
+                sensor.ParentId = 0;
+                artifact.Sensors.Add(sensor);
+
+                SensorTemplate secondSensor = new SensorTemplate();
+                secondSensor.Id = 2;
+                secondSensor.X = 20.0;
+                secondSensor.Y = 0.0;
+                secondSensor.InitialEnergyJ = 90.0;
+                secondSensor.ParentId = 0;
+                artifact.Sensors.Add(secondSensor);
+
+                simulation = new ExperimentSimulation(settings, artifact, "NJF_BPR_ROUTE_SAFE_LIMITED", tempDirectory);
+                simulation.CreateRequestsAtCurrentTime();
+                AssertSelfTest(simulation.summary.NaturalRequestCount == 0,
+                    "Self-test setup unexpectedly created a natural request before dispatch.");
+
+                simulation.ExecuteMission();
+                if (simulation.csvWriter != null)
+                    simulation.csvWriter.Dispose();
+
+                AssertSelfTest(simulation.summary.NaturalRequestCount == 0,
+                    "Reserved proactive node produced a natural request during the same mission.");
+                AssertSelfTest(simulation.summary.ProactiveTaskCount == 1,
+                    "Proactive task count should be exactly one.");
+                AssertSelfTest(simulation.summary.NaturalRequestCount + simulation.summary.ProactiveTaskCount == 1,
+                    "Natural and proactive counts are not mutually exclusive.");
+                AssertSelfTest(simulation.activeRequests.Count == 0,
+                    "Reserved proactive node left a duplicate pending natural request.");
+                AssertSelfTest(simulation.totalTaskRecordCount == 1,
+                    "Mission should contain exactly one task record for the reserved node.");
+
+                string taskPath = Path.Combine(tempDirectory,
+                    "run001-NJF_BPR_ROUTE_SAFE_LIMITED-task-records.csv");
+                AssertSelfTest(File.Exists(taskPath), "Task-record CSV was not written by the self-test.");
+                string[] taskLines = File.ReadAllLines(taskPath, Encoding.UTF8);
+                AssertSelfTest(taskLines.Length == 2,
+                    "Task-record CSV should contain one data row for the mission.");
+
+                string[] fields = taskLines[1].Split(',');
+                AssertSelfTest(fields.Length > 8 && fields[4] == "1" && fields[6] == "1",
+                    "Task-record CSV row does not describe mission 1 / sensor 1.");
+                AssertSelfTest(String.Equals(fields[7], "proactive", StringComparison.OrdinalIgnoreCase),
+                    "Reserved node should remain a proactive task, not be relabeled as natural.");
+            }
+            finally
+            {
+                if (simulation != null && simulation.csvWriter != null)
+                    simulation.csvWriter.Dispose();
+                try
+                {
+                    if (Directory.Exists(tempDirectory))
+                        Directory.Delete(tempDirectory, true);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private static void AssertSelfTest(bool condition, string message)
+        {
+            if (!condition)
+                throw new InvalidOperationException(message);
         }
 
         private static int StableStringHash(string value)
@@ -3179,6 +3426,7 @@ namespace WindowsFormsApplication1
         public int RoutingFailedPacketLost;
         public double TotalWaitSeconds;
         public double AverageWaitSeconds;
+        public int DeduplicatedTaskCount;
         public List<int> RouteNodeIds;
     }
 
@@ -3257,7 +3505,8 @@ namespace WindowsFormsApplication1
                 record.PacketLost,
                 record.RoutingFailedPacketLost,
                 record.AverageWaitSeconds,
-                RouteText(record.RouteNodeIds)));
+                RouteText(record.RouteNodeIds),
+                record.DeduplicatedTaskCount));
         }
 
         public void WriteTask(ExperimentTaskRecord record)
@@ -3310,7 +3559,7 @@ namespace WindowsFormsApplication1
             missionWriter.WriteLine(CsvRow("Run", "Seed", "Algorithm", "MissionId", "DispatchTime", "ReturnTime",
                 "節點數", "Request數", "Proactive數", "成功充電數", "失敗數", "走的距離(m)", "移動耗能(J)",
                 "充入能量(J)", "封包送出", "封包收到", "封包遺失", "RoutingFailed封包遺失", "平均等待時間",
-                "路線節點序列"));
+                "路線節點序列", "DeduplicatedTaskCount"));
         }
 
         private void WriteTaskHeader()
@@ -3444,7 +3693,7 @@ namespace WindowsFormsApplication1
             rows.Add(Row("ZHENG-inspired 耗能率倍率", RateMultiplierRangeText(s), "由耗能變動幅度決定"));
             rows.Add(Row("基地台", "(0,0) sink + 充電中心", "固定單台 WCV，每趟 mission 後回 BS"));
             rows.Add(Row("FUZZY", "Mamdani 模糊推論", "剩餘能量、距離、耗能率、臨界節點密度"));
-            rows.Add(Row("BP&R 標註", "BP&R-inspired bottleneck proactive", "依 request/death horizon 與臨界密度挑選 proactive candidate；仍不是完整 ZHENG Algorithm 3 sliding-window removal"));
+            rows.Add(Row("BP&R 標註", "ZHENG BP&R sliding-window BottleList", "使用 STable deadline、TdeadlineThreshold、Tjob(NmaxTask) sliding window、BottleList 與 cplist；RouteSafe 只改 BottleList 內選點策略"));
             rows.Add(Row("GENE/PSO/Cuckoo 標註", "full route optimization baselines", "GA、random-key PSO、Cuckoo Search 共用 route fitness"));
             rows.Add(Row("任務明細總列數", result.TotalTaskRecordCount, "逐節點 task records 已改寫入 CSV，不再輸出到 Excel"));
 
@@ -3552,9 +3801,9 @@ namespace WindowsFormsApplication1
             if (key == "NJF") return "NJF（最近工作優先）";
             if (key == "TADP_LIN") return "TADP/LIN（時間與距離優先）";
             if (key == "RCSS") return "RCSS（風險與耗能排序）";
-            if (key == "NJF_BPR") return "NJF_BPR（BP&R-inspired bottleneck proactive）";
-            if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（公平版，<=NmaxTask）";
-            if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（延伸版，可超過NmaxTask）";
+            if (key == "NJF_BPR") return "NJF_BPR（ZHENG BP&R deterministic）";
+            if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（ZHENG BP&R route-cost，<=NmaxTask）";
+            if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（ZHENG BP&R route-cost，可超過NmaxTask）";
             if (key == "FUZZY") return "FUZZY（模糊推論排程）";
             if (key == "GENE") return "GENE（GA route optimization）";
             if (key == "PSO") return "PSO（random-key PSO route optimization）";
@@ -4010,9 +4259,9 @@ namespace WindowsFormsApplication1
             if (key == "NJF") return "NJF（最近工作優先）";
             if (key == "TADP_LIN") return "TADP/LIN（時間與距離優先）";
             if (key == "RCSS") return "RCSS（風險與耗能排序）";
-            if (key == "NJF_BPR") return "NJF_BPR（BP&R-inspired bottleneck proactive）";
-            if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（公平版，<=NmaxTask）";
-            if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（延伸版，可超過NmaxTask）";
+            if (key == "NJF_BPR") return "NJF_BPR（ZHENG BP&R deterministic）";
+            if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（ZHENG BP&R route-cost，<=NmaxTask）";
+            if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（ZHENG BP&R route-cost，可超過NmaxTask）";
             if (key == "FUZZY") return "FUZZY（模糊推論排程）";
             if (key == "GENE") return "GENE（GA route optimization）";
             if (key == "PSO") return "PSO（random-key PSO route optimization）";

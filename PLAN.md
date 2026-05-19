@@ -1,7 +1,7 @@
 # WSN 實驗系統實作計畫
 
 ## Summary
-在 `C:\Users\931108boy\Desktop\WSN` 內建立實驗系統，使用提供的 MyWSN 程式作為基礎，進行參考 ZHENG single-WCV 架構的延伸實驗；目前 BP&R 部分是 BP&R-inspired bottleneck proactive，不是完整 ZHENG Algorithm 3 重現。
+在 `C:\Users\931108boy\Desktop\WSN` 內建立實驗系統，使用提供的 MyWSN 程式作為基礎，進行參考 ZHENG single-WCV 架構的延伸實驗；BP&R 系列目前使用 ZHENG Algorithm 3 風格的 STable/deadline/TdeadlineThreshold/sliding-window/BottleList/cplist 偵測流程。
 
 ## Key Decisions
 - MyWSN 原始碼已搬入 `C:\Users\931108boy\Desktop\WSN\powercontrol`；原始壓縮檔只作為匯入來源，不直接修改。

@@ -36,6 +36,12 @@ namespace WindowsFormsApplication1
                     settings = ExperimentSettings.CreateSmoke();
                     persistSettings = false;
                 }
+                else if (String.Equals(args[0], "--experiment-self-test", StringComparison.OrdinalIgnoreCase))
+                {
+                    ExperimentSimulation.RunReservedNodeRequestSelfTest();
+                    Console.WriteLine("SELF_TEST=ReservedNodeRequest PASSED");
+                    return;
+                }
                 else if (String.Equals(args[0], "--experiment", StringComparison.OrdinalIgnoreCase))
                 {
                     if (args.Length > 1 && File.Exists(args[1]))

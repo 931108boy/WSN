@@ -437,9 +437,9 @@ namespace WindowsFormsApplication1
             if (key == "NJF") return "NJF（最近工作優先）";
             if (key == "TADP_LIN") return "TADP/LIN（期限距離線性排序）";
             if (key == "RCSS") return "RCSS（風險與耗能排序）";
-            if (key == "NJF_BPR") return "NJF_BPR（BP&R-inspired bottleneck proactive）";
-            if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（公平版，<=NmaxTask）";
-            if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（延伸版，可超過NmaxTask）";
+            if (key == "NJF_BPR") return "NJF_BPR（ZHENG BP&R deterministic）";
+            if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（ZHENG BP&R route-cost，<=NmaxTask）";
+            if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（ZHENG BP&R route-cost，可超過NmaxTask）";
             if (key == "FUZZY") return "FUZZY（模糊推論排程）";
             if (key == "GENE") return "GENE（GA route optimization）";
             if (key == "PSO") return "PSO（random-key PSO route optimization）";

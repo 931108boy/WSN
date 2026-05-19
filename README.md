@@ -1,6 +1,6 @@
 # WSN / MyWSN / ZHENG-Inspired Extension Experiment System
 
-本專案是一套 Wireless Rechargeable Sensor Network（WRSN）實驗系統，建置於 `C:\Users\931108boy\Desktop\WSN`。系統以 MyWSN rechargeable 版本的 WinForms 專案為基礎，加入參考 ZHENG single-WCV 架構的動態耗能、BP&R-inspired bottleneck proactive 概念，以及 FUZZY 排程方法，用來比較多個充電排程演算法在相同實驗條件下的表現。
+本專案是一套 Wireless Rechargeable Sensor Network（WRSN）實驗系統，建置於 `C:\Users\931108boy\Desktop\WSN`。系統以 MyWSN rechargeable 版本的 WinForms 專案為基礎，加入參考 ZHENG single-WCV 架構的動態耗能、完整 BP&R sliding-window bottleneck proactive 機制，以及 FUZZY 排程方法，用來比較多個充電排程演算法在相同實驗條件下的表現。
 
 重要定位：目前參數與實作是「參考 ZHENG single-WCV 架構的延伸實驗」，不是 ZHENG 原始實驗重現；sensor 數量、sensor energy、simulation time、packet/routing 設定都可由本系統自訂。
 
@@ -124,7 +124,7 @@ C:\Users\931108boy\Desktop\WSN
    - 安全限制觸發。
 5. mission 結束後 WCV 回到 BS。
 
-例外：`NJF_BPR_ROUTE_SAFE_EXTENDED` 是保留舊 RouteSafe 行為的延伸版，可能超過 `NmaxTask`，因此不應混入公平比較；公平比較請使用 `NJF_BPR_ROUTE_SAFE_LIMITED`。
+例外：`NJF_BPR_ROUTE_SAFE_EXTENDED` 是容量放寬實驗版，會使用同一套 ZHENG BP&R BottleList 偵測，但允許 `cplist` 超過 `NmaxTask`，因此不應混入公平比較；公平比較請使用 `NJF_BPR_ROUTE_SAFE_LIMITED`。
 
 ### 能量單位
 
@@ -194,9 +194,9 @@ if random <= Prate_change:
 | NJF | Nearest Job First，依目前 WCV 位置選最近的下一個節點 |
 | TADP_LIN | 用 deadline urgency 與距離做線性綜合排序 |
 | RCSS | 加入耗能率因素，偏向高風險、高耗能節點 |
-| NJF_BPR | NJF 加上 BP&R-inspired bottleneck proactive candidate；依 request/death horizon 與臨界密度提前挑選節點，目前仍不是完整 ZHENG sliding-window bottleneck prediction/removal |
-| NJF_BPR_ROUTE_SAFE_LIMITED | 公平比較版 RouteSafe：先用 NJF 從既有 request 中選到 `NmaxTask` 上限，再從 BP&R bottleneck proactive 候選挑離目前路線最近且通過 route safety trial 的節點；每趟 mission 嚴格不超過 `NmaxTask` |
-| NJF_BPR_ROUTE_SAFE_EXTENDED | 延伸版 RouteSafe：保留原 `NJF_BPR_ROUTE_SAFE` 行為，會先納入所有既有 request，再加入安全 proactive 候選，因此 active request 已超過 `NmaxTask` 時一趟 mission 可超過上限；不建議列入公平比較 |
+| NJF_BPR | NJF 加上完整 ZHENG BP&R 偵測；使用 STable deadline、TdeadlineThreshold、Tjob(NmaxTask) sliding window、BottleList 與 cplist，BottleList 內以 deterministic deadline/node-id 選點取代原論文 random selection |
+| NJF_BPR_ROUTE_SAFE_LIMITED | 公平比較版 RouteSafe：使用完整 ZHENG BP&R 偵測 BottleList，再從 BottleList 中優先選擇加入目前路線後額外路徑成本最小的 sensor；`cplist.Count` 嚴格不超過 `NmaxTask` |
+| NJF_BPR_ROUTE_SAFE_EXTENDED | 容量放寬 RouteSafe：使用同一套完整 ZHENG BP&R 偵測與 route-cost BottleList 選點，但允許 `cplist.Count` 超過 `NmaxTask`；不建議列入公平比較 |
 | FUZZY | Mamdani fuzzy inference 排程優先度 |
 
 可選演算法：
@@ -207,7 +207,7 @@ if random <= Prate_change:
 | PSO | Random-key Particle Swarm Optimization：每個 task 對應 position/velocity，依 position 排序成 route，使用 inertia/cognitive/social 更新 |
 | Cuckoo | Cuckoo Search route optimization：nest 為任務排列，使用 swap/insertion/inversion 擾動與 abandonment probability 淘汰較差 nests |
 
-注意：`NJF_BPR` 與 RouteSafe 系列目前採用 BP&R 概念中的 request/death horizon 與 critical-density bottleneck proactive candidate，未實作 ZHENG Algorithm 3 的未來時間窗掃描、BottleList 與 sliding-window removal。GENE、PSO、Cuckoo 目前已改為正式 route optimization baseline，三者共用同一套 route fitness。
+注意：`NJF_BPR` 與 RouteSafe 系列現在共用完整 ZHENG Algorithm 3 風格的 BP&R 危險區間偵測流程；禁止以 risk-score、density 或 time-to-death heuristic 直接替代 BottleList 偵測。GENE、PSO、Cuckoo 目前已改為正式 route optimization baseline，三者共用同一套 route fitness。
 
 ---
 
