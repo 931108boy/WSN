@@ -981,8 +981,20 @@ namespace WindowsFormsApplication1
             BprSTableEntry entry = GetOrCreateBprSTableEntry(nodeId);
 
             double newDeadline = ComputeBprRequestDeadlineSeconds(sensor);
-            if (forceUpdate || ShouldRefreshBprDeadline(entry.LatestReportedDeadlineSeconds, newDeadline))
+            if (forceUpdate)
+            {
                 UpdateBprSTableEntrySnapshot(entry, sensor, newDeadline, reason);
+                return;
+            }
+
+            if (ShouldRefreshBprDeadline(entry.LatestReportedDeadlineSeconds, newDeadline))
+            {
+                UpdateBprSTableEntrySnapshot(entry, sensor, newDeadline, reason);
+                return;
+            }
+
+            string snapshotReason = String.IsNullOrEmpty(reason) ? "snapshot_only" : reason + "_snapshot_only";
+            UpdateBprSTableEntryStateFields(entry, sensor, snapshotReason);
         }
 
         private bool ShouldRefreshBprDeadline(double oldDeadline, double newDeadline)
@@ -1066,6 +1078,14 @@ namespace WindowsFormsApplication1
         {
             entry.LatestReportedDeadlineSeconds = deadline;
             entry.LastUpdateTimeSeconds = currentTime;
+            UpdateBprSTableEntryStateFields(entry, sensor, reason);
+        }
+
+        private void UpdateBprSTableEntryStateFields(
+            BprSTableEntry entry,
+            SensorState sensor,
+            string reason)
+        {
             entry.EnergyJ = sensor.EnergyJ;
             entry.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
             entry.IsPendingRequest = sensor.HasPendingRequest || HasActiveRequestForNode(sensor.Id);
@@ -3421,6 +3441,37 @@ namespace WindowsFormsApplication1
                     "BP&R deadline should update when rate-change moves deadline from finite to Infinity.");
                 AssertSelfTest(finiteToInfinitySimulation.bprSTableByNodeId[1].LastUpdateReason == "rate_change_deadline_updated",
                     "Finite-to-Infinity rate change should record the updated reason.");
+
+                ExperimentSettings packetSettings = CreateBprSelfTestSettings(tempDirectory);
+                packetSettings.BprDeadlineThresholdSeconds = 1000.0;
+                packetSettings.PacketBits = 1.0;
+                packetSettings.Normalize();
+                ExperimentSimulation packetSimulation = new ExperimentSimulation(
+                    packetSettings,
+                    CreateBprSelfTestArtifact(new double[] { 100.0 }),
+                    "NJF_BPR_ROUTE_SAFE_LIMITED",
+                    null);
+                simulations.Add(packetSimulation);
+                double packetOldDeadline = packetSimulation.bprSTableByNodeId[1].LatestReportedDeadlineSeconds;
+                double packetOldEnergy = packetSimulation.bprSTableByNodeId[1].EnergyJ;
+                PacketEventTemplate packetEvent = new PacketEventTemplate();
+                packetEvent.TimeSeconds = packetSimulation.currentTime;
+                packetEvent.SourceId = 1;
+                packetEvent.PacketBits = 1.0;
+                packetSimulation.ProcessPacketEvent(packetEvent);
+                BprSTableEntry packetEntry = packetSimulation.bprSTableByNodeId[1];
+                AssertNear(packetEntry.LatestReportedDeadlineSeconds,
+                    packetOldDeadline,
+                    1e-9,
+                    "Small packet_tx energy use should not update the reported BP&R deadline.");
+                AssertSelfTest(packetEntry.EnergyJ < packetOldEnergy,
+                    "Small packet_tx energy use should update the BP&R STable energy snapshot.");
+                AssertNear(packetEntry.EnergyJ,
+                    packetSimulation.sensors[1].EnergyJ,
+                    1e-12,
+                    "packet_tx STable energy snapshot should match the current sensor energy.");
+                AssertSelfTest(packetEntry.LastUpdateReason == "packet_tx_snapshot_only",
+                    "Small packet_tx energy use should record the packet_tx_snapshot_only reason.");
 
                 maintenanceSimulation.sensors[2].EnergyJ = 40.0;
                 maintenanceSimulation.CreateRequestsAtCurrentTime();
