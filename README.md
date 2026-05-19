@@ -207,7 +207,7 @@ if random <= Prate_change:
 | PSO | Random-key Particle Swarm Optimization：每個 task 對應 position/velocity，依 position 排序成 route，使用 inertia/cognitive/social 更新 |
 | Cuckoo | Cuckoo Search route optimization：nest 為任務排列，使用 swap/insertion/inversion 擾動與 abandonment probability 淘汰較差 nests |
 
-注意：`NJF_BPR` 與 RouteSafe 系列現在共用完整 ZHENG Algorithm 3 風格的 BP&R 危險區間偵測流程；禁止以 risk-score、density 或 time-to-death heuristic 直接替代 BottleList 偵測。GENE、PSO、Cuckoo 目前已改為正式 route optimization baseline，三者共用同一套 route fitness。
+注意：`NJF_BPR` 與 RouteSafe 系列現在共用完整 ZHENG Algorithm 3 風格的 BP&R 危險區間偵測流程；禁止以 risk-score、density 或 time-to-death heuristic 直接替代 BottleList 偵測。`ExperimentSimulation` 會維護 persistent STable，rate-change / packet energy / natural request / mission scheduled / charged / dead 狀態都會更新 STable；BP&R 不再於每次 mission 前即時計算 snapshot STable。GENE、PSO、Cuckoo 目前已改為正式 route optimization baseline，三者共用同一套 route fitness。
 
 ---
 
@@ -350,6 +350,7 @@ C:\Users\931108boy\Desktop\WSN\experiment-last-settings.xml
 | `ThresholdMode` | request threshold 模式 | Percent |
 | `RequestThresholdPercent` | 低電量 request 門檻百分比 | 10 |
 | `TreqSeconds` | Treq 模式使用的剩餘秒數 | 4620 |
+| `BprDeadlineThresholdSeconds` | BP&R persistent STable deadline maintenance threshold；rate-change 會重新計算 request-threshold deadline，只有變化達到此秒數才更新 `LatestReportedDeadlineSeconds`；其他 snapshot 欄位仍會更新 | 4620 |
 | `PrateChange` | 動態耗能變動機率 | 0.2 |
 | `RateChangeVariationPercent` | 動態耗能變動幅度百分比，倍率範圍為 `1 ± 此百分比` | 12.5 |
 | `SelectedAlgorithmsCsv` | 選擇演算法 | EDF,NJF,TADP_LIN,RCSS,NJF_BPR,NJF_BPR_ROUTE_SAFE_LIMITED,FUZZY |

@@ -40,6 +40,7 @@ namespace WindowsFormsApplication1
         public string ThresholdMode { get; set; }
         public double RequestThresholdPercent { get; set; }
         public double TreqSeconds { get; set; }
+        public double BprDeadlineThresholdSeconds { get; set; }
         public double PrateChange { get; set; }
         public double RateChangeVariationPercent { get; set; }
         public string SelectedAlgorithmsCsv { get; set; }
@@ -74,6 +75,7 @@ namespace WindowsFormsApplication1
             ThresholdMode = "Percent";
             RequestThresholdPercent = 10.0;
             TreqSeconds = 4620.0;
+            BprDeadlineThresholdSeconds = 4620.0;
             PrateChange = 0.2;
             RateChangeVariationPercent = 12.5;
             SelectedAlgorithmsCsv = DefaultAlgorithmSelectionCsv();
@@ -241,6 +243,7 @@ namespace WindowsFormsApplication1
                 ThresholdMode = "Percent";
             RequestThresholdPercent = Clamp(RequestThresholdPercent, 0.1, 99.0);
             TreqSeconds = Math.Max(1.0, TreqSeconds);
+            BprDeadlineThresholdSeconds = Math.Max(1.0, BprDeadlineThresholdSeconds);
             PrateChange = Clamp(PrateChange, 0.0, 1.0);
             RateChangeVariationPercent = Clamp(RateChangeVariationPercent, 0.0, 99.0);
             MaxParallelJobs = Math.Max(0, MaxParallelJobs);
@@ -816,6 +819,7 @@ namespace WindowsFormsApplication1
         private readonly SensorState[] sensors;
         private readonly List<ChargingRequest> activeRequests;
         private readonly List<ExperimentDeathRecord> deaths;
+        private Dictionary<int, BprSTableEntry> bprSTableByNodeId;
         private readonly ExperimentRunSummary summary;
         private readonly MissionDetailCsvWriter csvWriter;
         private int totalTaskRecordCount;
@@ -836,11 +840,14 @@ namespace WindowsFormsApplication1
         private sealed class BprSTableEntry
         {
             public int NodeId;
-            public double RemainingWorkSeconds;
-            public double RequestDeadlineSeconds;
-            public double DepletionDeadlineSeconds;
+            public double LatestReportedDeadlineSeconds;
+            public double LastUpdateTimeSeconds;
             public double EnergyJ;
             public double ConsumeRateJPerSecond;
+            public bool IsPendingRequest;
+            public bool IsScheduledInCurrentMission;
+            public bool IsAlive;
+            public string LastUpdateReason;
         }
 
         public ExperimentSimulation(ExperimentSettings experimentSettings, ExperimentArtifact sharedArtifact, string schedulerName)
@@ -870,6 +877,7 @@ namespace WindowsFormsApplication1
 
             for (int i = 0; i < artifact.Sensors.Count; i++)
                 sensors[i] = new SensorState(artifact.Sensors[i], settings);
+            InitializeBprSTable();
 
             summary = new ExperimentRunSummary();
             summary.RunIndex = artifact.RunIndex;
@@ -942,6 +950,163 @@ namespace WindowsFormsApplication1
             return result;
         }
 
+        private void InitializeBprSTable()
+        {
+            bprSTableByNodeId = new Dictionary<int, BprSTableEntry>();
+            for (int id = 1; id < sensors.Length; id++)
+                RefreshBprSTableEntry(id, "initialize", true);
+        }
+
+        private double ComputeBprRequestDeadlineSeconds(SensorState sensor)
+        {
+            if (sensor == null || !sensor.Alive)
+                return currentTime;
+
+            double threshold = GetRequestThresholdJ(sensor);
+            if (sensor.ConsumeRateJPerSecond <= 1e-12)
+                return Double.PositiveInfinity;
+            if (sensor.EnergyJ <= threshold + Epsilon)
+                return currentTime;
+            return currentTime + (sensor.EnergyJ - threshold) / sensor.ConsumeRateJPerSecond;
+        }
+
+        private void RefreshBprSTableEntry(int nodeId, string reason, bool forceUpdate)
+        {
+            if (nodeId <= 0 || nodeId >= sensors.Length)
+                return;
+            if (bprSTableByNodeId == null)
+                bprSTableByNodeId = new Dictionary<int, BprSTableEntry>();
+
+            SensorState sensor = sensors[nodeId];
+            BprSTableEntry entry = GetOrCreateBprSTableEntry(nodeId);
+
+            double newDeadline = ComputeBprRequestDeadlineSeconds(sensor);
+            if (forceUpdate || ShouldRefreshBprDeadline(entry.LatestReportedDeadlineSeconds, newDeadline))
+                UpdateBprSTableEntrySnapshot(entry, sensor, newDeadline, reason);
+        }
+
+        private bool ShouldRefreshBprDeadline(double oldDeadline, double newDeadline)
+        {
+            return ShouldUpdateBprDeadline(oldDeadline, newDeadline, GetBprDeadlineThresholdSeconds());
+        }
+
+        private bool ShouldUpdateBprDeadline(double oldDeadline, double newDeadline, double threshold)
+        {
+            if (Double.IsNaN(oldDeadline) || Double.IsNaN(newDeadline))
+                return true;
+            if (Double.IsInfinity(oldDeadline) || Double.IsInfinity(newDeadline))
+                return oldDeadline != newDeadline;
+            return Math.Abs(newDeadline - oldDeadline) >= threshold - Epsilon;
+        }
+
+        private BprSTableEntry GetOrCreateBprSTableEntry(int nodeId)
+        {
+            if (bprSTableByNodeId == null)
+                bprSTableByNodeId = new Dictionary<int, BprSTableEntry>();
+
+            BprSTableEntry entry;
+            if (!bprSTableByNodeId.TryGetValue(nodeId, out entry))
+            {
+                entry = new BprSTableEntry();
+                entry.NodeId = nodeId;
+                entry.LatestReportedDeadlineSeconds = Double.NaN;
+                bprSTableByNodeId[nodeId] = entry;
+            }
+
+            return entry;
+        }
+
+        private void RefreshBprDeadlineAfterRateChange(int nodeId)
+        {
+            if (nodeId <= 0 || nodeId >= sensors.Length)
+                return;
+
+            SensorState sensor = sensors[nodeId];
+            BprSTableEntry entry = GetOrCreateBprSTableEntry(nodeId);
+            if (sensor == null || !sensor.Alive)
+            {
+                entry.LatestReportedDeadlineSeconds = currentTime;
+                entry.LastUpdateTimeSeconds = currentTime;
+                entry.EnergyJ = sensor == null ? 0.0 : sensor.EnergyJ;
+                entry.ConsumeRateJPerSecond = sensor == null ? 0.0 : sensor.ConsumeRateJPerSecond;
+                entry.IsAlive = false;
+                entry.IsPendingRequest = false;
+                entry.IsScheduledInCurrentMission = false;
+                entry.LastUpdateReason = "rate_change_dead";
+                return;
+            }
+
+            double oldDeadline = entry.LatestReportedDeadlineSeconds;
+            double newDeadline = ComputeBprRequestDeadlineSeconds(sensor);
+            double threshold = GetBprDeadlineThresholdSeconds();
+            bool updateDeadline = ShouldUpdateBprDeadline(oldDeadline, newDeadline, threshold);
+            if (updateDeadline)
+            {
+                entry.LatestReportedDeadlineSeconds = newDeadline;
+                entry.LastUpdateTimeSeconds = currentTime;
+                entry.LastUpdateReason = "rate_change_deadline_updated";
+            }
+            else
+            {
+                entry.LastUpdateReason = "rate_change_deadline_unchanged";
+            }
+
+            entry.EnergyJ = sensor.EnergyJ;
+            entry.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
+            entry.IsAlive = sensor.Alive;
+            entry.IsPendingRequest = sensor.HasPendingRequest || HasActiveRequestForNode(nodeId);
+            entry.IsScheduledInCurrentMission = IsNodeReservedForCurrentMission(nodeId);
+        }
+
+        private void UpdateBprSTableEntrySnapshot(
+            BprSTableEntry entry,
+            SensorState sensor,
+            double deadline,
+            string reason)
+        {
+            entry.LatestReportedDeadlineSeconds = deadline;
+            entry.LastUpdateTimeSeconds = currentTime;
+            entry.EnergyJ = sensor.EnergyJ;
+            entry.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
+            entry.IsPendingRequest = sensor.HasPendingRequest || HasActiveRequestForNode(sensor.Id);
+            entry.IsScheduledInCurrentMission = IsNodeReservedForCurrentMission(sensor.Id);
+            entry.IsAlive = sensor.Alive;
+            entry.LastUpdateReason = reason ?? "";
+        }
+
+        private List<BprSTableEntry> GetEligibleBprSTableEntries(HashSet<int> reservedNodeIds)
+        {
+            List<BprSTableEntry> entries = new List<BprSTableEntry>();
+            if (bprSTableByNodeId == null)
+                return entries;
+
+            foreach (KeyValuePair<int, BprSTableEntry> pair in bprSTableByNodeId)
+            {
+                BprSTableEntry entry = pair.Value;
+                if (entry == null)
+                    continue;
+                int nodeId = entry.NodeId;
+                if (nodeId <= 0 || nodeId >= sensors.Length)
+                    continue;
+                if (reservedNodeIds != null && reservedNodeIds.Contains(nodeId))
+                    continue;
+                if (!entry.IsAlive || entry.IsPendingRequest || entry.IsScheduledInCurrentMission)
+                    continue;
+                if (!sensors[nodeId].Alive || sensors[nodeId].HasPendingRequest || HasActiveRequestForNode(nodeId))
+                    continue;
+                if (entry.ConsumeRateJPerSecond <= 1e-12)
+                    continue;
+                if (Double.IsNaN(entry.LatestReportedDeadlineSeconds) ||
+                    Double.IsInfinity(entry.LatestReportedDeadlineSeconds))
+                    continue;
+
+                entries.Add(entry);
+            }
+
+            entries.Sort(CompareBprSTableByDeadline);
+            return entries;
+        }
+
         private void ExecuteMission()
         {
             missionId++;
@@ -970,6 +1135,8 @@ namespace WindowsFormsApplication1
                     missionId, deduplicatedTaskCount));
             }
             plannedMissionNodeIds = BuildPlannedMissionNodeSet(route);
+            foreach (int nodeId in plannedMissionNodeIds)
+                RefreshBprSTableEntry(nodeId, "mission_scheduled", true);
             int startPacketSent = summary.PacketSent;
             int startPacketReceived = summary.PacketReceived;
             int startPacketLost = summary.PacketLost;
@@ -1069,6 +1236,8 @@ namespace WindowsFormsApplication1
                 }
                 if (sensor.EnergyJ >= sensor.CapacityJ - 1e-5)
                     sensor.EnergyJ = sensor.CapacityJ;
+                if (sensor.Alive)
+                    RefreshBprSTableEntry(request.NodeId, "charged", true);
 
                 ExperimentTaskRecord record = new ExperimentTaskRecord();
                 record.RunIndex = artifact.RunIndex;
@@ -1146,7 +1315,15 @@ namespace WindowsFormsApplication1
                 : 0.0;
             if (csvWriter != null)
                 csvWriter.WriteMission(mission);
+            List<int> releasedMissionNodeIds = new List<int>();
+            if (plannedMissionNodeIds != null)
+            {
+                foreach (int nodeId in plannedMissionNodeIds)
+                    releasedMissionNodeIds.Add(nodeId);
+            }
             plannedMissionNodeIds = null;
+            for (int i = 0; i < releasedMissionNodeIds.Count; i++)
+                RefreshBprSTableEntry(releasedMissionNodeIds[i], "mission_released", true);
         }
 
         private void AccumulateMissionTask(MissionRecord mission, ExperimentTaskRecord record)
@@ -1233,6 +1410,8 @@ namespace WindowsFormsApplication1
             }
 
             sensors[request.NodeId].HasPendingRequest = HasActiveRequestForNode(request.NodeId);
+            if (!request.IsProactive)
+                RefreshBprSTableEntry(request.NodeId, "request_complete", true);
         }
 
         private int FindActiveRequestIndex(int nodeId, int requestId)
@@ -1517,7 +1696,7 @@ namespace WindowsFormsApplication1
             {
                 safety++;
                 BprSTableEntry anchor = sTable[scanIndex];
-                double windowStart = anchor.RequestDeadlineSeconds;
+                double windowStart = anchor.LatestReportedDeadlineSeconds;
                 double windowEnd = windowStart + tjob;
                 List<BprSTableEntry> bottleList = BuildBprBottleList(
                     sTable,
@@ -1567,42 +1746,12 @@ namespace WindowsFormsApplication1
 
         private List<BprSTableEntry> BuildBprSTable(HashSet<int> reservedNodeIds)
         {
-            List<BprSTableEntry> sTable = new List<BprSTableEntry>();
-            for (int id = 1; id < sensors.Length; id++)
-            {
-                if (reservedNodeIds != null && reservedNodeIds.Contains(id))
-                    continue;
-
-                SensorState sensor = sensors[id];
-                if (!sensor.Alive || sensor.HasPendingRequest || HasActiveRequestForNode(id) ||
-                    sensor.ConsumeRateJPerSecond <= 1e-12)
-                    continue;
-
-                double threshold = GetRequestThresholdJ(sensor);
-                if (sensor.EnergyJ <= threshold + Epsilon)
-                    continue;
-
-                double remainingWork = (sensor.EnergyJ - threshold) / sensor.ConsumeRateJPerSecond;
-                if (Double.IsNaN(remainingWork) || Double.IsInfinity(remainingWork) || remainingWork < 0.0)
-                    continue;
-
-                BprSTableEntry entry = new BprSTableEntry();
-                entry.NodeId = id;
-                entry.RemainingWorkSeconds = remainingWork;
-                entry.RequestDeadlineSeconds = currentTime + remainingWork;
-                entry.DepletionDeadlineSeconds = currentTime + sensor.EnergyJ / sensor.ConsumeRateJPerSecond;
-                entry.EnergyJ = sensor.EnergyJ;
-                entry.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
-                sTable.Add(entry);
-            }
-
-            sTable.Sort(CompareBprSTableByDeadline);
-            return sTable;
+            return GetEligibleBprSTableEntries(reservedNodeIds);
         }
 
         private static int CompareBprSTableByDeadline(BprSTableEntry a, BprSTableEntry b)
         {
-            int compare = a.RequestDeadlineSeconds.CompareTo(b.RequestDeadlineSeconds);
+            int compare = a.LatestReportedDeadlineSeconds.CompareTo(b.LatestReportedDeadlineSeconds);
             if (compare != 0)
                 return compare;
             return a.NodeId.CompareTo(b.NodeId);
@@ -1618,8 +1767,8 @@ namespace WindowsFormsApplication1
             for (int i = 0; i < sTable.Count; i++)
             {
                 BprSTableEntry entry = sTable[i];
-                double intervalStart = entry.RequestDeadlineSeconds - tdeadlineThreshold;
-                double intervalEnd = entry.RequestDeadlineSeconds + tdeadlineThreshold;
+                double intervalStart = entry.LatestReportedDeadlineSeconds - tdeadlineThreshold;
+                double intervalEnd = entry.LatestReportedDeadlineSeconds + tdeadlineThreshold;
                 if (intervalEnd >= windowStart - Epsilon && intervalStart <= windowEnd + Epsilon)
                     bottleList.Add(entry);
             }
@@ -1662,7 +1811,7 @@ namespace WindowsFormsApplication1
                     int compare = da.CompareTo(db);
                     if (compare != 0)
                         return compare;
-                    compare = a.RequestDeadlineSeconds.CompareTo(b.RequestDeadlineSeconds);
+                    compare = a.LatestReportedDeadlineSeconds.CompareTo(b.LatestReportedDeadlineSeconds);
                     if (compare != 0)
                         return compare;
                     return a.NodeId.CompareTo(b.NodeId);
@@ -1683,7 +1832,7 @@ namespace WindowsFormsApplication1
             proactive.RequestId = -entry.NodeId;
             proactive.NodeId = entry.NodeId;
             proactive.RequestTimeSeconds = currentTime;
-            proactive.DeadlineSeconds = entry.RequestDeadlineSeconds;
+            proactive.DeadlineSeconds = entry.LatestReportedDeadlineSeconds;
             proactive.RequestEnergyJ = entry.EnergyJ;
             proactive.ConsumeRateJPerSecond = entry.ConsumeRateJPerSecond;
             proactive.CriticalDensity = 0.0;
@@ -1694,7 +1843,18 @@ namespace WindowsFormsApplication1
 
         private double GetBprDeadlineThresholdSeconds()
         {
-            return Math.Max(1.0, settings.TreqSeconds);
+            return settings.BprDeadlineThresholdSeconds;
+        }
+
+        private static string FormatBprDeadlineForLog(double deadline)
+        {
+            if (Double.IsPositiveInfinity(deadline))
+                return "Infinity";
+            if (Double.IsNegativeInfinity(deadline))
+                return "-Infinity";
+            if (Double.IsNaN(deadline))
+                return "NaN";
+            return deadline.ToString(CultureInfo.InvariantCulture);
         }
 
         private double EstimateBprTjobSeconds(int maxTask)
@@ -2888,8 +3048,25 @@ namespace WindowsFormsApplication1
                 RateChangeTemplate change = artifact.RateChanges[nextRateChangeIndex];
                 if (change.NodeId > 0 && change.NodeId < sensors.Length && sensors[change.NodeId].Alive)
                 {
-                    sensors[change.NodeId].RateScale *= change.Multiplier;
-                    sensors[change.NodeId].RefreshConsumeRate(settings);
+                    SensorState sensor = sensors[change.NodeId];
+                    double oldRate = sensor.ConsumeRateJPerSecond;
+                    BprSTableEntry entry = GetOrCreateBprSTableEntry(change.NodeId);
+                    double oldDeadline = entry.LatestReportedDeadlineSeconds;
+                    sensor.RateScale *= change.Multiplier;
+                    sensor.RefreshConsumeRate(settings);
+                    double newDeadline = ComputeBprRequestDeadlineSeconds(sensor);
+                    double threshold = GetBprDeadlineThresholdSeconds();
+                    bool updated = ShouldUpdateBprDeadline(oldDeadline, newDeadline, threshold);
+                    RefreshBprDeadlineAfterRateChange(change.NodeId);
+                    Debug.WriteLine(String.Format(CultureInfo.InvariantCulture,
+                        "[BPR_STABLE] node={0}, reason=rate_change, oldDeadline={1}, newDeadline={2}, threshold={3}, updated={4}, oldRate={5}, newRate={6}",
+                        change.NodeId,
+                        FormatBprDeadlineForLog(oldDeadline),
+                        FormatBprDeadlineForLog(newDeadline),
+                        threshold,
+                        updated ? "true" : "false",
+                        oldRate,
+                        sensor.ConsumeRateJPerSecond));
                     summary.AppliedRateChangeCount++;
                 }
                 nextRateChangeIndex++;
@@ -2936,6 +3113,7 @@ namespace WindowsFormsApplication1
 
                 double txEnergy = TxEnergyJ(sender, packetEvent.PacketBits);
                 sender.EnergyJ -= txEnergy;
+                RefreshBprSTableEntry(sender.Id, "packet_tx", false);
                 summary.PacketSent++;
                 if (sender.EnergyJ <= Epsilon)
                 {
@@ -2954,6 +3132,7 @@ namespace WindowsFormsApplication1
                     }
                     double rxEnergy = RxEnergyJ(receiver, packetEvent.PacketBits);
                     receiver.EnergyJ -= rxEnergy;
+                    RefreshBprSTableEntry(receiver.Id, "packet_rx", false);
                     if (receiver.EnergyJ <= Epsilon)
                     {
                         MarkDead(receiver.Id, currentTime, "packet_rx");
@@ -3003,6 +3182,7 @@ namespace WindowsFormsApplication1
                 if (HasActiveRequestForNode(id))
                 {
                     sensor.HasPendingRequest = true;
+                    RefreshBprSTableEntry(id, "natural_request", true);
                     continue;
                 }
 
@@ -3021,6 +3201,7 @@ namespace WindowsFormsApplication1
                     request.ProactiveReason = "";
                     sensor.HasPendingRequest = true;
                     activeRequests.Add(request);
+                    RefreshBprSTableEntry(id, "natural_request", true);
                     summary.NaturalRequestCount++;
                 }
             }
@@ -3090,6 +3271,16 @@ namespace WindowsFormsApplication1
                 summary.NetworkLifetimeSeconds = time;
                 stopForFirstDeath = true;
             }
+
+            sensor.HasPendingRequest = false;
+            for (int i = activeRequests.Count - 1; i >= 0; i--)
+            {
+                if (activeRequests[i].NodeId == nodeId)
+                    activeRequests.RemoveAt(i);
+            }
+            if (plannedMissionNodeIds != null)
+                plannedMissionNodeIds.Remove(nodeId);
+            RefreshBprSTableEntry(nodeId, "dead:" + directReason, true);
         }
 
         private double FindRequestTimeForNode(int nodeId)
@@ -3130,69 +3321,152 @@ namespace WindowsFormsApplication1
         {
             string tempDirectory = Path.Combine(Path.GetTempPath(),
                 "wsn-reserved-node-test-" + Guid.NewGuid().ToString("N"));
-            ExperimentSimulation simulation = null;
+            List<ExperimentSimulation> simulations = new List<ExperimentSimulation>();
             try
             {
-                ExperimentSettings settings = ExperimentSettings.CreateDefault();
-                settings.BaseSeed = 777;
-                settings.RunCount = 1;
-                settings.SensorCount = 2;
-                settings.MapWidthMeters = 30.0;
-                settings.MapHeightMeters = 1.0;
-                settings.SimulationTimeSeconds = 60.0;
-                settings.InitialEnergyJ = 100.0;
-                settings.SensorBackgroundLifetimeSeconds = 100.0;
-                settings.InitialResidualJitterPercent = 0.0;
-                settings.EventRatePerSecond = 0.0;
-                settings.PacketBits = 1.0;
-                settings.RadioRangeMeters = 100.0;
-                settings.WcvSpeedMetersPerSecond = 1.0;
-                settings.WcvChargeRateJPerSecond = 10.0;
-                settings.WcvCapacityJ = 10000.0;
-                settings.WcvMoveCostJPerMeter = 0.0;
-                settings.NmaxTask = 1;
-                settings.DynamicNmaxTask = false;
-                settings.ThresholdMode = "Percent";
-                settings.RequestThresholdPercent = 50.0;
-                settings.TreqSeconds = 10.0;
-                settings.PrateChange = 0.0;
-                settings.RateChangeVariationPercent = 0.0;
-                settings.SelectedAlgorithmsCsv = "NJF_BPR_ROUTE_SAFE_LIMITED";
-                settings.OutputDirectory = tempDirectory;
-                settings.Normalize();
+                ExperimentSettings maintenanceSettings = CreateBprSelfTestSettings(tempDirectory);
+                maintenanceSettings.BprDeadlineThresholdSeconds = 1000.0;
+                maintenanceSettings.Normalize();
+                ExperimentArtifact maintenanceArtifact = CreateBprSelfTestArtifact(new double[] { 100.0, 100.0, 100.0 });
+                ExperimentSimulation maintenanceSimulation = new ExperimentSimulation(
+                    maintenanceSettings,
+                    maintenanceArtifact,
+                    "NJF_BPR_ROUTE_SAFE_LIMITED",
+                    null);
+                simulations.Add(maintenanceSimulation);
 
-                ExperimentArtifact artifact = new ExperimentArtifact();
-                artifact.RunIndex = 1;
-                artifact.Seed = 777;
-                artifact.ArtifactHash = "SELFTEST";
-                artifact.BaseX = 0.0;
-                artifact.BaseY = 0.0;
+                AssertSelfTest(maintenanceSimulation.bprSTableByNodeId.Count == maintenanceSimulation.sensors.Length - 1,
+                    "Every sensor node should have a persistent BP&R STable entry after initialization.");
+                for (int nodeId = 1; nodeId < maintenanceSimulation.sensors.Length; nodeId++)
+                {
+                    AssertSelfTest(maintenanceSimulation.bprSTableByNodeId.ContainsKey(nodeId),
+                        "Persistent BP&R STable is missing a sensor entry.");
+                }
 
-                SensorTemplate baseStation = new SensorTemplate();
-                baseStation.Id = 0;
-                baseStation.X = 0.0;
-                baseStation.Y = 0.0;
-                baseStation.InitialEnergyJ = Double.PositiveInfinity;
-                baseStation.ParentId = -1;
-                artifact.Sensors.Add(baseStation);
+                BprSTableEntry node1Entry = maintenanceSimulation.bprSTableByNodeId[1];
+                double initialDeadline = node1Entry.LatestReportedDeadlineSeconds;
+                maintenanceSimulation.currentTime = 5.0;
+                maintenanceSimulation.sensors[1].EnergyJ = 99.5;
+                maintenanceSimulation.sensors[1].RateScale = 1.01;
+                maintenanceSimulation.sensors[1].RefreshConsumeRate(maintenanceSettings);
+                double smallChangeRate = maintenanceSimulation.sensors[1].ConsumeRateJPerSecond;
+                maintenanceSimulation.RefreshBprDeadlineAfterRateChange(1);
+                AssertNear(maintenanceSimulation.bprSTableByNodeId[1].LatestReportedDeadlineSeconds,
+                    initialDeadline,
+                    1e-9,
+                    "Small rate changes below BprDeadlineThresholdSeconds should not update the reported deadline.");
+                AssertNear(maintenanceSimulation.bprSTableByNodeId[1].EnergyJ,
+                    99.5,
+                    1e-9,
+                    "Small rate changes should still update the BP&R STable energy snapshot.");
+                AssertNear(maintenanceSimulation.bprSTableByNodeId[1].ConsumeRateJPerSecond,
+                    smallChangeRate,
+                    1e-9,
+                    "Small rate changes should still update the BP&R STable consume-rate snapshot.");
+                AssertSelfTest(maintenanceSimulation.bprSTableByNodeId[1].LastUpdateReason == "rate_change_deadline_unchanged",
+                    "Small rate-change STable update should record that the deadline was unchanged.");
 
-                SensorTemplate sensor = new SensorTemplate();
-                sensor.Id = 1;
-                sensor.X = 10.0;
-                sensor.Y = 0.0;
-                sensor.InitialEnergyJ = 55.0;
-                sensor.ParentId = 0;
-                artifact.Sensors.Add(sensor);
+                maintenanceSimulation.sensors[1].EnergyJ = 100.0;
+                maintenanceSimulation.sensors[1].RateScale = 0.01;
+                maintenanceSimulation.sensors[1].RefreshConsumeRate(maintenanceSettings);
+                double expectedLargeChangeDeadline = maintenanceSimulation.ComputeBprRequestDeadlineSeconds(maintenanceSimulation.sensors[1]);
+                maintenanceSimulation.RefreshBprDeadlineAfterRateChange(1);
+                AssertNear(maintenanceSimulation.bprSTableByNodeId[1].LatestReportedDeadlineSeconds,
+                    expectedLargeChangeDeadline,
+                    1e-9,
+                    "Large rate changes at or above BprDeadlineThresholdSeconds should update the reported deadline.");
+                AssertSelfTest(maintenanceSimulation.bprSTableByNodeId[1].LastUpdateReason == "rate_change_deadline_updated",
+                    "Large rate-change STable update should record the rate_change_deadline_updated reason.");
 
-                SensorTemplate secondSensor = new SensorTemplate();
-                secondSensor.Id = 2;
-                secondSensor.X = 20.0;
-                secondSensor.Y = 0.0;
-                secondSensor.InitialEnergyJ = 90.0;
-                secondSensor.ParentId = 0;
-                artifact.Sensors.Add(secondSensor);
+                ExperimentSettings infinityToFiniteSettings = CreateBprSelfTestSettings(tempDirectory);
+                infinityToFiniteSettings.BprDeadlineThresholdSeconds = 1000.0;
+                infinityToFiniteSettings.SensorBackgroundLifetimeSeconds = 1e20;
+                infinityToFiniteSettings.Normalize();
+                ExperimentSimulation infinityToFiniteSimulation = new ExperimentSimulation(
+                    infinityToFiniteSettings,
+                    CreateBprSelfTestArtifact(new double[] { 100.0 }),
+                    "NJF_BPR_ROUTE_SAFE_LIMITED",
+                    null);
+                simulations.Add(infinityToFiniteSimulation);
+                AssertSelfTest(Double.IsPositiveInfinity(infinityToFiniteSimulation.bprSTableByNodeId[1].LatestReportedDeadlineSeconds),
+                    "Near-zero consume rate should initialize the BP&R deadline as Infinity.");
+                infinityToFiniteSettings.SensorBackgroundLifetimeSeconds = 100.0;
+                infinityToFiniteSimulation.sensors[1].RateScale = 1.0;
+                infinityToFiniteSimulation.sensors[1].RefreshConsumeRate(infinityToFiniteSettings);
+                double expectedFiniteDeadline = infinityToFiniteSimulation.ComputeBprRequestDeadlineSeconds(infinityToFiniteSimulation.sensors[1]);
+                infinityToFiniteSimulation.RefreshBprDeadlineAfterRateChange(1);
+                AssertNear(infinityToFiniteSimulation.bprSTableByNodeId[1].LatestReportedDeadlineSeconds,
+                    expectedFiniteDeadline,
+                    1e-9,
+                    "BP&R deadline should update when rate-change moves deadline from Infinity to finite.");
+                AssertSelfTest(infinityToFiniteSimulation.bprSTableByNodeId[1].LastUpdateReason == "rate_change_deadline_updated",
+                    "Infinity-to-finite rate change should record the updated reason.");
 
-                simulation = new ExperimentSimulation(settings, artifact, "NJF_BPR_ROUTE_SAFE_LIMITED", tempDirectory);
+                ExperimentSettings finiteToInfinitySettings = CreateBprSelfTestSettings(tempDirectory);
+                finiteToInfinitySettings.BprDeadlineThresholdSeconds = 1000.0;
+                finiteToInfinitySettings.Normalize();
+                ExperimentSimulation finiteToInfinitySimulation = new ExperimentSimulation(
+                    finiteToInfinitySettings,
+                    CreateBprSelfTestArtifact(new double[] { 100.0 }),
+                    "NJF_BPR_ROUTE_SAFE_LIMITED",
+                    null);
+                simulations.Add(finiteToInfinitySimulation);
+                AssertSelfTest(!Double.IsInfinity(finiteToInfinitySimulation.bprSTableByNodeId[1].LatestReportedDeadlineSeconds),
+                    "Self-test finite-to-Infinity setup should begin with a finite BP&R deadline.");
+                finiteToInfinitySettings.SensorBackgroundLifetimeSeconds = 1e20;
+                finiteToInfinitySimulation.sensors[1].RateScale = 1.0;
+                finiteToInfinitySimulation.sensors[1].RefreshConsumeRate(finiteToInfinitySettings);
+                finiteToInfinitySimulation.RefreshBprDeadlineAfterRateChange(1);
+                AssertSelfTest(Double.IsPositiveInfinity(finiteToInfinitySimulation.bprSTableByNodeId[1].LatestReportedDeadlineSeconds),
+                    "BP&R deadline should update when rate-change moves deadline from finite to Infinity.");
+                AssertSelfTest(finiteToInfinitySimulation.bprSTableByNodeId[1].LastUpdateReason == "rate_change_deadline_updated",
+                    "Finite-to-Infinity rate change should record the updated reason.");
+
+                maintenanceSimulation.sensors[2].EnergyJ = 40.0;
+                maintenanceSimulation.CreateRequestsAtCurrentTime();
+                AssertSelfTest(maintenanceSimulation.bprSTableByNodeId[2].IsPendingRequest,
+                    "Natural request creation should mark the STable entry pending.");
+                AssertSelfTest(!ContainsBprEntry(maintenanceSimulation.GetEligibleBprSTableEntries(new HashSet<int>()), 2),
+                    "Natural-request nodes must not be eligible for BP&R BottleList selection.");
+
+                maintenanceSimulation.plannedMissionNodeIds = new HashSet<int>();
+                maintenanceSimulation.plannedMissionNodeIds.Add(3);
+                maintenanceSimulation.RefreshBprSTableEntry(3, "mission_scheduled", true);
+                AssertSelfTest(!ContainsBprEntry(maintenanceSimulation.GetEligibleBprSTableEntries(new HashSet<int>()), 3),
+                    "Scheduled mission nodes must not be eligible for BP&R BottleList selection in the same mission.");
+                List<ChargingRequest> scheduledTrial = maintenanceSimulation.BuildZhengBprCplist(
+                    new List<ChargingRequest>(),
+                    1,
+                    BprProactiveSelectionMode.Deterministic,
+                    false);
+                AssertSelfTest(!ContainsChargingRequest(scheduledTrial, 3),
+                    "Scheduled mission nodes must not be selected as proactive tasks in the same mission.");
+                maintenanceSimulation.plannedMissionNodeIds = null;
+                maintenanceSimulation.RefreshBprSTableEntry(3, "mission_released", true);
+
+                maintenanceSimulation.currentTime = 10.0;
+                maintenanceSimulation.sensors[3].EnergyJ = 100.0;
+                maintenanceSimulation.sensors[3].RateScale = 1.5;
+                maintenanceSimulation.sensors[3].RefreshConsumeRate(maintenanceSettings);
+                maintenanceSimulation.RefreshBprSTableEntry(3, "charged", true);
+                BprSTableEntry chargedEntry = maintenanceSimulation.bprSTableByNodeId[3];
+                AssertNear(chargedEntry.EnergyJ, 100.0, 1e-9,
+                    "Charged STable force update should refresh energy.");
+                AssertNear(chargedEntry.ConsumeRateJPerSecond, 1.5, 1e-9,
+                    "Charged STable force update should refresh consume rate.");
+                AssertNear(chargedEntry.LatestReportedDeadlineSeconds, 10.0 + 50.0 / 1.5, 1e-9,
+                    "Charged STable force update should refresh the reported deadline.");
+                AssertSelfTest(chargedEntry.LastUpdateReason == "charged",
+                    "Charged STable force update should record the charged reason.");
+
+                ExperimentSettings missionSettings = CreateBprSelfTestSettings(tempDirectory);
+                ExperimentArtifact missionArtifact = CreateBprSelfTestArtifact(new double[] { 55.0, 90.0 });
+                ExperimentSimulation simulation = new ExperimentSimulation(
+                    missionSettings,
+                    missionArtifact,
+                    "NJF_BPR_ROUTE_SAFE_LIMITED",
+                    tempDirectory);
+                simulations.Add(simulation);
                 simulation.CreateRequestsAtCurrentTime();
                 AssertSelfTest(simulation.summary.NaturalRequestCount == 0,
                     "Self-test setup unexpectedly created a natural request before dispatch.");
@@ -3227,8 +3501,11 @@ namespace WindowsFormsApplication1
             }
             finally
             {
-                if (simulation != null && simulation.csvWriter != null)
-                    simulation.csvWriter.Dispose();
+                for (int i = 0; i < simulations.Count; i++)
+                {
+                    if (simulations[i] != null && simulations[i].csvWriter != null)
+                        simulations[i].csvWriter.Dispose();
+                }
                 try
                 {
                     if (Directory.Exists(tempDirectory))
@@ -3240,10 +3517,104 @@ namespace WindowsFormsApplication1
             }
         }
 
+        private static ExperimentSettings CreateBprSelfTestSettings(string outputDirectory)
+        {
+            ExperimentSettings settings = ExperimentSettings.CreateDefault();
+            settings.BaseSeed = 777;
+            settings.RunCount = 1;
+            settings.SensorCount = 3;
+            settings.MapWidthMeters = 30.0;
+            settings.MapHeightMeters = 30.0;
+            settings.SimulationTimeSeconds = 60.0;
+            settings.InitialEnergyJ = 100.0;
+            settings.SensorBackgroundLifetimeSeconds = 100.0;
+            settings.InitialResidualJitterPercent = 0.0;
+            settings.EventRatePerSecond = 0.0;
+            settings.PacketBits = 1.0;
+            settings.RadioRangeMeters = 100.0;
+            settings.WcvSpeedMetersPerSecond = 1.0;
+            settings.WcvChargeRateJPerSecond = 10.0;
+            settings.WcvCapacityJ = 10000.0;
+            settings.WcvMoveCostJPerMeter = 0.0;
+            settings.NmaxTask = 1;
+            settings.DynamicNmaxTask = false;
+            settings.ThresholdMode = "Percent";
+            settings.RequestThresholdPercent = 50.0;
+            settings.TreqSeconds = 10.0;
+            settings.BprDeadlineThresholdSeconds = 10.0;
+            settings.PrateChange = 0.0;
+            settings.RateChangeVariationPercent = 0.0;
+            settings.SelectedAlgorithmsCsv = "NJF_BPR_ROUTE_SAFE_LIMITED";
+            settings.OutputDirectory = outputDirectory;
+            settings.Normalize();
+            return settings;
+        }
+
+        private static ExperimentArtifact CreateBprSelfTestArtifact(double[] sensorEnergies)
+        {
+            ExperimentArtifact artifact = new ExperimentArtifact();
+            artifact.RunIndex = 1;
+            artifact.Seed = 777;
+            artifact.ArtifactHash = "SELFTEST";
+            artifact.BaseX = 0.0;
+            artifact.BaseY = 0.0;
+
+            SensorTemplate baseStation = new SensorTemplate();
+            baseStation.Id = 0;
+            baseStation.X = 0.0;
+            baseStation.Y = 0.0;
+            baseStation.InitialEnergyJ = Double.PositiveInfinity;
+            baseStation.ParentId = -1;
+            artifact.Sensors.Add(baseStation);
+
+            for (int i = 0; i < sensorEnergies.Length; i++)
+            {
+                SensorTemplate sensor = new SensorTemplate();
+                sensor.Id = i + 1;
+                sensor.X = (i + 1) * 10.0;
+                sensor.Y = 0.0;
+                sensor.InitialEnergyJ = sensorEnergies[i];
+                sensor.ParentId = 0;
+                artifact.Sensors.Add(sensor);
+            }
+
+            return artifact;
+        }
+
+        private static bool ContainsBprEntry(List<BprSTableEntry> entries, int nodeId)
+        {
+            for (int i = 0; i < entries.Count; i++)
+            {
+                if (entries[i].NodeId == nodeId)
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool ContainsChargingRequest(List<ChargingRequest> requests, int nodeId)
+        {
+            for (int i = 0; i < requests.Count; i++)
+            {
+                if (requests[i].NodeId == nodeId)
+                    return true;
+            }
+            return false;
+        }
+
         private static void AssertSelfTest(bool condition, string message)
         {
             if (!condition)
                 throw new InvalidOperationException(message);
+        }
+
+        private static void AssertNear(double actual, double expected, double tolerance, string message)
+        {
+            if (Math.Abs(actual - expected) > tolerance)
+                throw new InvalidOperationException(String.Format(CultureInfo.InvariantCulture,
+                    "{0} Expected {1}, got {2}.",
+                    message,
+                    expected,
+                    actual));
         }
 
         private static int StableStringHash(string value)
@@ -3683,6 +4054,7 @@ namespace WindowsFormsApplication1
             rows.Add(Row("每趟任務上限", s.NmaxTask, s.DynamicNmaxTask ? "動態上限" : "固定上限"));
             rows.Add(Row("門檻模式", s.ThresholdMode == "TreqSeconds" ? "Treq 秒數門檻" : "百分比門檻", ""));
             rows.Add(Row("Treq 秒數", s.TreqSeconds, ""));
+            rows.Add(Row("BP&R deadline threshold(s)", s.BprDeadlineThresholdSeconds, "Persistent STable deadline maintenance threshold"));
             rows.Add(Row("剩餘能量門檻(%)", s.RequestThresholdPercent, ""));
             rows.Add(Row("Prate_change（耗能率變動機率）", s.PrateChange, "單次測試固定一個值，不跑預設列表"));
             rows.Add(Row("耗能變動幅度(%)", s.RateChangeVariationPercent, "變動時倍率範圍 = 1 ± 此百分比"));
@@ -4104,6 +4476,7 @@ namespace WindowsFormsApplication1
             AddTextBox(panel, "ThresholdMode", "門檻模式", y); y += 30;
             AddTextBox(panel, "RequestThresholdPercent", "剩餘能量門檻(%)", y); y += 30;
             AddTextBox(panel, "TreqSeconds", "Treq 秒數", y); y += 30;
+            AddTextBox(panel, "BprDeadlineThresholdSeconds", "BP&R deadline threshold(s)", y); y += 30;
             AddTextBox(panel, "PrateChange", "Prate_change", y); y += 30;
             AddTextBox(panel, "RateChangeVariationPercent", "耗能變動幅度(%)", y); y += 30;
             AddTextBox(panel, "OutputDirectory", "輸出資料夾", y); y += 35;
@@ -4193,6 +4566,7 @@ namespace WindowsFormsApplication1
             boxes["ThresholdMode"].Text = settings.ThresholdMode == "TreqSeconds" ? "Treq 秒數門檻" : "百分比門檻";
             boxes["RequestThresholdPercent"].Text = settings.RequestThresholdPercent.ToString(CultureInfo.InvariantCulture);
             boxes["TreqSeconds"].Text = settings.TreqSeconds.ToString(CultureInfo.InvariantCulture);
+            boxes["BprDeadlineThresholdSeconds"].Text = settings.BprDeadlineThresholdSeconds.ToString(CultureInfo.InvariantCulture);
             boxes["PrateChange"].Text = settings.PrateChange.ToString(CultureInfo.InvariantCulture);
             boxes["RateChangeVariationPercent"].Text = settings.RateChangeVariationPercent.ToString(CultureInfo.InvariantCulture);
             boxes["OutputDirectory"].Text = settings.OutputDirectory;
@@ -4231,6 +4605,7 @@ namespace WindowsFormsApplication1
             settings.ThresholdMode = ParseThresholdMode(boxes["ThresholdMode"].Text.Trim(), settings.ThresholdMode);
             settings.RequestThresholdPercent = ParseDouble("RequestThresholdPercent", settings.RequestThresholdPercent);
             settings.TreqSeconds = ParseDouble("TreqSeconds", settings.TreqSeconds);
+            settings.BprDeadlineThresholdSeconds = ParseDouble("BprDeadlineThresholdSeconds", settings.BprDeadlineThresholdSeconds);
             settings.PrateChange = ParseDouble("PrateChange", settings.PrateChange);
             settings.RateChangeVariationPercent = ParseDouble("RateChangeVariationPercent", settings.RateChangeVariationPercent);
             settings.OutputDirectory = boxes["OutputDirectory"].Text.Trim();
