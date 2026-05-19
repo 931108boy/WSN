@@ -41,6 +41,10 @@ namespace WindowsFormsApplication1
         public double RequestThresholdPercent { get; set; }
         public double TreqSeconds { get; set; }
         public double BprDeadlineThresholdSeconds { get; set; }
+        public bool AllowStandaloneProactiveDispatch { get; set; }
+        public double ProactivePredictionHorizonSeconds { get; set; }
+        public double ProactiveCandidateMaxEnergyRatio { get; set; }
+        public double ProactiveCooldownSeconds { get; set; }
         public double YuDangerWindowSeconds { get; set; }
         public int YuDangerThresholdK { get; set; }
         public double YuIntervalUncertaintySeconds { get; set; }
@@ -79,6 +83,10 @@ namespace WindowsFormsApplication1
             RequestThresholdPercent = 10.0;
             TreqSeconds = 4620.0;
             BprDeadlineThresholdSeconds = 4620.0;
+            AllowStandaloneProactiveDispatch = false;
+            ProactivePredictionHorizonSeconds = 0.0;
+            ProactiveCandidateMaxEnergyRatio = 0.95;
+            ProactiveCooldownSeconds = 0.0;
             YuDangerWindowSeconds = 0.0;
             YuDangerThresholdK = 0;
             YuIntervalUncertaintySeconds = 0.0;
@@ -98,6 +106,7 @@ namespace WindowsFormsApplication1
                 "TADP_LIN",
                 "RCSS",
                 "NJF_ZHENG_BPR",
+                "NJF_YU_BPR",
                 "NJF_ROUTE_ZHENG_BPR_LIMITED",
                 "NJF_ROUTE_ZHENG_BPR_EXTENDED",
                 "NJF_ROUTE_YU_BPR_LIMITED",
@@ -111,7 +120,7 @@ namespace WindowsFormsApplication1
 
         public static string DefaultAlgorithmSelectionCsv()
         {
-            return "EDF,NJF,TADP_LIN,RCSS,NJF_ZHENG_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_YU_BPR_LIMITED,FUZZY";
+            return "EDF,NJF,TADP_LIN,RCSS,NJF_ZHENG_BPR,NJF_YU_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_YU_BPR_LIMITED,FUZZY";
         }
 
         public static string CanonicalAlgorithmKey(string algorithm)
@@ -258,6 +267,9 @@ namespace WindowsFormsApplication1
             RequestThresholdPercent = Clamp(RequestThresholdPercent, 0.1, 99.0);
             TreqSeconds = Math.Max(1.0, TreqSeconds);
             BprDeadlineThresholdSeconds = Math.Max(1.0, BprDeadlineThresholdSeconds);
+            ProactivePredictionHorizonSeconds = Math.Max(0.0, ProactivePredictionHorizonSeconds);
+            ProactiveCandidateMaxEnergyRatio = Clamp(ProactiveCandidateMaxEnergyRatio, 0.1, 1.0);
+            ProactiveCooldownSeconds = Math.Max(0.0, ProactiveCooldownSeconds);
             YuDangerWindowSeconds = Math.Max(0.0, YuDangerWindowSeconds);
             YuDangerThresholdK = Math.Max(0, YuDangerThresholdK);
             YuIntervalUncertaintySeconds = Math.Max(0.0, YuIntervalUncertaintySeconds);
@@ -839,7 +851,11 @@ namespace WindowsFormsApplication1
         private Dictionary<int, BprSTableEntry> bprSTableByNodeId;
         private readonly ExperimentRunSummary summary;
         private readonly MissionDetailCsvWriter csvWriter;
+        private readonly HashSet<int> servedNodeIds;
         private int totalTaskRecordCount;
+        private double totalDeliveredEnergyForTasks;
+        private double totalDeliveredEnergyForProactiveTasks;
+        private int proactiveTaskRecordCount;
         private int nextEventIndex;
         private int nextRateChangeIndex;
         private int nextRequestId;
@@ -849,6 +865,12 @@ namespace WindowsFormsApplication1
         private HashSet<int> plannedMissionNodeIds;
 
         private enum BprProactiveSelectionMode
+        {
+            Deterministic,
+            RouteInsertionCost
+        }
+
+        private enum YuProactiveSelectionMode
         {
             Deterministic,
             RouteInsertionCost
@@ -865,6 +887,8 @@ namespace WindowsFormsApplication1
             public bool IsScheduledInCurrentMission;
             public bool IsAlive;
             public string LastUpdateReason;
+            public double LastChargedTimeSeconds;
+            public double LastProactiveSelectedTimeSeconds;
         }
 
         private sealed class YuRequestInterval
@@ -895,6 +919,7 @@ namespace WindowsFormsApplication1
             sensors = new SensorState[artifact.Sensors.Count];
             activeRequests = new List<ChargingRequest>();
             deaths = new List<ExperimentDeathRecord>();
+            servedNodeIds = new HashSet<int>();
             csvWriter = String.IsNullOrWhiteSpace(taskDetailsDirectory)
                 ? null
                 : new MissionDetailCsvWriter(taskDetailsDirectory, artifact.RunIndex, algorithm);
@@ -905,6 +930,9 @@ namespace WindowsFormsApplication1
             currentTime = 0.0;
             stopForFirstDeath = false;
             totalTaskRecordCount = 0;
+            totalDeliveredEnergyForTasks = 0.0;
+            totalDeliveredEnergyForProactiveTasks = 0.0;
+            proactiveTaskRecordCount = 0;
 
             for (int i = 0; i < artifact.Sensors.Count; i++)
                 sensors[i] = new SensorState(artifact.Sensors[i], settings);
@@ -943,14 +971,16 @@ namespace WindowsFormsApplication1
                     continue;
                 }
 
-                if (UsesBprBottleneckCandidates() && HasBprBottleneckCandidate())
+                if (settings.AllowStandaloneProactiveDispatch &&
+                    UsesBprBottleneckCandidates() &&
+                    HasBprBottleneckCandidate())
                 {
                     ExecuteMission();
                     continue;
                 }
 
                 double nextTime = FindNextInterestingTime(settings.SimulationTimeSeconds, null);
-                if (UsesBprBottleneckCandidates())
+                if (settings.AllowStandaloneProactiveDispatch && UsesBprBottleneckCandidates())
                 {
                     double bprTime = FindNextBprBottleneckCandidateTime();
                     if (bprTime >= currentTime - Epsilon)
@@ -970,6 +1000,13 @@ namespace WindowsFormsApplication1
                 Math.Max(summary.DeliveredEnergyJ + summary.MoveEnergyJ, 1e-9);
             summary.AverageWaitSeconds = summary.SuccessfulCharges > 0
                 ? summary.TotalWaitSeconds / summary.SuccessfulCharges
+                : 0.0;
+            summary.UniqueServedNodeCount = servedNodeIds.Count;
+            summary.AverageDeliveredEnergyPerTask = totalTaskRecordCount > 0
+                ? totalDeliveredEnergyForTasks / totalTaskRecordCount
+                : 0.0;
+            summary.AverageDeliveredEnergyPerProactiveTask = proactiveTaskRecordCount > 0
+                ? totalDeliveredEnergyForProactiveTasks / proactiveTaskRecordCount
                 : 0.0;
 
             ExperimentRunResult result = new ExperimentRunResult();
@@ -1053,6 +1090,8 @@ namespace WindowsFormsApplication1
                 entry = new BprSTableEntry();
                 entry.NodeId = nodeId;
                 entry.LatestReportedDeadlineSeconds = Double.NaN;
+                entry.LastChargedTimeSeconds = Double.NegativeInfinity;
+                entry.LastProactiveSelectedTimeSeconds = Double.NegativeInfinity;
                 bprSTableByNodeId[nodeId] = entry;
             }
 
@@ -1147,6 +1186,13 @@ namespace WindowsFormsApplication1
                     continue;
                 if (entry.ConsumeRateJPerSecond <= 1e-12)
                     continue;
+                if (sensors[nodeId].EnergyJ >= sensors[nodeId].CapacityJ * settings.ProactiveCandidateMaxEnergyRatio - Epsilon)
+                    continue;
+                double cooldownSeconds = ResolveProactiveCooldownSeconds();
+                if (currentTime - entry.LastChargedTimeSeconds < cooldownSeconds - Epsilon)
+                    continue;
+                if (currentTime - entry.LastProactiveSelectedTimeSeconds < cooldownSeconds - Epsilon)
+                    continue;
                 if (Double.IsNaN(entry.LatestReportedDeadlineSeconds) ||
                     Double.IsInfinity(entry.LatestReportedDeadlineSeconds))
                     continue;
@@ -1188,6 +1234,7 @@ namespace WindowsFormsApplication1
             plannedMissionNodeIds = BuildPlannedMissionNodeSet(route);
             foreach (int nodeId in plannedMissionNodeIds)
                 RefreshBprSTableEntry(nodeId, "mission_scheduled", true);
+            MarkProactiveNodesSelected(route);
             int startPacketSent = summary.PacketSent;
             int startPacketReceived = summary.PacketReceived;
             int startPacketLost = summary.PacketLost;
@@ -1287,8 +1334,19 @@ namespace WindowsFormsApplication1
                 }
                 if (sensor.EnergyJ >= sensor.CapacityJ - 1e-5)
                     sensor.EnergyJ = sensor.CapacityJ;
+                if (sensor.Alive &&
+                    sensor.EnergyJ < sensor.CapacityJ - 1e-5 &&
+                    currentTime >= settings.SimulationTimeSeconds - Epsilon)
+                {
+                    success = false;
+                    failReason = "模擬結束前未充飽";
+                }
                 if (sensor.Alive)
+                {
                     RefreshBprSTableEntry(request.NodeId, "charged", true);
+                    BprSTableEntry chargedEntry = GetOrCreateBprSTableEntry(request.NodeId);
+                    chargedEntry.LastChargedTimeSeconds = currentTime;
+                }
 
                 ExperimentTaskRecord record = new ExperimentTaskRecord();
                 record.RunIndex = artifact.RunIndex;
@@ -1316,7 +1374,7 @@ namespace WindowsFormsApplication1
                 record.InternalRateNjPerTick = sensor.ConsumeRateJPerSecond * 1000000000.0 * 0.01;
                 record.DeliveredEnergyJ = context.DeliveredEnergyJ;
                 record.DistanceFromPreviousMeters = distance;
-                record.Success = success && sensor.Alive;
+                record.Success = success && sensor.Alive && String.IsNullOrWhiteSpace(failReason);
                 record.FailureReason = record.Success ? "" : failReason;
                 record.WcvEnergyAfterJ = wcvEnergy;
                 AddTaskRecord(record);
@@ -1442,8 +1500,38 @@ namespace WindowsFormsApplication1
         private void AddTaskRecord(ExperimentTaskRecord record)
         {
             totalTaskRecordCount++;
+            AccumulateRunTaskStats(record);
             if (csvWriter != null)
                 csvWriter.WriteTask(record);
+        }
+
+        private void AccumulateRunTaskStats(ExperimentTaskRecord record)
+        {
+            if (record == null)
+                return;
+
+            totalDeliveredEnergyForTasks += record.DeliveredEnergyJ;
+            if (record.IsProactive)
+            {
+                proactiveTaskRecordCount++;
+                totalDeliveredEnergyForProactiveTasks += record.DeliveredEnergyJ;
+                if (record.NodeId > 0 && record.NodeId < sensors.Length)
+                {
+                    double capacity = sensors[record.NodeId].CapacityJ;
+                    if (record.EnergyBeforeJ >= capacity * 0.95 - Epsilon)
+                        summary.ProactiveNearFullCount++;
+                    if (record.DeliveredEnergyJ >= capacity * 0.05 - Epsilon)
+                        summary.MeaningfulProactiveCount++;
+                }
+            }
+
+            if (record.Success)
+            {
+                if (servedNodeIds.Contains(record.NodeId))
+                    summary.RepeatChargeCount++;
+                else
+                    servedNodeIds.Add(record.NodeId);
+            }
         }
 
         private void CompleteRequestForTask(ChargingRequest request)
@@ -1495,6 +1583,21 @@ namespace WindowsFormsApplication1
                     planned.Add(route[i].NodeId);
             }
             return planned;
+        }
+
+        private void MarkProactiveNodesSelected(List<ChargingRequest> route)
+        {
+            if (route == null)
+                return;
+
+            for (int i = 0; i < route.Count; i++)
+            {
+                ChargingRequest request = route[i];
+                if (request == null || !request.IsProactive)
+                    continue;
+                BprSTableEntry entry = GetOrCreateBprSTableEntry(request.NodeId);
+                entry.LastProactiveSelectedTimeSeconds = currentTime;
+            }
         }
 
         private bool IsNodeReservedForCurrentMission(int nodeId)
@@ -1581,6 +1684,15 @@ namespace WindowsFormsApplication1
                     false);
                 return BuildNearestRoute(cplist, maxTask);
             }
+            if (algorithm == "NJF_YU_BPR")
+            {
+                List<ChargingRequest> cplist = BuildYuBprCplist(
+                    pool,
+                    maxTask,
+                    false,
+                    YuProactiveSelectionMode.Deterministic);
+                return BuildNearestRoute(cplist, maxTask);
+            }
 
             if (algorithm == "FUZZY")
                 AddProactiveCandidates(pool, maxTask);
@@ -1621,6 +1733,7 @@ namespace WindowsFormsApplication1
         private bool UsesBprBottleneckCandidates()
         {
             return algorithm == "NJF_ZHENG_BPR" ||
+                algorithm == "NJF_YU_BPR" ||
                 algorithm == "NJF_ROUTE_ZHENG_BPR_LIMITED" ||
                 algorithm == "NJF_ROUTE_ZHENG_BPR_EXTENDED" ||
                 algorithm == "NJF_ROUTE_YU_BPR_LIMITED" ||
@@ -1634,12 +1747,19 @@ namespace WindowsFormsApplication1
 
             int maxTask = GetMissionTaskLimit();
             List<ChargingRequest> cplist;
-            if (algorithm == "NJF_ROUTE_YU_BPR_LIMITED" || algorithm == "NJF_ROUTE_YU_BPR_EXTENDED")
+            if (algorithm == "NJF_YU_BPR" ||
+                algorithm == "NJF_ROUTE_YU_BPR_LIMITED" ||
+                algorithm == "NJF_ROUTE_YU_BPR_EXTENDED")
             {
+                bool allowCapacityOverflow = algorithm == "NJF_ROUTE_YU_BPR_EXTENDED";
+                YuProactiveSelectionMode selectionMode = algorithm == "NJF_YU_BPR"
+                    ? YuProactiveSelectionMode.Deterministic
+                    : YuProactiveSelectionMode.RouteInsertionCost;
                 cplist = BuildYuBprCplist(
                     new List<ChargingRequest>(),
                     maxTask,
-                    algorithm == "NJF_ROUTE_YU_BPR_EXTENDED");
+                    allowCapacityOverflow,
+                    selectionMode);
             }
             else
             {
@@ -1742,7 +1862,8 @@ namespace WindowsFormsApplication1
             List<ChargingRequest> cplist = BuildYuBprCplist(
                 clist,
                 maxTask,
-                !enforceTaskLimit);
+                !enforceTaskLimit,
+                YuProactiveSelectionMode.RouteInsertionCost);
             return BuildNearestRoute(cplist, enforceTaskLimit ? maxTask : cplist.Count);
         }
 
@@ -1783,6 +1904,8 @@ namespace WindowsFormsApplication1
                 safety++;
                 BprSTableEntry anchor = sTable[scanIndex];
                 double windowStart = anchor.LatestReportedDeadlineSeconds;
+                if (windowStart > currentTime + ResolveProactivePredictionHorizonSeconds(maxTask) + Epsilon)
+                    break;
                 double windowEnd = windowStart + tjob;
                 List<BprSTableEntry> bottleList = BuildBprBottleList(
                     sTable,
@@ -1833,7 +1956,8 @@ namespace WindowsFormsApplication1
         private List<ChargingRequest> BuildYuBprCplist(
             List<ChargingRequest> clist,
             int maxTask,
-            bool allowCapacityOverflow)
+            bool allowCapacityOverflow,
+            YuProactiveSelectionMode selectionMode)
         {
             maxTask = Math.Max(1, maxTask);
             List<ChargingRequest> cplist = new List<ChargingRequest>();
@@ -1868,6 +1992,8 @@ namespace WindowsFormsApplication1
                 safety++;
                 YuRequestInterval anchor = intervals[scanIndex];
                 double windowStart = anchor.IntervalStartSeconds;
+                if (windowStart > currentTime + ResolveProactivePredictionHorizonSeconds(maxTask) + Epsilon)
+                    break;
                 double windowEnd = windowStart + windowSize;
                 List<YuRequestInterval> overlap = BuildYuDangerOverlap(intervals, windowStart, windowEnd);
 
@@ -1883,7 +2009,7 @@ namespace WindowsFormsApplication1
                 if (addCount <= 0)
                     return cplist;
 
-                List<YuRequestInterval> addList = SelectYuProactiveIntervals(overlap, addCount, cplist);
+                List<YuRequestInterval> addList = SelectYuProactiveIntervals(overlap, addCount, cplist, selectionMode);
                 if (addList.Count == 0)
                 {
                     scanIndex++;
@@ -1964,13 +2090,22 @@ namespace WindowsFormsApplication1
         private List<YuRequestInterval> SelectYuProactiveIntervals(
             List<YuRequestInterval> candidates,
             int addCount,
-            List<ChargingRequest> cplist)
+            List<ChargingRequest> cplist,
+            YuProactiveSelectionMode selectionMode)
         {
             List<YuRequestInterval> selected = new List<YuRequestInterval>();
             if (candidates == null || addCount <= 0)
                 return selected;
 
             List<YuRequestInterval> selectable = new List<YuRequestInterval>(candidates);
+            if (selectionMode == YuProactiveSelectionMode.Deterministic)
+            {
+                selectable.Sort(CompareYuIntervalDeterministic);
+                for (int i = 0; i < selectable.Count && selected.Count < addCount; i++)
+                    selected.Add(selectable[i]);
+                return selected;
+            }
+
             List<ChargingRequest> previewCplist = new List<ChargingRequest>();
             if (cplist != null)
             {
@@ -2004,6 +2139,20 @@ namespace WindowsFormsApplication1
             }
 
             return selected;
+        }
+
+        private static int CompareYuIntervalDeterministic(YuRequestInterval a, YuRequestInterval b)
+        {
+            int compare = a.CenterRequestTimeSeconds.CompareTo(b.CenterRequestTimeSeconds);
+            if (compare != 0)
+                return compare;
+            compare = b.UncertaintySeconds.CompareTo(a.UncertaintySeconds);
+            if (compare != 0)
+                return compare;
+            compare = b.ConsumeRateJPerSecond.CompareTo(a.ConsumeRateJPerSecond);
+            if (compare != 0)
+                return compare;
+            return a.NodeId.CompareTo(b.NodeId);
         }
 
         private ChargingRequest CreateYuProactiveRequest(YuRequestInterval interval)
@@ -2040,6 +2189,20 @@ namespace WindowsFormsApplication1
             if (settings.YuIntervalUncertaintySeconds > 0.0)
                 return settings.YuIntervalUncertaintySeconds;
             return GetBprDeadlineThresholdSeconds();
+        }
+
+        private double ResolveProactivePredictionHorizonSeconds(int maxTask)
+        {
+            if (settings.ProactivePredictionHorizonSeconds > 0.0)
+                return settings.ProactivePredictionHorizonSeconds;
+            return settings.TreqSeconds + EstimateBprTjobSeconds(maxTask);
+        }
+
+        private double ResolveProactiveCooldownSeconds()
+        {
+            if (settings.ProactiveCooldownSeconds > 0.0)
+                return settings.ProactiveCooldownSeconds;
+            return settings.TreqSeconds;
         }
 
         private static int CompareYuIntervalByStart(YuRequestInterval a, YuRequestInterval b)
@@ -3642,6 +3805,13 @@ namespace WindowsFormsApplication1
                     "Legacy limited route-safe key should map to NJF_ROUTE_ZHENG_BPR_LIMITED.");
                 AssertSelfTest(ExperimentSettings.CanonicalAlgorithmKey("NJF_BPR_ROUTE_SAFE_EXTENDED") == "NJF_ROUTE_ZHENG_BPR_EXTENDED",
                     "Legacy extended route-safe key should map to NJF_ROUTE_ZHENG_BPR_EXTENDED.");
+                AssertSelfTest(Array.IndexOf(ExperimentSettings.AllAlgorithms(), "NJF_YU_BPR") >= 0,
+                    "AllAlgorithms should include NJF_YU_BPR.");
+
+                RunStandaloneDispatchSelfTest(tempDirectory, simulations);
+                RunActiveRequestProactiveSelfTest(tempDirectory, simulations);
+                RunProactiveCandidateFilterSelfTest(tempDirectory, simulations);
+                RunSimulationEndBeforeFullSelfTest(tempDirectory, simulations);
 
                 ExperimentArtifact maintenanceArtifact = CreateBprSelfTestArtifact(new double[] { 100.0, 100.0, 100.0 });
                 ExperimentSimulation maintenanceSimulation = new ExperimentSimulation(
@@ -3786,7 +3956,7 @@ namespace WindowsFormsApplication1
                 yuSettings.YuDangerThresholdK = 2;
                 yuSettings.YuIntervalUncertaintySeconds = 10.0;
                 yuSettings.Normalize();
-                ExperimentArtifact yuArtifact = CreateBprSelfTestArtifact(new double[] { 100.0, 100.0, 100.0, 100.0 });
+                ExperimentArtifact yuArtifact = CreateBprSelfTestArtifact(new double[] { 80.0, 80.0, 80.0, 80.0 });
                 ExperimentSimulation yuLimitedSimulation = new ExperimentSimulation(
                     yuSettings,
                     yuArtifact,
@@ -3796,7 +3966,8 @@ namespace WindowsFormsApplication1
                 List<ChargingRequest> yuLimited = yuLimitedSimulation.BuildYuBprCplist(
                     new List<ChargingRequest>(),
                     1,
-                    false);
+                    false,
+                    YuProactiveSelectionMode.RouteInsertionCost);
                 AssertSelfTest(yuLimited.Count == 1,
                     "YU limited cplist must not exceed NmaxTask.");
                 AssertSelfTest(yuLimited[0].ProactiveReason == "YU_DANGEROUS_INTERVAL",
@@ -3811,7 +3982,8 @@ namespace WindowsFormsApplication1
                 List<ChargingRequest> yuExtended = yuExtendedSimulation.BuildYuBprCplist(
                     new List<ChargingRequest>(),
                     1,
-                    true);
+                    true,
+                    YuProactiveSelectionMode.RouteInsertionCost);
                 AssertSelfTest(yuExtended.Count > 1,
                     "YU extended cplist should allow capacity overflow beyond NmaxTask.");
                 AssertSelfTest(yuExtended[0].ProactiveReason == "YU_DANGEROUS_INTERVAL",
@@ -3978,6 +4150,192 @@ namespace WindowsFormsApplication1
             return artifact;
         }
 
+        private static void RunStandaloneDispatchSelfTest(string tempDirectory, List<ExperimentSimulation> simulations)
+        {
+            string[] proactiveAlgorithms = new string[]
+            {
+                "NJF_ZHENG_BPR",
+                "NJF_YU_BPR",
+                "NJF_ROUTE_ZHENG_BPR_LIMITED",
+                "NJF_ROUTE_YU_BPR_LIMITED"
+            };
+
+            for (int i = 0; i < proactiveAlgorithms.Length; i++)
+            {
+                ExperimentSettings settings = CreateBprSelfTestSettings(tempDirectory);
+                settings.SimulationTimeSeconds = 20.0;
+                settings.NmaxTask = 1;
+                settings.YuDangerWindowSeconds = 10.0;
+                settings.YuDangerThresholdK = 2;
+                settings.YuIntervalUncertaintySeconds = 10.0;
+                settings.AllowStandaloneProactiveDispatch = false;
+                settings.Normalize();
+                ExperimentSimulation simulation = new ExperimentSimulation(
+                    settings,
+                    CreateBprSelfTestArtifact(new double[] { 80.0, 80.0, 80.0 }),
+                    proactiveAlgorithms[i],
+                    null);
+                simulations.Add(simulation);
+                simulation.Run();
+                AssertSelfTest(simulation.summary.MissionCount == 0,
+                    proactiveAlgorithms[i] + " must not dispatch a standalone proactive mission when no natural request exists.");
+                AssertSelfTest(simulation.summary.ProactiveTaskCount == 0,
+                    proactiveAlgorithms[i] + " must not create proactive tasks without a natural-request mission when standalone dispatch is disabled.");
+                AssertSelfTest(simulation.summary.NaturalRequestCount == 0,
+                    proactiveAlgorithms[i] + " self-test should not create natural requests before the short simulation horizon.");
+            }
+        }
+
+        private static void RunActiveRequestProactiveSelfTest(string tempDirectory, List<ExperimentSimulation> simulations)
+        {
+            AssertActiveRequestProactiveRoute(tempDirectory, simulations, "NJF_ZHENG_BPR", "ZHENG_BPR_BOTTLENECK", 2);
+            AssertActiveRequestProactiveRoute(tempDirectory, simulations, "NJF_YU_BPR", "YU_DANGEROUS_INTERVAL", 2);
+            AssertActiveRequestProactiveRoute(tempDirectory, simulations, "NJF_ROUTE_ZHENG_BPR_LIMITED", "ZHENG_BPR_BOTTLENECK", 2);
+            AssertActiveRequestProactiveRoute(tempDirectory, simulations, "NJF_ROUTE_YU_BPR_LIMITED", "YU_DANGEROUS_INTERVAL", 2);
+
+            ExperimentSettings extendedSettings = CreateBprSelfTestSettings(tempDirectory);
+            extendedSettings.NmaxTask = 1;
+            extendedSettings.YuDangerWindowSeconds = 10.0;
+            extendedSettings.YuDangerThresholdK = 2;
+            extendedSettings.YuIntervalUncertaintySeconds = 10.0;
+            extendedSettings.Normalize();
+            ExperimentArtifact artifact = CreateBprSelfTestArtifact(new double[] { 80.0, 80.0, 80.0, 80.0 });
+
+            ExperimentSimulation zhengExtended = new ExperimentSimulation(extendedSettings, artifact, "NJF_ROUTE_ZHENG_BPR_EXTENDED", null);
+            simulations.Add(zhengExtended);
+            List<ChargingRequest> zhengCplist = zhengExtended.BuildZhengBprCplist(
+                new List<ChargingRequest>(),
+                1,
+                BprProactiveSelectionMode.RouteInsertionCost,
+                true);
+            AssertSelfTest(zhengCplist.Count > 1,
+                "NJF_ROUTE_ZHENG_BPR_EXTENDED should allow cplist.Count beyond NmaxTask.");
+
+            ExperimentSimulation yuExtended = new ExperimentSimulation(extendedSettings, artifact, "NJF_ROUTE_YU_BPR_EXTENDED", null);
+            simulations.Add(yuExtended);
+            List<ChargingRequest> yuCplist = yuExtended.BuildYuBprCplist(
+                new List<ChargingRequest>(),
+                1,
+                true,
+                YuProactiveSelectionMode.RouteInsertionCost);
+            AssertSelfTest(yuCplist.Count > 1,
+                "NJF_ROUTE_YU_BPR_EXTENDED should allow cplist.Count beyond NmaxTask.");
+        }
+
+        private static void AssertActiveRequestProactiveRoute(
+            string tempDirectory,
+            List<ExperimentSimulation> simulations,
+            string algorithm,
+            string expectedReason,
+            int maxTask)
+        {
+            ExperimentSettings settings = CreateBprSelfTestSettings(tempDirectory);
+            settings.NmaxTask = maxTask;
+            settings.WcvSpeedMetersPerSecond = 100.0;
+            settings.WcvChargeRateJPerSecond = 100.0;
+            settings.YuDangerWindowSeconds = 10.0;
+            settings.YuDangerThresholdK = 3;
+            settings.YuIntervalUncertaintySeconds = 10.0;
+            settings.Normalize();
+            ExperimentSimulation simulation = new ExperimentSimulation(
+                settings,
+                CreateBprSelfTestArtifact(new double[] { 40.0, 60.0, 60.0, 60.0 }),
+                algorithm,
+                null);
+            simulations.Add(simulation);
+            simulation.CreateRequestsAtCurrentTime();
+            AssertSelfTest(simulation.activeRequests.Count > 0,
+                algorithm + " self-test should begin with a natural request.");
+
+            List<ChargingRequest> route = simulation.BuildMissionRoute();
+            AssertSelfTest(ContainsProactiveReason(route, expectedReason),
+                algorithm + " should insert a proactive task with reason " + expectedReason + " when a natural-request mission is open.");
+            AssertSelfTest(route.Count <= maxTask,
+                algorithm + " limited/default route must not exceed NmaxTask.");
+        }
+
+        private static void RunProactiveCandidateFilterSelfTest(string tempDirectory, List<ExperimentSimulation> simulations)
+        {
+            ExperimentSettings nearFullSettings = CreateBprSelfTestSettings(tempDirectory);
+            nearFullSettings.NmaxTask = 1;
+            nearFullSettings.YuDangerWindowSeconds = 10.0;
+            nearFullSettings.YuDangerThresholdK = 2;
+            nearFullSettings.YuIntervalUncertaintySeconds = 10.0;
+            nearFullSettings.ProactiveCandidateMaxEnergyRatio = 0.95;
+            nearFullSettings.Normalize();
+            ExperimentArtifact nearFullArtifact = CreateBprSelfTestArtifact(new double[] { 96.0, 96.0, 96.0 });
+
+            ExperimentSimulation zhengNearFull = new ExperimentSimulation(nearFullSettings, nearFullArtifact, "NJF_ZHENG_BPR", null);
+            simulations.Add(zhengNearFull);
+            AssertSelfTest(zhengNearFull.BuildZhengBprCplist(
+                    new List<ChargingRequest>(),
+                    1,
+                    BprProactiveSelectionMode.Deterministic,
+                    false).Count == 0,
+                "Near-full nodes must be excluded from ZHENG BP&R proactive candidates.");
+
+            ExperimentSimulation yuNearFull = new ExperimentSimulation(nearFullSettings, nearFullArtifact, "NJF_YU_BPR", null);
+            simulations.Add(yuNearFull);
+            AssertSelfTest(yuNearFull.BuildYuBprCplist(
+                    new List<ChargingRequest>(),
+                    1,
+                    false,
+                    YuProactiveSelectionMode.Deterministic).Count == 0,
+                "Near-full nodes must be excluded from YU BP&R proactive candidates.");
+
+            ExperimentSettings cooldownSettings = CreateBprSelfTestSettings(tempDirectory);
+            cooldownSettings.NmaxTask = 1;
+            cooldownSettings.YuDangerWindowSeconds = 10.0;
+            cooldownSettings.YuDangerThresholdK = 2;
+            cooldownSettings.YuIntervalUncertaintySeconds = 10.0;
+            cooldownSettings.ProactiveCooldownSeconds = 10.0;
+            cooldownSettings.Normalize();
+            ExperimentArtifact cooldownArtifact = CreateBprSelfTestArtifact(new double[] { 80.0, 80.0 });
+
+            ExperimentSimulation cooldownSimulation = new ExperimentSimulation(cooldownSettings, cooldownArtifact, "NJF_ZHENG_BPR", null);
+            simulations.Add(cooldownSimulation);
+            for (int nodeId = 1; nodeId < cooldownSimulation.sensors.Length; nodeId++)
+            {
+                BprSTableEntry entry = cooldownSimulation.GetOrCreateBprSTableEntry(nodeId);
+                entry.LastChargedTimeSeconds = cooldownSimulation.currentTime;
+                entry.LastProactiveSelectedTimeSeconds = cooldownSimulation.currentTime;
+            }
+            AssertSelfTest(cooldownSimulation.BuildZhengBprCplist(
+                    new List<ChargingRequest>(),
+                    1,
+                    BprProactiveSelectionMode.Deterministic,
+                    false).Count == 0,
+                "Nodes inside proactive cooldown must not be selected by ZHENG BP&R.");
+            AssertSelfTest(cooldownSimulation.BuildYuBprCplist(
+                    new List<ChargingRequest>(),
+                    1,
+                    false,
+                    YuProactiveSelectionMode.Deterministic).Count == 0,
+                "Nodes inside proactive cooldown must not be selected by YU BP&R.");
+        }
+
+        private static void RunSimulationEndBeforeFullSelfTest(string tempDirectory, List<ExperimentSimulation> simulations)
+        {
+            ExperimentSettings settings = CreateBprSelfTestSettings(tempDirectory);
+            settings.SimulationTimeSeconds = 1.0;
+            settings.WcvSpeedMetersPerSecond = 1000.0;
+            settings.WcvChargeRateJPerSecond = 1.0;
+            settings.SensorBackgroundLifetimeSeconds = 1000.0;
+            settings.NmaxTask = 1;
+            settings.Normalize();
+            ExperimentSimulation simulation = new ExperimentSimulation(
+                settings,
+                CreateBprSelfTestArtifact(new double[] { 40.0 }),
+                "NJF",
+                null);
+            simulations.Add(simulation);
+            simulation.Run();
+            AssertSelfTest(simulation.totalTaskRecordCount == 1,
+                "Simulation-end-before-full self-test should record one attempted task.");
+            AssertSelfTest(simulation.summary.SuccessfulCharges == 0,
+                "A task that reaches simulation end before becoming full must not be counted as successful.");
+        }
+
         private static bool ContainsBprEntry(List<BprSTableEntry> entries, int nodeId)
         {
             for (int i = 0; i < entries.Count; i++)
@@ -3993,6 +4351,17 @@ namespace WindowsFormsApplication1
             for (int i = 0; i < requests.Count; i++)
             {
                 if (requests[i].NodeId == nodeId)
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool ContainsProactiveReason(List<ChargingRequest> requests, string reason)
+        {
+            for (int i = 0; i < requests.Count; i++)
+            {
+                ChargingRequest request = requests[i];
+                if (request.IsProactive && String.Equals(request.ProactiveReason, reason, StringComparison.Ordinal))
                     return true;
             }
             return false;
@@ -4124,11 +4493,17 @@ namespace WindowsFormsApplication1
         public int FailedOrLateTasks;
         public int NaturalRequestCount;
         public int ProactiveTaskCount;
+        public int UniqueServedNodeCount;
+        public int RepeatChargeCount;
+        public int ProactiveNearFullCount;
+        public int MeaningfulProactiveCount;
         public int RequestCount;
         public int MissionCount;
         public double MovementDistanceMeters;
         public double MoveEnergyJ;
         public double DeliveredEnergyJ;
+        public double AverageDeliveredEnergyPerTask;
+        public double AverageDeliveredEnergyPerProactiveTask;
         public double ChargeEfficiency;
         public int PacketSent;
         public int PacketReceived;
@@ -4452,6 +4827,10 @@ namespace WindowsFormsApplication1
             rows.Add(Row("門檻模式", s.ThresholdMode == "TreqSeconds" ? "Treq 秒數門檻" : "百分比門檻", ""));
             rows.Add(Row("Treq 秒數", s.TreqSeconds, ""));
             rows.Add(Row("BP&R deadline threshold(s)", s.BprDeadlineThresholdSeconds, "Persistent STable deadline maintenance threshold"));
+            rows.Add(Row("AllowStandaloneProactiveDispatch", s.AllowStandaloneProactiveDispatch, "false = BP&R/YU proactive tasks are inserted only into natural-request missions"));
+            rows.Add(Row("ProactivePredictionHorizonSeconds", s.ProactivePredictionHorizonSeconds, "0 = TreqSeconds + EstimateBprTjobSeconds(NmaxTask)"));
+            rows.Add(Row("ProactiveCandidateMaxEnergyRatio", s.ProactiveCandidateMaxEnergyRatio, "nodes at or above this capacity ratio are excluded from proactive candidates"));
+            rows.Add(Row("ProactiveCooldownSeconds", s.ProactiveCooldownSeconds, "0 = TreqSeconds after charged or proactive-selected"));
             rows.Add(Row("YU danger window(s)", s.YuDangerWindowSeconds, "0 = use EstimateBprTjobSeconds(NmaxTask)"));
             rows.Add(Row("YU danger threshold K", s.YuDangerThresholdK, "0 = use NmaxTask + 1"));
             rows.Add(Row("YU interval uncertainty(s)", s.YuIntervalUncertaintySeconds, "0 = use BprDeadlineThresholdSeconds"));
@@ -4490,6 +4869,8 @@ namespace WindowsFormsApplication1
                 "封包送出", "封包收到", "封包遺失", "routing failed 遺失", "ParentId=-1 節點數",
                 "不連通節點比例", "平均等待(s)", "充電效率"));
 
+            AppendRunAntiInflationHeaders(rows[0]);
+
             for (int i = 0; i < result.RunSummaries.Count; i++)
             {
                 ExperimentRunSummary s = result.RunSummaries[i];
@@ -4500,9 +4881,30 @@ namespace WindowsFormsApplication1
                     s.PacketSent, s.PacketReceived, s.PacketLost, s.RoutingFailedPacketLost,
                     s.RoutingParentMissingNodeCount, s.RoutingDisconnectedNodeRatio,
                     s.AverageWaitSeconds, s.ChargeEfficiency));
+                AddRunAntiInflationValues(rows[rows.Count - 1], s);
             }
 
             return rows;
+        }
+
+        private static void AppendRunAntiInflationHeaders(List<object> row)
+        {
+            row.Add("UniqueServedNodeCount");
+            row.Add("RepeatChargeCount");
+            row.Add("ProactiveNearFullCount");
+            row.Add("MeaningfulProactiveCount");
+            row.Add("AverageDeliveredEnergyPerTask");
+            row.Add("AverageDeliveredEnergyPerProactiveTask");
+        }
+
+        private static void AddRunAntiInflationValues(List<object> row, ExperimentRunSummary s)
+        {
+            row.Add(s.UniqueServedNodeCount);
+            row.Add(s.RepeatChargeCount);
+            row.Add(s.ProactiveNearFullCount);
+            row.Add(s.MeaningfulProactiveCount);
+            row.Add(s.AverageDeliveredEnergyPerTask);
+            row.Add(s.AverageDeliveredEnergyPerProactiveTask);
         }
 
         private static List<List<object>> BuildSummaryRows(ExperimentBatchResult result)
@@ -4511,6 +4913,8 @@ namespace WindowsFormsApplication1
             rows.Add(Row("演算法", "Run 次數", "平均生命週期(s)", "最小生命週期(s)", "最大生命週期(s)",
                 "平均成功充電", "平均失敗/逾期", "平均request", "平均移動距離(m)", "平均等待(s)",
                 "平均封包遺失", "平均routing failed遺失", "平均ParentId=-1節點數", "平均不連通比例", "平均充電效率"));
+
+            AppendSummaryAntiInflationHeaders(rows[0]);
 
             Dictionary<string, List<ExperimentRunSummary>> groups = new Dictionary<string, List<ExperimentRunSummary>>();
             for (int i = 0; i < result.RunSummaries.Count; i++)
@@ -4538,9 +4942,30 @@ namespace WindowsFormsApplication1
                     Average(list, delegate (ExperimentRunSummary s) { return s.RoutingParentMissingNodeCount; }),
                     Average(list, delegate (ExperimentRunSummary s) { return s.RoutingDisconnectedNodeRatio; }),
                     Average(list, delegate (ExperimentRunSummary s) { return s.ChargeEfficiency; })));
+                AddSummaryAntiInflationValues(rows[rows.Count - 1], list);
             }
 
             return rows;
+        }
+
+        private static void AppendSummaryAntiInflationHeaders(List<object> row)
+        {
+            row.Add("平均UniqueServedNodeCount");
+            row.Add("平均RepeatChargeCount");
+            row.Add("平均ProactiveNearFullCount");
+            row.Add("平均MeaningfulProactiveCount");
+            row.Add("平均DeliveredEnergyPerTask");
+            row.Add("平均DeliveredEnergyPerProactiveTask");
+        }
+
+        private static void AddSummaryAntiInflationValues(List<object> row, List<ExperimentRunSummary> list)
+        {
+            row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.UniqueServedNodeCount; }));
+            row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.RepeatChargeCount; }));
+            row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.ProactiveNearFullCount; }));
+            row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.MeaningfulProactiveCount; }));
+            row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.AverageDeliveredEnergyPerTask; }));
+            row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.AverageDeliveredEnergyPerProactiveTask; }));
         }
 
         private static List<List<object>> BuildDeathRows(ExperimentBatchResult result)
@@ -4574,6 +4999,7 @@ namespace WindowsFormsApplication1
             if (key == "TADP_LIN") return "TADP/LIN（時間與距離優先）";
             if (key == "RCSS") return "RCSS（風險與耗能排序）";
             if (key == "NJF_ZHENG_BPR") return "NJF_ZHENG_BPR（ZHENG BP&R deterministic）";
+            if (key == "NJF_YU_BPR") return "NJF_YU_BPR（YU interval BP&R deterministic）";
             if (key == "NJF_ROUTE_ZHENG_BPR_LIMITED") return "NJF_ROUTE_ZHENG_BPR_LIMITED（Route + ZHENG BP&R，<=NmaxTask）";
             if (key == "NJF_ROUTE_ZHENG_BPR_EXTENDED") return "NJF_ROUTE_ZHENG_BPR_EXTENDED（Route + ZHENG BP&R，可超過NmaxTask）";
             if (key == "NJF_ROUTE_YU_BPR_LIMITED") return "NJF_ROUTE_YU_BPR_LIMITED（Route + YU interval BP&R，<=NmaxTask）";
@@ -4879,6 +5305,10 @@ namespace WindowsFormsApplication1
             AddTextBox(panel, "RequestThresholdPercent", "剩餘能量門檻(%)", y); y += 30;
             AddTextBox(panel, "TreqSeconds", "Treq 秒數", y); y += 30;
             AddTextBox(panel, "BprDeadlineThresholdSeconds", "BP&R deadline threshold(s)", y); y += 30;
+            AddTextBox(panel, "AllowStandaloneProactiveDispatch", "Allow standalone proactive", y); y += 30;
+            AddTextBox(panel, "ProactivePredictionHorizonSeconds", "Proactive horizon(s)", y); y += 30;
+            AddTextBox(panel, "ProactiveCandidateMaxEnergyRatio", "Proactive max energy ratio", y); y += 30;
+            AddTextBox(panel, "ProactiveCooldownSeconds", "Proactive cooldown(s)", y); y += 30;
             AddTextBox(panel, "YuDangerWindowSeconds", "YU danger window(s)", y); y += 30;
             AddTextBox(panel, "YuDangerThresholdK", "YU danger threshold K", y); y += 30;
             AddTextBox(panel, "YuIntervalUncertaintySeconds", "YU interval uncertainty(s)", y); y += 30;
@@ -4972,6 +5402,10 @@ namespace WindowsFormsApplication1
             boxes["RequestThresholdPercent"].Text = settings.RequestThresholdPercent.ToString(CultureInfo.InvariantCulture);
             boxes["TreqSeconds"].Text = settings.TreqSeconds.ToString(CultureInfo.InvariantCulture);
             boxes["BprDeadlineThresholdSeconds"].Text = settings.BprDeadlineThresholdSeconds.ToString(CultureInfo.InvariantCulture);
+            boxes["AllowStandaloneProactiveDispatch"].Text = settings.AllowStandaloneProactiveDispatch.ToString(CultureInfo.InvariantCulture);
+            boxes["ProactivePredictionHorizonSeconds"].Text = settings.ProactivePredictionHorizonSeconds.ToString(CultureInfo.InvariantCulture);
+            boxes["ProactiveCandidateMaxEnergyRatio"].Text = settings.ProactiveCandidateMaxEnergyRatio.ToString(CultureInfo.InvariantCulture);
+            boxes["ProactiveCooldownSeconds"].Text = settings.ProactiveCooldownSeconds.ToString(CultureInfo.InvariantCulture);
             boxes["YuDangerWindowSeconds"].Text = settings.YuDangerWindowSeconds.ToString(CultureInfo.InvariantCulture);
             boxes["YuDangerThresholdK"].Text = settings.YuDangerThresholdK.ToString(CultureInfo.InvariantCulture);
             boxes["YuIntervalUncertaintySeconds"].Text = settings.YuIntervalUncertaintySeconds.ToString(CultureInfo.InvariantCulture);
@@ -5014,6 +5448,10 @@ namespace WindowsFormsApplication1
             settings.RequestThresholdPercent = ParseDouble("RequestThresholdPercent", settings.RequestThresholdPercent);
             settings.TreqSeconds = ParseDouble("TreqSeconds", settings.TreqSeconds);
             settings.BprDeadlineThresholdSeconds = ParseDouble("BprDeadlineThresholdSeconds", settings.BprDeadlineThresholdSeconds);
+            settings.AllowStandaloneProactiveDispatch = ParseBool("AllowStandaloneProactiveDispatch", settings.AllowStandaloneProactiveDispatch);
+            settings.ProactivePredictionHorizonSeconds = ParseDouble("ProactivePredictionHorizonSeconds", settings.ProactivePredictionHorizonSeconds);
+            settings.ProactiveCandidateMaxEnergyRatio = ParseDouble("ProactiveCandidateMaxEnergyRatio", settings.ProactiveCandidateMaxEnergyRatio);
+            settings.ProactiveCooldownSeconds = ParseDouble("ProactiveCooldownSeconds", settings.ProactiveCooldownSeconds);
             settings.YuDangerWindowSeconds = ParseDouble("YuDangerWindowSeconds", settings.YuDangerWindowSeconds);
             settings.YuDangerThresholdK = ParseInt("YuDangerThresholdK", settings.YuDangerThresholdK);
             settings.YuIntervalUncertaintySeconds = ParseDouble("YuIntervalUncertaintySeconds", settings.YuIntervalUncertaintySeconds);
@@ -5046,6 +5484,7 @@ namespace WindowsFormsApplication1
             if (key == "TADP_LIN") return "TADP/LIN（時間與距離優先）";
             if (key == "RCSS") return "RCSS（風險與耗能排序）";
             if (key == "NJF_ZHENG_BPR") return "NJF_ZHENG_BPR（ZHENG BP&R deterministic）";
+            if (key == "NJF_YU_BPR") return "NJF_YU_BPR（YU interval BP&R deterministic）";
             if (key == "NJF_ROUTE_ZHENG_BPR_LIMITED") return "NJF_ROUTE_ZHENG_BPR_LIMITED（Route + ZHENG BP&R，<=NmaxTask）";
             if (key == "NJF_ROUTE_ZHENG_BPR_EXTENDED") return "NJF_ROUTE_ZHENG_BPR_EXTENDED（Route + ZHENG BP&R，可超過NmaxTask）";
             if (key == "NJF_ROUTE_YU_BPR_LIMITED") return "NJF_ROUTE_YU_BPR_LIMITED（Route + YU interval BP&R，<=NmaxTask）";
@@ -5081,6 +5520,23 @@ namespace WindowsFormsApplication1
                 return value;
             if (Double.TryParse(boxes[key].Text.Trim(), out value))
                 return value;
+            return fallback;
+        }
+
+        private bool ParseBool(string key, bool fallback)
+        {
+            string value = boxes[key].Text.Trim();
+            bool parsed;
+            if (Boolean.TryParse(value, out parsed))
+                return parsed;
+            if (String.Equals(value, "1", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(value, "yes", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(value, "y", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (String.Equals(value, "0", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(value, "no", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(value, "n", StringComparison.OrdinalIgnoreCase))
+                return false;
             return fallback;
         }
     }

@@ -25,10 +25,18 @@
   <ThresholdMode>TreqSeconds</ThresholdMode>
   <RequestThresholdPercent>10</RequestThresholdPercent>
   <TreqSeconds>4620</TreqSeconds>
+  <BprDeadlineThresholdSeconds>4620</BprDeadlineThresholdSeconds>
+  <AllowStandaloneProactiveDispatch>false</AllowStandaloneProactiveDispatch>
+  <ProactivePredictionHorizonSeconds>0</ProactivePredictionHorizonSeconds>
+  <ProactiveCandidateMaxEnergyRatio>0.95</ProactiveCandidateMaxEnergyRatio>
+  <ProactiveCooldownSeconds>0</ProactiveCooldownSeconds>
+  <YuDangerWindowSeconds>0</YuDangerWindowSeconds>
+  <YuDangerThresholdK>0</YuDangerThresholdK>
+  <YuIntervalUncertaintySeconds>0</YuIntervalUncertaintySeconds>
   <PrateChange>0.2</PrateChange>
   <RateChangeVariationPercent>12.5</RateChangeVariationPercent>
-  <SelectedAlgorithmsCsv>EDF,NJF,TADP_LIN,RCSS,NJF_BPR,NJF_BPR_ROUTE_SAFE_LIMITED,NJF_BPR_ROUTE_SAFE_EXTENDED,FUZZY,GENE,PSO,Cuckoo</SelectedAlgorithmsCsv>
+  <SelectedAlgorithmsCsv>EDF,NJF,TADP_LIN,RCSS,NJF_ZHENG_BPR,NJF_YU_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_YU_BPR_LIMITED,FUZZY</SelectedAlgorithmsCsv>
   <OutputDirectory>C:\Users\931108boy\Desktop\WSN\outputs</OutputDirectory>
-  <LastOutputWorkbookPath>C:\Users\931108boy\Desktop\WSN\outputs\20260519-172428-908-wsn-comparison-seed42-runs10.xlsx</LastOutputWorkbookPath>
+  <LastOutputWorkbookPath>C:\Users\931108boy\Desktop\WSN\outputs\20260519-231843-001-wsn-comparison-seed42-runs10.xlsx</LastOutputWorkbookPath>
   <MaxParallelJobs>28</MaxParallelJobs>
 </ExperimentSettings>
