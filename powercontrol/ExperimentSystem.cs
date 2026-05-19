@@ -376,7 +376,6 @@ namespace WindowsFormsApplication1
 
     public class ExperimentBatchRunner
     {
-        internal const int MaxTaskRecordsInWorkbook = 50000;
         private readonly Action<string> progress;
         private readonly bool persistSettings;
         private readonly object progressLock;
@@ -407,6 +406,7 @@ namespace WindowsFormsApplication1
 
             ExperimentBatchResult result = new ExperimentBatchResult();
             result.Settings = settings;
+            result.TaskDetailsDirectory = MissionDetailCsvWriter.PrepareTaskDetailsDirectory(settings.OutputDirectory);
 
             int totalWork = settings.RunCount * algorithms.Count;
             int completedWork = 0;
@@ -443,8 +443,7 @@ namespace WindowsFormsApplication1
                     String.Format(CultureInfo.InvariantCulture, "run {0}/{1} 執行 {2} ({3}/{4})",
                         runIndex, settings.RunCount, algorithm, algorithmIndex + 1, algorithms.Count));
 
-                int taskRecordCaptureLimit = GetTaskRecordCaptureLimit(settings.RunCount, algorithms.Count, runIndex, algorithmIndex);
-                ExperimentSimulation simulation = new ExperimentSimulation(settings, runBatch.Artifact, algorithm, taskRecordCaptureLimit);
+                ExperimentSimulation simulation = new ExperimentSimulation(settings, runBatch.Artifact, algorithm, result.TaskDetailsDirectory);
                 ExperimentRunResult run = simulation.Run();
                 runBatch.AlgorithmResults[algorithmIndex] = run;
 
@@ -464,6 +463,7 @@ namespace WindowsFormsApplication1
                 settings.SaveLast();
             result.WorkbookPath = workbookPath;
             Report("Excel 已輸出：" + workbookPath);
+            Report("任務明細 CSV 已輸出：" + result.TaskDetailsDirectory);
             return result;
         }
 
@@ -500,27 +500,9 @@ namespace WindowsFormsApplication1
                         continue;
                     result.RunSummaries.Add(run.Summary);
                     result.TotalTaskRecordCount += run.TotalTaskRecordCount;
-                    int remainingTaskSlots = MaxTaskRecordsInWorkbook - result.TaskRecords.Count;
-                    if (remainingTaskSlots > 0)
-                    {
-                        int copyCount = Math.Min(remainingTaskSlots, run.Tasks.Count);
-                        for (int t = 0; t < copyCount; t++)
-                            result.TaskRecords.Add(run.Tasks[t]);
-                    }
-                    if (result.TaskRecords.Count < result.TotalTaskRecordCount)
-                        result.TaskRecordsTruncated = true;
                     result.DeathRecords.AddRange(run.Deaths);
                 }
             }
-        }
-
-        private static int GetTaskRecordCaptureLimit(int runCount, int algorithmCount, int runIndex, int algorithmIndex)
-        {
-            int totalCells = Math.Max(1, runCount * algorithmCount);
-            int ordinal = Math.Max(0, (runIndex - 1) * algorithmCount + algorithmIndex);
-            int baseQuota = MaxTaskRecordsInWorkbook / totalCells;
-            int remainder = MaxTaskRecordsInWorkbook % totalCells;
-            return baseQuota + (ordinal < remainder ? 1 : 0);
         }
 
         private static int ResolveMaxParallelJobs(ExperimentSettings settings, int totalWork)
@@ -555,19 +537,18 @@ namespace WindowsFormsApplication1
         public ExperimentSettings Settings { get; set; }
         public List<ExperimentArtifact> Artifacts { get; private set; }
         public List<ExperimentRunSummary> RunSummaries { get; private set; }
-        public List<ExperimentTaskRecord> TaskRecords { get; private set; }
         public List<ExperimentDeathRecord> DeathRecords { get; private set; }
         public string WorkbookPath { get; set; }
+        public string TaskDetailsDirectory { get; set; }
         public int TotalTaskRecordCount { get; set; }
-        public bool TaskRecordsTruncated { get; set; }
 
         public ExperimentBatchResult()
         {
             Artifacts = new List<ExperimentArtifact>();
             RunSummaries = new List<ExperimentRunSummary>();
-            TaskRecords = new List<ExperimentTaskRecord>();
             DeathRecords = new List<ExperimentDeathRecord>();
             WorkbookPath = "";
+            TaskDetailsDirectory = "";
         }
     }
 
@@ -599,28 +580,23 @@ namespace WindowsFormsApplication1
             artifact.BaseX = 0.0;
             artifact.BaseY = 0.0;
 
-            SensorTemplate baseStation = new SensorTemplate();
-            baseStation.Id = 0;
-            baseStation.X = artifact.BaseX;
-            baseStation.Y = artifact.BaseY;
-            baseStation.InitialEnergyJ = Double.PositiveInfinity;
-            baseStation.ParentId = -1;
-            artifact.Sensors.Add(baseStation);
-
-            for (int id = 1; id <= settings.SensorCount; id++)
+            bool connected = false;
+            for (int attempt = 1; attempt <= 1000; attempt++)
             {
-                SensorTemplate sensor = new SensorTemplate();
-                sensor.Id = id;
-                sensor.X = random.NextDouble() * settings.MapWidthMeters;
-                sensor.Y = random.NextDouble() * settings.MapHeightMeters;
-                double jitter = settings.InitialResidualJitterPercent / 100.0;
-                double residualRatio = 1.0 - random.NextDouble() * jitter;
-                sensor.InitialEnergyJ = settings.InitialEnergyJ * residualRatio;
-                sensor.ParentId = -1;
-                artifact.Sensors.Add(sensor);
+                BuildRandomSensors(settings, artifact, random);
+                AssignRoutingParents(settings, artifact);
+                if (artifact.CountMissingRoutingParents() == 0)
+                {
+                    connected = true;
+                    break;
+                }
             }
 
-            AssignRoutingParents(settings, artifact);
+            if (!connected)
+            {
+                throw new InvalidOperationException(
+                    "無法產生 connected topology：RadioRangeMeters 太小或 SensorCount 太低，無法在 1000 次重試內讓所有 sensor 連到 BS。");
+            }
 
             int eventCount = Math.Max(0, (int)Math.Round(settings.EventRatePerSecond * settings.SimulationTimeSeconds));
             for (int i = 0; i < eventCount; i++)
@@ -659,38 +635,73 @@ namespace WindowsFormsApplication1
             return artifact;
         }
 
+        private static void BuildRandomSensors(ExperimentSettings settings, ExperimentArtifact artifact, Random random)
+        {
+            artifact.Sensors.Clear();
+
+            SensorTemplate baseStation = new SensorTemplate();
+            baseStation.Id = 0;
+            baseStation.X = artifact.BaseX;
+            baseStation.Y = artifact.BaseY;
+            baseStation.InitialEnergyJ = Double.PositiveInfinity;
+            baseStation.ParentId = -1;
+            artifact.Sensors.Add(baseStation);
+
+            for (int id = 1; id <= settings.SensorCount; id++)
+            {
+                SensorTemplate sensor = new SensorTemplate();
+                sensor.Id = id;
+                sensor.X = random.NextDouble() * settings.MapWidthMeters;
+                sensor.Y = random.NextDouble() * settings.MapHeightMeters;
+                double jitter = settings.InitialResidualJitterPercent / 100.0;
+                double residualRatio = 1.0 - random.NextDouble() * jitter;
+                sensor.InitialEnergyJ = settings.InitialEnergyJ * residualRatio;
+                sensor.ParentId = -1;
+                artifact.Sensors.Add(sensor);
+            }
+        }
+
         private static void AssignRoutingParents(ExperimentSettings settings, ExperimentArtifact artifact)
         {
-            double[] distanceToBase = new double[artifact.Sensors.Count];
-            for (int i = 0; i < artifact.Sensors.Count; i++)
-                distanceToBase[i] = Distance(artifact.Sensors[i].X, artifact.Sensors[i].Y, artifact.BaseX, artifact.BaseY);
+            int nodeCount = artifact.Sensors.Count;
+            for (int i = 0; i < nodeCount; i++)
+                artifact.Sensors[i].ParentId = -1;
 
-            for (int i = 1; i < artifact.Sensors.Count; i++)
+            List<int>[] graph = new List<int>[nodeCount];
+            for (int i = 0; i < nodeCount; i++)
+                graph[i] = new List<int>();
+
+            for (int i = 0; i < nodeCount; i++)
             {
-                SensorTemplate sensor = artifact.Sensors[i];
-                if (distanceToBase[i] <= settings.RadioRangeMeters)
+                for (int j = i + 1; j < nodeCount; j++)
                 {
-                    sensor.ParentId = 0;
-                    continue;
-                }
-
-                int bestParent = -1;
-                double bestDistanceToBase = distanceToBase[i];
-                for (int j = 1; j < artifact.Sensors.Count; j++)
-                {
-                    if (i == j)
-                        continue;
-                    if (distanceToBase[j] >= distanceToBase[i])
-                        continue;
-                    double linkDistance = Distance(sensor.X, sensor.Y, artifact.Sensors[j].X, artifact.Sensors[j].Y);
-                    if (linkDistance <= settings.RadioRangeMeters && distanceToBase[j] < bestDistanceToBase)
+                    double linkDistance = Distance(artifact.Sensors[i].X, artifact.Sensors[i].Y,
+                        artifact.Sensors[j].X, artifact.Sensors[j].Y);
+                    if (linkDistance <= settings.RadioRangeMeters)
                     {
-                        bestDistanceToBase = distanceToBase[j];
-                        bestParent = j;
+                        graph[i].Add(j);
+                        graph[j].Add(i);
                     }
                 }
+            }
 
-                sensor.ParentId = bestParent;
+            bool[] visited = new bool[nodeCount];
+            Queue<int> queue = new Queue<int>();
+            visited[0] = true;
+            queue.Enqueue(0);
+            while (queue.Count > 0)
+            {
+                int current = queue.Dequeue();
+                for (int i = 0; i < graph[current].Count; i++)
+                {
+                    int next = graph[current][i];
+                    if (visited[next])
+                        continue;
+
+                    visited[next] = true;
+                    artifact.Sensors[next].ParentId = current;
+                    queue.Enqueue(next);
+                }
             }
         }
 
@@ -803,10 +814,9 @@ namespace WindowsFormsApplication1
         private readonly Random algorithmRandom;
         private readonly SensorState[] sensors;
         private readonly List<ChargingRequest> activeRequests;
-        private readonly List<ExperimentTaskRecord> tasks;
         private readonly List<ExperimentDeathRecord> deaths;
         private readonly ExperimentRunSummary summary;
-        private readonly int taskRecordCaptureLimit;
+        private readonly MissionDetailCsvWriter csvWriter;
         private int totalTaskRecordCount;
         private int nextEventIndex;
         private int nextRateChangeIndex;
@@ -816,11 +826,11 @@ namespace WindowsFormsApplication1
         private bool stopForFirstDeath;
 
         public ExperimentSimulation(ExperimentSettings experimentSettings, ExperimentArtifact sharedArtifact, string schedulerName)
-            : this(experimentSettings, sharedArtifact, schedulerName, Int32.MaxValue)
+            : this(experimentSettings, sharedArtifact, schedulerName, null)
         {
         }
 
-        public ExperimentSimulation(ExperimentSettings experimentSettings, ExperimentArtifact sharedArtifact, string schedulerName, int maxTaskRecordsToKeep)
+        public ExperimentSimulation(ExperimentSettings experimentSettings, ExperimentArtifact sharedArtifact, string schedulerName, string taskDetailsDirectory)
         {
             settings = experimentSettings;
             artifact = sharedArtifact;
@@ -828,15 +838,16 @@ namespace WindowsFormsApplication1
             algorithmRandom = new Random(sharedArtifact.Seed * 397 + StableStringHash(algorithm));
             sensors = new SensorState[artifact.Sensors.Count];
             activeRequests = new List<ChargingRequest>();
-            tasks = new List<ExperimentTaskRecord>();
             deaths = new List<ExperimentDeathRecord>();
+            csvWriter = String.IsNullOrWhiteSpace(taskDetailsDirectory)
+                ? null
+                : new MissionDetailCsvWriter(taskDetailsDirectory, artifact.RunIndex, algorithm);
             nextEventIndex = 0;
             nextRateChangeIndex = 0;
             nextRequestId = 1;
             missionId = 0;
             currentTime = 0.0;
             stopForFirstDeath = false;
-            taskRecordCaptureLimit = Math.Max(0, maxTaskRecordsToKeep);
             totalTaskRecordCount = 0;
 
             for (int i = 0; i < artifact.Sensors.Count; i++)
@@ -906,9 +917,10 @@ namespace WindowsFormsApplication1
 
             ExperimentRunResult result = new ExperimentRunResult();
             result.Summary = summary;
-            result.Tasks = tasks;
             result.TotalTaskRecordCount = totalTaskRecordCount;
             result.Deaths = deaths;
+            if (csvWriter != null)
+                csvWriter.Dispose();
             return result;
         }
 
@@ -923,6 +935,18 @@ namespace WindowsFormsApplication1
                 return;
             }
 
+            MissionRecord mission = new MissionRecord();
+            mission.RunIndex = artifact.RunIndex;
+            mission.Seed = artifact.Seed;
+            mission.Algorithm = algorithm;
+            mission.MissionId = missionId;
+            mission.DispatchTimeSeconds = dispatchTime;
+            mission.RouteNodeIds = new List<int>();
+            int startPacketSent = summary.PacketSent;
+            int startPacketReceived = summary.PacketReceived;
+            int startPacketLost = summary.PacketLost;
+            int startRoutingFailedPacketLost = summary.RoutingFailedPacketLost;
+
             double wcvEnergy = settings.WcvCapacityJ;
             double posX = artifact.BaseX;
             double posY = artifact.BaseY;
@@ -934,7 +958,8 @@ namespace WindowsFormsApplication1
                 SensorState sensor = sensors[request.NodeId];
                 if (!sensor.Alive)
                 {
-                    RecordSkippedTask(request, dispatchTime, currentTime, "節點已死亡");
+                    ExperimentTaskRecord skipped = RecordSkippedTask(request, dispatchTime, currentTime, "節點已死亡");
+                    AccumulateMissionTask(mission, skipped);
                     continue;
                 }
 
@@ -944,7 +969,8 @@ namespace WindowsFormsApplication1
                 double returnEnergy = returnDistance * settings.WcvMoveCostJPerMeter;
                 if (wcvEnergy < moveEnergy + returnEnergy)
                 {
-                    RecordSkippedTask(request, dispatchTime, currentTime, "WCV 能量不足");
+                    ExperimentTaskRecord skipped = RecordSkippedTask(request, dispatchTime, currentTime, "WCV 能量不足");
+                    AccumulateMissionTask(mission, skipped);
                     summary.FailedOrLateTasks++;
                     break;
                 }
@@ -952,11 +978,14 @@ namespace WindowsFormsApplication1
                 wcvEnergy -= moveEnergy;
                 summary.MoveEnergyJ += moveEnergy;
                 summary.MovementDistanceMeters += distance;
+                mission.MoveEnergyJ += moveEnergy;
+                mission.DistanceMeters += distance;
                 AdvanceTo(currentTime + distance / settings.WcvSpeedMetersPerSecond, null);
                 if (stopForFirstDeath)
                     break;
 
                 order++;
+                mission.RouteNodeIds.Add(request.NodeId);
                 double arrivalTime = currentTime;
                 double chargeStartTime = currentTime;
                 double beforeEnergy = sensor.EnergyJ;
@@ -1043,8 +1072,10 @@ namespace WindowsFormsApplication1
                 record.FailureReason = record.Success ? "" : failReason;
                 record.WcvEnergyAfterJ = wcvEnergy;
                 AddTaskRecord(record);
+                AccumulateMissionTask(mission, record);
 
                 summary.DeliveredEnergyJ += context.DeliveredEnergyJ;
+                mission.DeliveredEnergyJ += context.DeliveredEnergyJ;
                 if (record.IsProactive)
                     summary.ProactiveTaskCount++;
                 if (record.Success)
@@ -1069,15 +1100,51 @@ namespace WindowsFormsApplication1
                 wcvEnergy -= backMoveEnergy;
                 summary.MoveEnergyJ += backMoveEnergy;
                 summary.MovementDistanceMeters += backDistance;
+                mission.MoveEnergyJ += backMoveEnergy;
+                mission.DistanceMeters += backDistance;
                 AdvanceTo(currentTime + backDistance / settings.WcvSpeedMetersPerSecond, null);
             }
             else
             {
                 summary.FailedOrLateTasks++;
+                mission.FailedCount++;
+            }
+
+            mission.ReturnTimeSeconds = currentTime;
+            mission.PacketSent = summary.PacketSent - startPacketSent;
+            mission.PacketReceived = summary.PacketReceived - startPacketReceived;
+            mission.PacketLost = summary.PacketLost - startPacketLost;
+            mission.RoutingFailedPacketLost = summary.RoutingFailedPacketLost - startRoutingFailedPacketLost;
+            mission.AverageWaitSeconds = mission.SuccessfulCharges > 0
+                ? mission.TotalWaitSeconds / mission.SuccessfulCharges
+                : 0.0;
+            if (csvWriter != null)
+                csvWriter.WriteMission(mission);
+        }
+
+        private void AccumulateMissionTask(MissionRecord mission, ExperimentTaskRecord record)
+        {
+            if (mission == null || record == null)
+                return;
+
+            mission.NodeCount++;
+            if (record.IsProactive)
+                mission.ProactiveCount++;
+            else
+                mission.RequestCount++;
+
+            if (record.Success)
+            {
+                mission.SuccessfulCharges++;
+                mission.TotalWaitSeconds += record.WaitSeconds;
+            }
+            else
+            {
+                mission.FailedCount++;
             }
         }
 
-        private void RecordSkippedTask(ChargingRequest request, double dispatchTime, double time, string reason)
+        private ExperimentTaskRecord RecordSkippedTask(ChargingRequest request, double dispatchTime, double time, string reason)
         {
             ExperimentTaskRecord record = new ExperimentTaskRecord();
             record.RunIndex = artifact.RunIndex;
@@ -1109,13 +1176,14 @@ namespace WindowsFormsApplication1
             record.FailureReason = reason;
             record.WcvEnergyAfterJ = 0.0;
             AddTaskRecord(record);
+            return record;
         }
 
         private void AddTaskRecord(ExperimentTaskRecord record)
         {
             totalTaskRecordCount++;
-            if (tasks.Count < taskRecordCaptureLimit)
-                tasks.Add(record);
+            if (csvWriter != null)
+                csvWriter.WriteTask(record);
         }
 
         private void CompleteRequestForNode(int nodeId)
@@ -3016,7 +3084,6 @@ namespace WindowsFormsApplication1
     public class ExperimentRunResult
     {
         public ExperimentRunSummary Summary { get; set; }
-        public List<ExperimentTaskRecord> Tasks { get; set; }
         public int TotalTaskRecordCount { get; set; }
         public List<ExperimentDeathRecord> Deaths { get; set; }
     }
@@ -3090,6 +3157,31 @@ namespace WindowsFormsApplication1
         public double WcvEnergyAfterJ;
     }
 
+    public class MissionRecord
+    {
+        public int RunIndex;
+        public int Seed;
+        public string Algorithm;
+        public int MissionId;
+        public double DispatchTimeSeconds;
+        public double ReturnTimeSeconds;
+        public int NodeCount;
+        public int RequestCount;
+        public int ProactiveCount;
+        public int SuccessfulCharges;
+        public int FailedCount;
+        public double DistanceMeters;
+        public double MoveEnergyJ;
+        public double DeliveredEnergyJ;
+        public int PacketSent;
+        public int PacketReceived;
+        public int PacketLost;
+        public int RoutingFailedPacketLost;
+        public double TotalWaitSeconds;
+        public double AverageWaitSeconds;
+        public List<int> RouteNodeIds;
+    }
+
     public class ExperimentDeathRecord
     {
         public int RunIndex;
@@ -3108,6 +3200,198 @@ namespace WindowsFormsApplication1
         public double WaitSeconds;
     }
 
+    internal sealed class MissionDetailCsvWriter : IDisposable
+    {
+        private readonly StreamWriter missionWriter;
+        private readonly StreamWriter taskWriter;
+        private bool disposed;
+
+        public MissionDetailCsvWriter(string directory, int runIndex, string algorithm)
+        {
+            Directory.CreateDirectory(directory);
+            string safeAlgorithm = SanitizeFileName(algorithm);
+            string missionPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
+                "run{0:D3}-{1}-mission-details.csv", runIndex, safeAlgorithm));
+            string taskPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
+                "run{0:D3}-{1}-task-records.csv", runIndex, safeAlgorithm));
+
+            Encoding utf8 = new UTF8Encoding(true);
+            missionWriter = new StreamWriter(missionPath, false, utf8);
+            taskWriter = new StreamWriter(taskPath, false, utf8);
+            WriteMissionHeader();
+            WriteTaskHeader();
+        }
+
+        public static string PrepareTaskDetailsDirectory(string outputDirectory)
+        {
+            string root = String.IsNullOrWhiteSpace(outputDirectory)
+                ? Path.Combine(ExperimentSettings.ResolveProjectRoot(), "outputs")
+                : outputDirectory;
+            string directory = Path.Combine(root, "task-details");
+            Directory.CreateDirectory(directory);
+            return directory;
+        }
+
+        public void WriteMission(MissionRecord record)
+        {
+            if (disposed || record == null)
+                return;
+
+            missionWriter.WriteLine(CsvRow(
+                record.RunIndex,
+                record.Seed,
+                record.Algorithm,
+                record.MissionId,
+                record.DispatchTimeSeconds,
+                record.ReturnTimeSeconds,
+                record.NodeCount,
+                record.RequestCount,
+                record.ProactiveCount,
+                record.SuccessfulCharges,
+                record.FailedCount,
+                record.DistanceMeters,
+                record.MoveEnergyJ,
+                record.DeliveredEnergyJ,
+                record.PacketSent,
+                record.PacketReceived,
+                record.PacketLost,
+                record.RoutingFailedPacketLost,
+                record.AverageWaitSeconds,
+                RouteText(record.RouteNodeIds)));
+        }
+
+        public void WriteTask(ExperimentTaskRecord record)
+        {
+            if (disposed || record == null)
+                return;
+
+            taskWriter.WriteLine(CsvRow(
+                record.RunIndex,
+                record.Seed,
+                record.Algorithm,
+                record.ArtifactHash,
+                record.MissionId,
+                record.TaskOrder,
+                record.NodeId,
+                record.TaskSource,
+                record.IsProactive,
+                record.ProactiveReason,
+                record.RequestTimeSeconds,
+                record.DeadlineSeconds,
+                record.DispatchTimeSeconds,
+                record.ArrivalTimeSeconds,
+                record.WaitSeconds,
+                record.ChargeStartSeconds,
+                record.ChargeEndSeconds,
+                record.EnergyBeforeJ,
+                record.EnergyAfterJ,
+                record.InternalEnergyBeforeNj,
+                record.InternalEnergyAfterNj,
+                record.ConsumeRateJPerSecond,
+                record.InternalRateNjPerTick,
+                record.DeliveredEnergyJ,
+                record.DistanceFromPreviousMeters,
+                record.Success,
+                record.FailureReason,
+                record.WcvEnergyAfterJ));
+        }
+
+        public void Dispose()
+        {
+            if (disposed)
+                return;
+            disposed = true;
+            missionWriter.Dispose();
+            taskWriter.Dispose();
+        }
+
+        private void WriteMissionHeader()
+        {
+            missionWriter.WriteLine(CsvRow("Run", "Seed", "Algorithm", "MissionId", "DispatchTime", "ReturnTime",
+                "節點數", "Request數", "Proactive數", "成功充電數", "失敗數", "走的距離(m)", "移動耗能(J)",
+                "充入能量(J)", "封包送出", "封包收到", "封包遺失", "RoutingFailed封包遺失", "平均等待時間",
+                "路線節點序列"));
+        }
+
+        private void WriteTaskHeader()
+        {
+            taskWriter.WriteLine(CsvRow("Run", "Seed", "Algorithm", "ArtifactHash", "MissionId", "TaskOrder",
+                "NodeId", "TaskSource", "IsProactive", "ProactiveReason", "RequestTimeSeconds", "DeadlineSeconds",
+                "DispatchTimeSeconds", "ArrivalTimeSeconds", "WaitSeconds", "ChargeStartSeconds", "ChargeEndSeconds",
+                "EnergyBeforeJ", "EnergyAfterJ", "InternalEnergyBeforeNj", "InternalEnergyAfterNj",
+                "ConsumeRateJPerSecond", "InternalRateNjPerTick", "DeliveredEnergyJ", "DistanceFromPreviousMeters",
+                "Success", "FailureReason", "WcvEnergyAfterJ"));
+        }
+
+        private static string RouteText(List<int> routeNodeIds)
+        {
+            if (routeNodeIds == null || routeNodeIds.Count == 0)
+                return "";
+
+            StringBuilder builder = new StringBuilder();
+            for (int i = 0; i < routeNodeIds.Count; i++)
+            {
+                if (i > 0)
+                    builder.Append(">");
+                builder.Append(routeNodeIds[i].ToString(CultureInfo.InvariantCulture));
+            }
+            return builder.ToString();
+        }
+
+        private static string CsvRow(params object[] values)
+        {
+            StringBuilder builder = new StringBuilder();
+            for (int i = 0; i < values.Length; i++)
+            {
+                if (i > 0)
+                    builder.Append(',');
+                builder.Append(CsvValue(values[i]));
+            }
+            return builder.ToString();
+        }
+
+        private static string CsvValue(object value)
+        {
+            if (value == null)
+                return "";
+
+            string text;
+            IFormattable formattable = value as IFormattable;
+            if (formattable != null)
+                text = formattable.ToString(null, CultureInfo.InvariantCulture);
+            else
+                text = value.ToString();
+
+            if (text.IndexOf('"') >= 0)
+                text = text.Replace("\"", "\"\"");
+            if (text.IndexOf(',') >= 0 || text.IndexOf('"') >= 0 || text.IndexOf('\r') >= 0 || text.IndexOf('\n') >= 0)
+                return "\"" + text + "\"";
+            return text;
+        }
+
+        private static string SanitizeFileName(string value)
+        {
+            string text = String.IsNullOrWhiteSpace(value) ? "algorithm" : value.Trim();
+            char[] invalid = Path.GetInvalidFileNameChars();
+            StringBuilder builder = new StringBuilder();
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                bool bad = false;
+                for (int j = 0; j < invalid.Length; j++)
+                {
+                    if (c == invalid[j])
+                    {
+                        bad = true;
+                        break;
+                    }
+                }
+                builder.Append(bad ? '_' : c);
+            }
+            return builder.ToString();
+        }
+    }
+
     internal static class ExperimentWorkbookWriter
     {
         public static void Write(string path, ExperimentBatchResult result)
@@ -3116,7 +3400,6 @@ namespace WindowsFormsApplication1
             writer.AddSheet("參數設定", BuildSettingsRows(result));
             writer.AddSheet("執行比較", BuildRunRows(result));
             writer.AddSheet("彙總統計", BuildSummaryRows(result));
-            writer.AddSheet("任務明細", BuildTaskRows(result));
             writer.AddSheet("死亡原因", BuildDeathRows(result));
             writer.Save(path);
         }
@@ -3156,14 +3439,14 @@ namespace WindowsFormsApplication1
             rows.Add(Row("耗能變動幅度(%)", s.RateChangeVariationPercent, "變動時倍率範圍 = 1 ± 此百分比"));
             rows.Add(Row("演算法", s.SelectedAlgorithmsCsv, ""));
             rows.Add(Row("輸出目錄", s.OutputDirectory, ""));
+            rows.Add(Row("任務明細 CSV 資料夾", result.TaskDetailsDirectory, "每個 run + algorithm 各自輸出 mission-details 與 task-records CSV"));
             rows.Add(Row("ZHENG-inspired 動態耗能週期(s)", 10000, "每 10000s 檢查一次；延伸實驗，不是原始 ZHENG 重現"));
             rows.Add(Row("ZHENG-inspired 耗能率倍率", RateMultiplierRangeText(s), "由耗能變動幅度決定"));
             rows.Add(Row("基地台", "(0,0) sink + 充電中心", "固定單台 WCV，每趟 mission 後回 BS"));
             rows.Add(Row("FUZZY", "Mamdani 模糊推論", "剩餘能量、距離、耗能率、臨界節點密度"));
             rows.Add(Row("BP&R 標註", "BP&R-inspired bottleneck proactive", "依 request/death horizon 與臨界密度挑選 proactive candidate；仍不是完整 ZHENG Algorithm 3 sliding-window removal"));
             rows.Add(Row("GENE/PSO/Cuckoo 標註", "full route optimization baselines", "GA、random-key PSO、Cuckoo Search 共用 route fitness"));
-            rows.Add(Row("任務明細總列數", result.TotalTaskRecordCount, result.TaskRecordsTruncated ? "Excel 任務明細過大，已用 deterministic run/algorithm quota 保留部分資料" : "完整輸出"));
-            rows.Add(Row("任務明細保留列數", result.TaskRecords.Count, "目前記憶體保護上限 " + ExperimentBatchRunner.MaxTaskRecordsInWorkbook.ToString(CultureInfo.InvariantCulture) + " 列"));
+            rows.Add(Row("任務明細總列數", result.TotalTaskRecordCount, "逐節點 task records 已改寫入 CSV，不再輸出到 Excel"));
 
             rows.Add(Row("", "", ""));
             rows.Add(Row("Run", "Seed", "共用資料 hash", "rate-change 次數", "ParentId=-1 節點數", "不連通節點比例"));
@@ -3234,37 +3517,6 @@ namespace WindowsFormsApplication1
                     Average(list, delegate (ExperimentRunSummary s) { return s.RoutingParentMissingNodeCount; }),
                     Average(list, delegate (ExperimentRunSummary s) { return s.RoutingDisconnectedNodeRatio; }),
                     Average(list, delegate (ExperimentRunSummary s) { return s.ChargeEfficiency; })));
-            }
-
-            return rows;
-        }
-
-        private static List<List<object>> BuildTaskRows(ExperimentBatchResult result)
-        {
-            List<List<object>> rows = new List<List<object>>();
-            rows.Add(Row("Run", "Seed", "演算法", "Mission", "順序", "節點", "來源", "proactive", "proactive reason",
-                "request時間(s)", "deadline(s)", "出發時間(s)", "抵達(s)", "等待(s)", "開始充電(s)",
-                "結束充電(s)", "充電前(J)", "充電後(J)", "充電前(nJ)", "充電後(nJ)", "耗能率(J/s)",
-                "耗能率(nJ/tick)", "充入能量(J)", "前段距離(m)", "成功", "失敗原因", "WCV剩餘能量(J)",
-                "共用資料hash"));
-            if (result.TaskRecordsTruncated)
-            {
-                rows.Add(Row("注意", "", "", "", "", "", "", "", "",
-                    "任務明細總列數 " + result.TotalTaskRecordCount.ToString(CultureInfo.InvariantCulture) +
-                    " 超過 Excel 記憶體保護上限，本工作表以 run/algorithm 固定配額保留 " +
-                    result.TaskRecords.Count.ToString(CultureInfo.InvariantCulture) + " 列；彙總統計仍使用完整模擬結果。",
-                    "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""));
-            }
-
-            for (int i = 0; i < result.TaskRecords.Count; i++)
-            {
-                ExperimentTaskRecord t = result.TaskRecords[i];
-                rows.Add(Row(t.RunIndex, t.Seed, AlgorithmDisplayName(t.Algorithm), t.MissionId, t.TaskOrder, t.NodeId, t.TaskSource,
-                    t.IsProactive ? "是" : "否", t.ProactiveReason ?? "", t.RequestTimeSeconds, t.DeadlineSeconds, t.DispatchTimeSeconds,
-                    t.ArrivalTimeSeconds, t.WaitSeconds, t.ChargeStartSeconds, t.ChargeEndSeconds, t.EnergyBeforeJ,
-                    t.EnergyAfterJ, t.InternalEnergyBeforeNj, t.InternalEnergyAfterNj, t.ConsumeRateJPerSecond,
-                    t.InternalRateNjPerTick, t.DeliveredEnergyJ, t.DistanceFromPreviousMeters,
-                    t.Success ? "是" : "否", t.FailureReason, t.WcvEnergyAfterJ, t.ArtifactHash));
             }
 
             return rows;
