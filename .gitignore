@@ -1,0 +1,18 @@
+# Build outputs
+bin/
+obj/
+powercontrol/bin/
+powercontrol/obj/
+
+# Visual Studio / user-local files
+.vs/
+*.user
+*.suo
+*.cache
+
+# Experiment outputs and generated artifacts
+outputs/
+*.xlsx
+*.log
+
+# Keep source PDFs tracked intentionally unless removed later.

@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<ExperimentSettings xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <ProjectRoot>C:\Users\931108boy\Desktop\WSN</ProjectRoot>
+  <BaseSeed>42</BaseSeed>
+  <RunCount>1</RunCount>
+  <SensorCount>1000</SensorCount>
+  <MapWidthMeters>1000</MapWidthMeters>
+  <MapHeightMeters>1000</MapHeightMeters>
+  <SimulationTimeSeconds>200000</SimulationTimeSeconds>
+  <InitialEnergyJ>5</InitialEnergyJ>
+  <SensorBackgroundLifetimeSeconds>100000</SensorBackgroundLifetimeSeconds>
+  <InitialResidualJitterPercent>0</InitialResidualJitterPercent>
+  <EventRatePerSecond>0.05</EventRatePerSecond>
+  <PacketBits>81920</PacketBits>
+  <RadioRangeMeters>60</RadioRangeMeters>
+  <ReceiverEnergyNjPerBit>50</ReceiverEnergyNjPerBit>
+  <AmplifierEnergyNjPerBitM2>0.01</AmplifierEnergyNjPerBitM2>
+  <PowerExponent>2</PowerExponent>
+  <WcvSpeedMetersPerSecond>5</WcvSpeedMetersPerSecond>
+  <WcvChargeRateJPerSecond>5</WcvChargeRateJPerSecond>
+  <WcvCapacityJ>200000</WcvCapacityJ>
+  <WcvMoveCostJPerMeter>10</WcvMoveCostJPerMeter>
+  <NmaxTask>30</NmaxTask>
+  <DynamicNmaxTask>false</DynamicNmaxTask>
+  <ThresholdMode>Percent</ThresholdMode>
+  <RequestThresholdPercent>10</RequestThresholdPercent>
+  <TreqSeconds>4620</TreqSeconds>
+  <PrateChange>0.2</PrateChange>
+  <RateChangeVariationPercent>12.5</RateChangeVariationPercent>
+  <SelectedAlgorithmsCsv>NJF_BPR_ROUTE_SAFE_EXTENDED</SelectedAlgorithmsCsv>
+  <OutputDirectory>C:\Users\931108boy\Desktop\WSN\outputs</OutputDirectory>
+  <LastOutputWorkbookPath></LastOutputWorkbookPath>
+</ExperimentSettings>
