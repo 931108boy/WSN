@@ -95,7 +95,7 @@ C:\Users\931108boy\Desktop\WSN
 ### 網路
 
 - 感測器節點部署在 2D 平面。
-- BS（Base Station）固定為 MyWSN sink，同時也是 WCV 充電中心。
+- BS（Base Station）固定在 `(0,0)`，同時作為 MyWSN sink 與 WCV 充電中心。
 - 節點產生封包事件，封包沿 routing parent 往 BS 傳送。
 - 若 routing parent 不存在或中途節點死亡，該封包視為遺失。
 - Excel 會另外輸出 `ParentId = -1` 節點數、不連通節點比例，以及因 routing failed 造成的 lost packet 數量，方便區分 routing 連通性與充電排程造成的影響。
@@ -203,11 +203,11 @@ if random <= Prate_change:
 
 | 演算法 | 說明 |
 |---|---|
-| GENE | 新版 ExperimentSystem 中的 simplified wrapper baseline：使用 composite route 後做簡化 2-opt route improvement，非完整舊版 GA 最佳化流程 |
-| PSO | 新版 ExperimentSystem 中的 simplified wrapper baseline：使用偏耗能風險的 composite score，非完整舊版 PSO 最佳化流程 |
-| Cuckoo | 新版 ExperimentSystem 中的 simplified wrapper baseline：使用 deadline + distance 的 deterministic random candidate selection，非完整舊版 Cuckoo 最佳化流程 |
+| GENE | Genetic Algorithm route optimization：染色體為任務節點順序，含 EDF/NJF/composite/random 初始族群、tournament selection、ordered crossover、mutation 與 elitism |
+| PSO | Random-key Particle Swarm Optimization：每個 task 對應 position/velocity，依 position 排序成 route，使用 inertia/cognitive/social 更新 |
+| Cuckoo | Cuckoo Search route optimization：nest 為任務排列，使用 swap/insertion/inversion 擾動與 abandonment probability 淘汰較差 nests |
 
-注意：`NJF_BPR` 與 RouteSafe 系列目前採用 BP&R 概念中的 request/death horizon 與 critical-density bottleneck proactive candidate，未實作 ZHENG Algorithm 3 的未來時間窗掃描、BottleList 與 sliding-window removal。GENE、PSO、Cuckoo 在新版 ExperimentSystem 中也只作為 simplified baseline，不應當成完整 GA / PSO / Cuckoo 最佳化演算法做正式比較。
+注意：`NJF_BPR` 與 RouteSafe 系列目前採用 BP&R 概念中的 request/death horizon 與 critical-density bottleneck proactive candidate，未實作 ZHENG Algorithm 3 的未來時間窗掃描、BottleList 與 sliding-window removal。GENE、PSO、Cuckoo 目前已改為正式 route optimization baseline，三者共用同一套 route fitness。
 
 ---
 
@@ -627,7 +627,7 @@ dotnet build C:\Users\931108boy\Desktop\WSN\powercontrol.sln
 
 1. 目前新實驗系統固定單台 WCV。
 2. FUZZY 是單台 WCV 改寫版，不做多充電器分區。
-3. GENE / PSO / Cuckoo 在新版 ExperimentSystem 中是 simplified wrapper baseline，不等於完整移植原始最佳化迴圈；正式比較時需明確標註或移除。
+3. GENE / PSO / Cuckoo 已在新版 ExperimentSystem 中改為正式 route optimization baseline，但仍是針對目前單 WCV mission route 的最佳化實作，不是 YU WCV+WCD 模型。
 4. 新實驗系統是獨立 batch runner，盡量不破壞舊 MyWSN 視覺模擬流程。
 5. Excel 目前用內建 OpenXML `.xlsx` 寫出，未額外套用漂亮樣式；重點是資料完整與可重現。
 6. 若模擬參數太保守，例如初始能量很高、模擬時間不足，可能不會產生 charging request。這不是錯誤，而是模型條件下節點尚未低電量。

@@ -596,8 +596,8 @@ namespace WindowsFormsApplication1
             ExperimentArtifact artifact = new ExperimentArtifact();
             artifact.RunIndex = runIndex;
             artifact.Seed = seed;
-            artifact.BaseX = settings.MapWidthMeters / 2.0;
-            artifact.BaseY = settings.MapHeightMeters / 2.0;
+            artifact.BaseX = 0.0;
+            artifact.BaseY = 0.0;
 
             SensorTemplate baseStation = new SensorTemplate();
             baseStation.Id = 0;
@@ -1166,9 +1166,9 @@ namespace WindowsFormsApplication1
             if (algorithm == "FUZZY")
                 return BuildFuzzyRoute(pool, maxTask);
             if (algorithm == "GENE")
-                return ImproveRouteByTwoOpt(BuildCompositeRoute(pool, maxTask, 0.45, 0.35, 0.20));
+                return BuildGeneticRoute(pool, maxTask);
             if (algorithm == "PSO")
-                return BuildCompositeRoute(pool, maxTask, 0.35, 0.25, 0.40);
+                return BuildPsoRoute(pool, maxTask);
             if (algorithm == "Cuckoo")
                 return BuildCuckooRoute(pool, maxTask);
 
@@ -1703,32 +1703,699 @@ namespace WindowsFormsApplication1
             return route;
         }
 
-        private List<ChargingRequest> BuildCuckooRoute(List<ChargingRequest> pool, int maxTask)
+        private List<ChargingRequest> BuildGeneticRoute(List<ChargingRequest> pool, int maxTask)
         {
-            List<ChargingRequest> remaining = TakeSorted(pool, pool.Count, CompareByDeadline);
-            List<ChargingRequest> route = new List<ChargingRequest>();
-            double x = artifact.BaseX;
-            double y = artifact.BaseY;
+            int routeSize = Math.Min(maxTask, pool.Count);
+            if (routeSize <= 1)
+                return TakeSorted(pool, maxTask, CompareByDeadline);
 
-            while (remaining.Count > 0 && route.Count < maxTask)
+            int populationSize = Math.Max(40, routeSize * 2);
+            int generations = 80;
+            List<List<ChargingRequest>> population = BuildInitialOptimizationPopulation(pool, maxTask, populationSize);
+            List<ChargingRequest> bestRoute = FindBestOptimizationRoute(population);
+            double bestFitness = EvaluateRouteFitness(bestRoute);
+
+            for (int generation = 0; generation < generations; generation++)
             {
-                remaining.Sort(delegate (ChargingRequest a, ChargingRequest b)
-                {
-                    double da = DistanceFrom(x, y, a.NodeId) + Math.Max(0.0, a.DeadlineSeconds - currentTime) * 0.01;
-                    double db = DistanceFrom(x, y, b.NodeId) + Math.Max(0.0, b.DeadlineSeconds - currentTime) * 0.01;
-                    return da.CompareTo(db);
-                });
+                List<List<ChargingRequest>> nextPopulation = new List<List<ChargingRequest>>();
+                nextPopulation.Add(CopyRoute(bestRoute));
 
-                int candidateSpan = Math.Max(1, Math.Min(3, remaining.Count));
-                int chosenIndex = algorithmRandom.Next(candidateSpan);
-                ChargingRequest next = remaining[chosenIndex];
-                route.Add(next);
-                remaining.RemoveAt(chosenIndex);
-                x = sensors[next.NodeId].X;
-                y = sensors[next.NodeId].Y;
+                List<ChargingRequest> secondElite = FindBestOptimizationRouteExcept(population, bestRoute);
+                if (secondElite.Count > 0 && nextPopulation.Count < populationSize)
+                    nextPopulation.Add(CopyRoute(secondElite));
+
+                while (nextPopulation.Count < populationSize)
+                {
+                    List<ChargingRequest> parentA = TournamentSelectRoute(population, 3);
+                    List<ChargingRequest> parentB = TournamentSelectRoute(population, 3);
+                    List<ChargingRequest> child = OrderedCrossoverRoute(parentA, parentB, pool, maxTask);
+                    MutateOptimizationRoute(child, pool, maxTask, 0.28, true);
+                    nextPopulation.Add(NormalizeOptimizationRoute(child, pool, maxTask));
+                }
+
+                population = nextPopulation;
+                List<ChargingRequest> generationBest = FindBestOptimizationRoute(population);
+                double generationFitness = EvaluateRouteFitness(generationBest);
+                if (generationFitness < bestFitness)
+                {
+                    bestFitness = generationFitness;
+                    bestRoute = CopyRoute(generationBest);
+                }
             }
 
+            return CopyRoute(bestRoute);
+        }
+
+        private List<ChargingRequest> BuildPsoRoute(List<ChargingRequest> pool, int maxTask)
+        {
+            int routeSize = Math.Min(maxTask, pool.Count);
+            if (routeSize <= 1)
+                return TakeSorted(pool, maxTask, CompareByDeadline);
+
+            int particleCount = Math.Max(40, routeSize * 2);
+            int iterations = 80;
+            List<List<ChargingRequest>> seedRoutes = BuildInitialOptimizationPopulation(pool, maxTask, Math.Min(4, particleCount));
+            List<PsoParticle> particles = new List<PsoParticle>();
+            PsoParticle globalBest = null;
+
+            for (int i = 0; i < particleCount; i++)
+            {
+                PsoParticle particle = i < seedRoutes.Count
+                    ? CreatePsoParticleFromRoute(pool, seedRoutes[i])
+                    : CreateRandomPsoParticle(pool);
+                List<ChargingRequest> route = BuildRouteFromRandomKeys(pool, particle.Position, maxTask);
+                particle.BestFitness = EvaluateRouteFitness(route);
+                particle.BestPosition = CopyArray(particle.Position);
+                particles.Add(particle);
+                if (globalBest == null || particle.BestFitness < globalBest.BestFitness)
+                    globalBest = particle.CloneBestOnly();
+            }
+
+            double inertia = 0.72;
+            double cognitive = 1.49;
+            double social = 1.49;
+            for (int iteration = 0; iteration < iterations; iteration++)
+            {
+                for (int i = 0; i < particles.Count; i++)
+                {
+                    PsoParticle particle = particles[i];
+                    for (int d = 0; d < particle.Position.Length; d++)
+                    {
+                        double r1 = algorithmRandom.NextDouble();
+                        double r2 = algorithmRandom.NextDouble();
+                        particle.Velocity[d] = inertia * particle.Velocity[d] +
+                            cognitive * r1 * (particle.BestPosition[d] - particle.Position[d]) +
+                            social * r2 * (globalBest.BestPosition[d] - particle.Position[d]);
+                        particle.Velocity[d] = ExperimentSettings.Clamp(particle.Velocity[d], -0.50, 0.50);
+                        particle.Position[d] = ExperimentSettings.Clamp(particle.Position[d] + particle.Velocity[d], 0.0, 1.0);
+                    }
+
+                    List<ChargingRequest> route = BuildRouteFromRandomKeys(pool, particle.Position, maxTask);
+                    double fitness = EvaluateRouteFitness(route);
+                    if (fitness < particle.BestFitness)
+                    {
+                        particle.BestFitness = fitness;
+                        particle.BestPosition = CopyArray(particle.Position);
+                    }
+                    if (fitness < globalBest.BestFitness)
+                        globalBest = particle.CloneBestOnly();
+                }
+            }
+
+            return BuildRouteFromRandomKeys(pool, globalBest.BestPosition, maxTask);
+        }
+
+        private List<ChargingRequest> BuildCuckooRoute(List<ChargingRequest> pool, int maxTask)
+        {
+            int routeSize = Math.Min(maxTask, pool.Count);
+            if (routeSize <= 1)
+                return TakeSorted(pool, maxTask, CompareByDeadline);
+
+            int nestCount = Math.Max(40, routeSize * 2);
+            int iterations = 80;
+            double abandonmentProbability = 0.25;
+            List<List<ChargingRequest>> nests = BuildInitialOptimizationPopulation(pool, maxTask, nestCount);
+            List<ChargingRequest> bestRoute = FindBestOptimizationRoute(nests);
+            double bestFitness = EvaluateRouteFitness(bestRoute);
+
+            for (int iteration = 0; iteration < iterations; iteration++)
+            {
+                for (int i = 0; i < nests.Count; i++)
+                {
+                    List<ChargingRequest> newRoute = CopyRoute(nests[i]);
+                    ApplyCuckooPermutationFlight(newRoute, pool, maxTask);
+                    double newFitness = EvaluateRouteFitness(newRoute);
+                    int targetIndex = algorithmRandom.Next(nests.Count);
+                    if (newFitness < EvaluateRouteFitness(nests[targetIndex]))
+                        nests[targetIndex] = newRoute;
+                    if (newFitness < bestFitness)
+                    {
+                        bestFitness = newFitness;
+                        bestRoute = CopyRoute(newRoute);
+                    }
+                }
+
+                nests.Sort(delegate (List<ChargingRequest> a, List<ChargingRequest> b)
+                {
+                    return EvaluateRouteFitness(a).CompareTo(EvaluateRouteFitness(b));
+                });
+
+                int abandonCount = Math.Max(1, (int)Math.Round(nestCount * abandonmentProbability));
+                for (int i = 0; i < abandonCount && i < nests.Count; i++)
+                {
+                    int index = nests.Count - 1 - i;
+                    List<ChargingRequest> replacement = algorithmRandom.NextDouble() < 0.50
+                        ? CopyRoute(bestRoute)
+                        : BuildRandomOptimizationRoute(pool, maxTask);
+                    ApplyCuckooPermutationFlight(replacement, pool, maxTask);
+                    nests[index] = NormalizeOptimizationRoute(replacement, pool, maxTask);
+                }
+
+                List<ChargingRequest> iterationBest = FindBestOptimizationRoute(nests);
+                double iterationFitness = EvaluateRouteFitness(iterationBest);
+                if (iterationFitness < bestFitness)
+                {
+                    bestFitness = iterationFitness;
+                    bestRoute = CopyRoute(iterationBest);
+                }
+            }
+
+            return CopyRoute(bestRoute);
+        }
+
+        private double EvaluateRouteFitness(List<ChargingRequest> route)
+        {
+            if (route == null || route.Count == 0)
+                return 1.0e12;
+
+            Dictionary<int, double> pendingEnergy = new Dictionary<int, double>();
+            HashSet<int> duplicateNodes = new HashSet<int>();
+            double duplicatePenalty = 0.0;
+            for (int i = 0; i < route.Count; i++)
+            {
+                int nodeId = route[i].NodeId;
+                if (nodeId <= 0 || nodeId >= sensors.Length || !sensors[nodeId].Alive)
+                {
+                    duplicatePenalty += 1.0e7;
+                    continue;
+                }
+                if (duplicateNodes.Contains(nodeId))
+                {
+                    duplicatePenalty += 1.0e7;
+                    continue;
+                }
+                duplicateNodes.Add(nodeId);
+                pendingEnergy[nodeId] = sensors[nodeId].EnergyJ;
+            }
+
+            double trialTime = currentTime;
+            double wcvEnergy = settings.WcvCapacityJ;
+            double x = artifact.BaseX;
+            double y = artifact.BaseY;
+            double totalDistance = 0.0;
+            double totalLateness = 0.0;
+            double energyPenalty = 0.0;
+            double deathPenalty = 0.0;
+            int successfulTasks = 0;
+            HashSet<int> deadPenaltyNodes = new HashSet<int>();
+
+            for (int i = 0; i < route.Count; i++)
+            {
+                ChargingRequest request = route[i];
+                if (!pendingEnergy.ContainsKey(request.NodeId))
+                    continue;
+
+                SensorState sensor = sensors[request.NodeId];
+                double distance = ExperimentArtifact.Distance(x, y, sensor.X, sensor.Y);
+                double returnDistance = ExperimentArtifact.Distance(sensor.X, sensor.Y, artifact.BaseX, artifact.BaseY);
+                double moveEnergy = distance * settings.WcvMoveCostJPerMeter;
+                double returnEnergy = returnDistance * settings.WcvMoveCostJPerMeter;
+                if (wcvEnergy < moveEnergy + returnEnergy)
+                {
+                    energyPenalty += 1.0e8 + (moveEnergy + returnEnergy - wcvEnergy) * 1000.0;
+                    break;
+                }
+
+                wcvEnergy -= moveEnergy;
+                totalDistance += distance;
+                double travelSeconds = distance / Math.Max(1e-9, settings.WcvSpeedMetersPerSecond);
+                DrainPendingRouteEnergy(pendingEnergy, travelSeconds, -1);
+                deathPenalty += CountNewDeadPendingNodes(pendingEnergy, deadPenaltyNodes) * 1.0e7;
+                trialTime += travelSeconds;
+
+                double targetEnergy = pendingEnergy[request.NodeId];
+                if (targetEnergy <= Epsilon)
+                {
+                    deathPenalty += 1.0e8;
+                    pendingEnergy.Remove(request.NodeId);
+                    x = sensor.X;
+                    y = sensor.Y;
+                    continue;
+                }
+
+                double lateness = Math.Max(0.0, trialTime - request.DeadlineSeconds);
+                totalLateness += lateness;
+                double netRate = settings.WcvChargeRateJPerSecond - sensor.ConsumeRateJPerSecond;
+                if (netRate <= 1e-9)
+                {
+                    energyPenalty += 1.0e8;
+                    pendingEnergy.Remove(request.NodeId);
+                    x = sensor.X;
+                    y = sensor.Y;
+                    continue;
+                }
+
+                double timeToFull = Math.Max(0.0, (sensor.CapacityJ - targetEnergy) / netRate);
+                double timeToEmptyWcv = wcvEnergy / Math.Max(1e-9, settings.WcvChargeRateJPerSecond);
+                double chargeSeconds = Math.Min(timeToFull, timeToEmptyWcv);
+                if (chargeSeconds > 0.0)
+                {
+                    DrainPendingRouteEnergy(pendingEnergy, chargeSeconds, request.NodeId);
+                    deathPenalty += CountNewDeadPendingNodes(pendingEnergy, deadPenaltyNodes) * 1.0e7;
+                    targetEnergy += netRate * chargeSeconds;
+                    wcvEnergy -= settings.WcvChargeRateJPerSecond * chargeSeconds;
+                    trialTime += chargeSeconds;
+                }
+
+                if (targetEnergy < sensor.CapacityJ - 1e-5)
+                    energyPenalty += 1.0e8 + (sensor.CapacityJ - targetEnergy) * 1000.0;
+                else if (lateness <= Epsilon)
+                    successfulTasks++;
+
+                pendingEnergy.Remove(request.NodeId);
+                x = sensor.X;
+                y = sensor.Y;
+            }
+
+            double backDistance = ExperimentArtifact.Distance(x, y, artifact.BaseX, artifact.BaseY);
+            totalDistance += backDistance;
+            double backEnergy = backDistance * settings.WcvMoveCostJPerMeter;
+            if (wcvEnergy < backEnergy)
+                energyPenalty += 1.0e8 + (backEnergy - wcvEnergy) * 1000.0;
+
+            int failedTasks = Math.Max(0, route.Count - successfulTasks);
+            return duplicatePenalty +
+                failedTasks * 1000000.0 +
+                totalLateness * 100.0 +
+                totalDistance +
+                energyPenalty +
+                deathPenalty;
+        }
+
+        private void DrainPendingRouteEnergy(Dictionary<int, double> pendingEnergy, double deltaSeconds, int excludedNodeId)
+        {
+            if (deltaSeconds <= 0.0 || pendingEnergy.Count == 0)
+                return;
+
+            List<int> keys = new List<int>(pendingEnergy.Keys);
+            for (int i = 0; i < keys.Count; i++)
+            {
+                int nodeId = keys[i];
+                if (nodeId == excludedNodeId)
+                    continue;
+                pendingEnergy[nodeId] = pendingEnergy[nodeId] - sensors[nodeId].ConsumeRateJPerSecond * deltaSeconds;
+            }
+        }
+
+        private int CountNewDeadPendingNodes(Dictionary<int, double> pendingEnergy, HashSet<int> deadPenaltyNodes)
+        {
+            int count = 0;
+            foreach (KeyValuePair<int, double> pair in pendingEnergy)
+            {
+                if (pair.Value <= Epsilon && !deadPenaltyNodes.Contains(pair.Key))
+                {
+                    deadPenaltyNodes.Add(pair.Key);
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        private List<List<ChargingRequest>> BuildInitialOptimizationPopulation(List<ChargingRequest> pool, int maxTask, int populationSize)
+        {
+            List<List<ChargingRequest>> population = new List<List<ChargingRequest>>();
+            AddOptimizationSeed(population, TakeSorted(pool, maxTask, CompareByDeadline), pool, maxTask);
+            AddOptimizationSeed(population, BuildNearestRoute(pool, maxTask), pool, maxTask);
+            AddOptimizationSeed(population, BuildCompositeRoute(pool, maxTask, 0.45, 0.35, 0.20), pool, maxTask);
+            AddOptimizationSeed(population, BuildCompositeRoute(pool, maxTask, 0.20, 0.25, 0.55), pool, maxTask);
+
+            while (population.Count < populationSize)
+                population.Add(BuildRandomOptimizationRoute(pool, maxTask));
+
+            return population;
+        }
+
+        private void AddOptimizationSeed(List<List<ChargingRequest>> population, List<ChargingRequest> route, List<ChargingRequest> pool, int maxTask)
+        {
+            List<ChargingRequest> normalized = NormalizeOptimizationRoute(route, pool, maxTask);
+            if (normalized.Count > 0)
+                population.Add(normalized);
+        }
+
+        private List<ChargingRequest> BuildRandomOptimizationRoute(List<ChargingRequest> pool, int maxTask)
+        {
+            List<ChargingRequest> shuffled = new List<ChargingRequest>(pool);
+            for (int i = shuffled.Count - 1; i > 0; i--)
+            {
+                int j = algorithmRandom.Next(i + 1);
+                ChargingRequest temp = shuffled[i];
+                shuffled[i] = shuffled[j];
+                shuffled[j] = temp;
+            }
+
+            int routeSize = Math.Min(maxTask, shuffled.Count);
+            List<ChargingRequest> route = new List<ChargingRequest>();
+            for (int i = 0; i < routeSize; i++)
+                route.Add(shuffled[i]);
             return route;
+        }
+
+        private List<ChargingRequest> NormalizeOptimizationRoute(List<ChargingRequest> route, List<ChargingRequest> pool, int maxTask)
+        {
+            int routeSize = Math.Min(maxTask, pool.Count);
+            HashSet<int> used = new HashSet<int>();
+            List<ChargingRequest> normalized = new List<ChargingRequest>();
+            for (int i = 0; i < route.Count && normalized.Count < routeSize; i++)
+            {
+                ChargingRequest request = route[i];
+                if (request == null || used.Contains(request.NodeId) || !PoolContainsNode(pool, request.NodeId))
+                    continue;
+                used.Add(request.NodeId);
+                normalized.Add(request);
+            }
+            if (normalized.Count >= routeSize)
+                return normalized;
+
+            List<ChargingRequest> filler = BuildRandomOptimizationRoute(pool, pool.Count);
+            for (int i = 0; i < filler.Count && normalized.Count < routeSize; i++)
+            {
+                if (used.Contains(filler[i].NodeId))
+                    continue;
+                used.Add(filler[i].NodeId);
+                normalized.Add(filler[i]);
+            }
+
+            return normalized;
+        }
+
+        private bool PoolContainsNode(List<ChargingRequest> pool, int nodeId)
+        {
+            for (int i = 0; i < pool.Count; i++)
+            {
+                if (pool[i].NodeId == nodeId)
+                    return true;
+            }
+            return false;
+        }
+
+        private List<ChargingRequest> CopyRoute(List<ChargingRequest> route)
+        {
+            return new List<ChargingRequest>(route);
+        }
+
+        private List<ChargingRequest> FindBestOptimizationRoute(List<List<ChargingRequest>> routes)
+        {
+            List<ChargingRequest> best = routes.Count == 0 ? new List<ChargingRequest>() : routes[0];
+            double bestFitness = EvaluateRouteFitness(best);
+            for (int i = 1; i < routes.Count; i++)
+            {
+                double fitness = EvaluateRouteFitness(routes[i]);
+                if (fitness < bestFitness)
+                {
+                    bestFitness = fitness;
+                    best = routes[i];
+                }
+            }
+            return CopyRoute(best);
+        }
+
+        private List<ChargingRequest> FindBestOptimizationRouteExcept(List<List<ChargingRequest>> routes, List<ChargingRequest> excluded)
+        {
+            List<ChargingRequest> best = new List<ChargingRequest>();
+            double bestFitness = Double.MaxValue;
+            for (int i = 0; i < routes.Count; i++)
+            {
+                if (SameRoute(routes[i], excluded))
+                    continue;
+                double fitness = EvaluateRouteFitness(routes[i]);
+                if (fitness < bestFitness)
+                {
+                    bestFitness = fitness;
+                    best = routes[i];
+                }
+            }
+            return CopyRoute(best);
+        }
+
+        private bool SameRoute(List<ChargingRequest> a, List<ChargingRequest> b)
+        {
+            if (a == null || b == null || a.Count != b.Count)
+                return false;
+            for (int i = 0; i < a.Count; i++)
+            {
+                if (a[i].NodeId != b[i].NodeId)
+                    return false;
+            }
+            return true;
+        }
+
+        private List<ChargingRequest> TournamentSelectRoute(List<List<ChargingRequest>> population, int tournamentSize)
+        {
+            List<ChargingRequest> best = null;
+            double bestFitness = Double.MaxValue;
+            for (int i = 0; i < tournamentSize; i++)
+            {
+                List<ChargingRequest> candidate = population[algorithmRandom.Next(population.Count)];
+                double fitness = EvaluateRouteFitness(candidate);
+                if (best == null || fitness < bestFitness)
+                {
+                    best = candidate;
+                    bestFitness = fitness;
+                }
+            }
+            return CopyRoute(best);
+        }
+
+        private List<ChargingRequest> OrderedCrossoverRoute(List<ChargingRequest> parentA, List<ChargingRequest> parentB, List<ChargingRequest> pool, int maxTask)
+        {
+            int routeSize = Math.Min(maxTask, pool.Count);
+            ChargingRequest[] child = new ChargingRequest[routeSize];
+            HashSet<int> used = new HashSet<int>();
+            int start = algorithmRandom.Next(routeSize);
+            int end = algorithmRandom.Next(routeSize);
+            if (start > end)
+            {
+                int temp = start;
+                start = end;
+                end = temp;
+            }
+
+            for (int i = start; i <= end && i < parentA.Count; i++)
+            {
+                child[i] = parentA[i];
+                used.Add(parentA[i].NodeId);
+            }
+
+            int writeIndex = (end + 1) % routeSize;
+            FillOrderedCrossoverSlots(child, used, parentB, ref writeIndex);
+            FillOrderedCrossoverSlots(child, used, parentA, ref writeIndex);
+            if (HasEmptyCrossoverSlot(child))
+                FillOrderedCrossoverSlots(child, used, BuildRandomOptimizationRoute(pool, pool.Count), ref writeIndex);
+
+            List<ChargingRequest> result = new List<ChargingRequest>();
+            for (int i = 0; i < child.Length; i++)
+            {
+                if (child[i] != null)
+                    result.Add(child[i]);
+            }
+            return NormalizeOptimizationRoute(result, pool, maxTask);
+        }
+
+        private bool HasEmptyCrossoverSlot(ChargingRequest[] child)
+        {
+            for (int i = 0; i < child.Length; i++)
+            {
+                if (child[i] == null)
+                    return true;
+            }
+            return false;
+        }
+
+        private void FillOrderedCrossoverSlots(ChargingRequest[] child, HashSet<int> used, List<ChargingRequest> source, ref int writeIndex)
+        {
+            for (int i = 0; i < source.Count; i++)
+            {
+                if (used.Contains(source[i].NodeId))
+                    continue;
+                int safety = 0;
+                while (child[writeIndex] != null && safety < child.Length)
+                {
+                    writeIndex = (writeIndex + 1) % child.Length;
+                    safety++;
+                }
+                if (safety >= child.Length)
+                    return;
+                child[writeIndex] = source[i];
+                used.Add(source[i].NodeId);
+                writeIndex = (writeIndex + 1) % child.Length;
+            }
+        }
+
+        private void MutateOptimizationRoute(List<ChargingRequest> route, List<ChargingRequest> pool, int maxTask, double mutationRate, bool allowReplacement)
+        {
+            if (route.Count < 2 || algorithmRandom.NextDouble() > mutationRate)
+                return;
+
+            int moveCount = 1;
+            while (moveCount < route.Count && algorithmRandom.NextDouble() < 0.35)
+                moveCount++;
+
+            for (int move = 0; move < moveCount; move++)
+                ApplyRandomPermutationMove(route, pool, maxTask, allowReplacement);
+        }
+
+        private void ApplyCuckooPermutationFlight(List<ChargingRequest> route, List<ChargingRequest> pool, int maxTask)
+        {
+            int moveCount = 1;
+            while (moveCount < Math.Min(8, route.Count) && algorithmRandom.NextDouble() < 0.55)
+                moveCount++;
+            for (int i = 0; i < moveCount; i++)
+                ApplyRandomPermutationMove(route, pool, maxTask, true);
+        }
+
+        private void ApplyRandomPermutationMove(List<ChargingRequest> route, List<ChargingRequest> pool, int maxTask, bool allowReplacement)
+        {
+            if (route.Count < 2)
+                return;
+
+            int operation = algorithmRandom.Next(allowReplacement ? 4 : 3);
+            int a = algorithmRandom.Next(route.Count);
+            int b = algorithmRandom.Next(route.Count);
+            if (a > b)
+            {
+                int temp = a;
+                a = b;
+                b = temp;
+            }
+
+            if (operation == 0)
+            {
+                ChargingRequest temp = route[a];
+                route[a] = route[b];
+                route[b] = temp;
+            }
+            else if (operation == 1)
+            {
+                if (b > a)
+                    route.Reverse(a, b - a + 1);
+            }
+            else if (operation == 2)
+            {
+                ChargingRequest item = route[b];
+                route.RemoveAt(b);
+                route.Insert(a, item);
+            }
+            else
+            {
+                ReplaceRandomRouteTask(route, pool);
+            }
+        }
+
+        private void ReplaceRandomRouteTask(List<ChargingRequest> route, List<ChargingRequest> pool)
+        {
+            if (pool.Count <= route.Count)
+                return;
+
+            HashSet<int> used = new HashSet<int>();
+            for (int i = 0; i < route.Count; i++)
+                used.Add(route[i].NodeId);
+
+            List<ChargingRequest> candidates = new List<ChargingRequest>();
+            for (int i = 0; i < pool.Count; i++)
+            {
+                if (!used.Contains(pool[i].NodeId))
+                    candidates.Add(pool[i]);
+            }
+            if (candidates.Count == 0)
+                return;
+
+            int replaceIndex = algorithmRandom.Next(route.Count);
+            route[replaceIndex] = candidates[algorithmRandom.Next(candidates.Count)];
+        }
+
+        private PsoParticle CreateRandomPsoParticle(List<ChargingRequest> pool)
+        {
+            PsoParticle particle = new PsoParticle();
+            particle.Position = new double[pool.Count];
+            particle.Velocity = new double[pool.Count];
+            for (int i = 0; i < pool.Count; i++)
+            {
+                particle.Position[i] = algorithmRandom.NextDouble();
+                particle.Velocity[i] = algorithmRandom.NextDouble() * 0.20 - 0.10;
+            }
+            return particle;
+        }
+
+        private PsoParticle CreatePsoParticleFromRoute(List<ChargingRequest> pool, List<ChargingRequest> route)
+        {
+            PsoParticle particle = CreateRandomPsoParticle(pool);
+            for (int i = 0; i < particle.Position.Length; i++)
+                particle.Position[i] = 0.50 + algorithmRandom.NextDouble() * 0.50;
+
+            for (int rank = 0; rank < route.Count; rank++)
+            {
+                int index = FindPoolIndexByNodeId(pool, route[rank].NodeId);
+                if (index >= 0)
+                    particle.Position[index] = ((double)rank + 1.0) / ((double)pool.Count + 1.0) * 0.45;
+            }
+            return particle;
+        }
+
+        private int FindPoolIndexByNodeId(List<ChargingRequest> pool, int nodeId)
+        {
+            for (int i = 0; i < pool.Count; i++)
+            {
+                if (pool[i].NodeId == nodeId)
+                    return i;
+            }
+            return -1;
+        }
+
+        private List<ChargingRequest> BuildRouteFromRandomKeys(List<ChargingRequest> pool, double[] position, int maxTask)
+        {
+            List<RandomKeyItem> items = new List<RandomKeyItem>();
+            for (int i = 0; i < pool.Count; i++)
+            {
+                RandomKeyItem item = new RandomKeyItem();
+                item.Index = i;
+                item.Key = position[i];
+                items.Add(item);
+            }
+
+            items.Sort(delegate (RandomKeyItem a, RandomKeyItem b)
+            {
+                int compare = a.Key.CompareTo(b.Key);
+                if (compare != 0)
+                    return compare;
+                return pool[a.Index].NodeId.CompareTo(pool[b.Index].NodeId);
+            });
+
+            int routeSize = Math.Min(maxTask, pool.Count);
+            List<ChargingRequest> route = new List<ChargingRequest>();
+            for (int i = 0; i < routeSize; i++)
+                route.Add(pool[items[i].Index]);
+            return route;
+        }
+
+        private static double[] CopyArray(double[] source)
+        {
+            double[] copy = new double[source.Length];
+            Array.Copy(source, copy, source.Length);
+            return copy;
+        }
+
+        private class RandomKeyItem
+        {
+            public int Index;
+            public double Key;
+        }
+
+        private class PsoParticle
+        {
+            public double[] Position;
+            public double[] Velocity;
+            public double[] BestPosition;
+            public double BestFitness;
+
+            public PsoParticle CloneBestOnly()
+            {
+                PsoParticle clone = new PsoParticle();
+                clone.Position = CopyArray(Position);
+                clone.Velocity = CopyArray(Velocity);
+                clone.BestPosition = CopyArray(BestPosition);
+                clone.BestFitness = BestFitness;
+                return clone;
+            }
         }
 
         private List<ChargingRequest> ImproveRouteByTwoOpt(List<ChargingRequest> route)
@@ -2491,10 +3158,10 @@ namespace WindowsFormsApplication1
             rows.Add(Row("輸出目錄", s.OutputDirectory, ""));
             rows.Add(Row("ZHENG-inspired 動態耗能週期(s)", 10000, "每 10000s 檢查一次；延伸實驗，不是原始 ZHENG 重現"));
             rows.Add(Row("ZHENG-inspired 耗能率倍率", RateMultiplierRangeText(s), "由耗能變動幅度決定"));
-            rows.Add(Row("基地台", "sink + 充電中心", "固定單台 WCV，每趟 mission 後回 BS"));
+            rows.Add(Row("基地台", "(0,0) sink + 充電中心", "固定單台 WCV，每趟 mission 後回 BS"));
             rows.Add(Row("FUZZY", "Mamdani 模糊推論", "剩餘能量、距離、耗能率、臨界節點密度"));
             rows.Add(Row("BP&R 標註", "BP&R-inspired bottleneck proactive", "依 request/death horizon 與臨界密度挑選 proactive candidate；仍不是完整 ZHENG Algorithm 3 sliding-window removal"));
-            rows.Add(Row("GENE/PSO/Cuckoo 標註", "simplified wrapper baselines", "不是完整移植舊版最佳化流程"));
+            rows.Add(Row("GENE/PSO/Cuckoo 標註", "full route optimization baselines", "GA、random-key PSO、Cuckoo Search 共用 route fitness"));
             rows.Add(Row("任務明細總列數", result.TotalTaskRecordCount, result.TaskRecordsTruncated ? "Excel 任務明細過大，已用 deterministic run/algorithm quota 保留部分資料" : "完整輸出"));
             rows.Add(Row("任務明細保留列數", result.TaskRecords.Count, "目前記憶體保護上限 " + ExperimentBatchRunner.MaxTaskRecordsInWorkbook.ToString(CultureInfo.InvariantCulture) + " 列"));
 
@@ -2637,9 +3304,9 @@ namespace WindowsFormsApplication1
             if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（公平版，<=NmaxTask）";
             if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（延伸版，可超過NmaxTask）";
             if (key == "FUZZY") return "FUZZY（模糊推論排程）";
-            if (key == "GENE") return "GENE（簡化 wrapper baseline，非完整舊版 GA）";
-            if (key == "PSO") return "PSO（簡化 wrapper baseline，非完整舊版 PSO）";
-            if (key == "Cuckoo") return "Cuckoo（簡化 wrapper baseline，非完整舊版 Cuckoo）";
+            if (key == "GENE") return "GENE（GA route optimization）";
+            if (key == "PSO") return "PSO（random-key PSO route optimization）";
+            if (key == "Cuckoo") return "Cuckoo（Cuckoo Search route optimization）";
             return key;
         }
 
@@ -3095,9 +3762,9 @@ namespace WindowsFormsApplication1
             if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（公平版，<=NmaxTask）";
             if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（延伸版，可超過NmaxTask）";
             if (key == "FUZZY") return "FUZZY（模糊推論排程）";
-            if (key == "GENE") return "GENE（簡化 wrapper baseline，非完整舊版 GA）";
-            if (key == "PSO") return "PSO（簡化 wrapper baseline，非完整舊版 PSO）";
-            if (key == "Cuckoo") return "Cuckoo（簡化 wrapper baseline，非完整舊版 Cuckoo）";
+            if (key == "GENE") return "GENE（GA route optimization）";
+            if (key == "PSO") return "PSO（random-key PSO route optimization）";
+            if (key == "Cuckoo") return "Cuckoo（Cuckoo Search route optimization）";
             return key;
         }
 

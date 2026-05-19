@@ -5,7 +5,7 @@
 
 ## Key Decisions
 - MyWSN 原始碼已搬入 `C:\Users\931108boy\Desktop\WSN\powercontrol`；原始壓縮檔只作為匯入來源，不直接修改。
-- BS 固定為 MyWSN sink + 充電中心；WCV 固定單台，每趟 mission 完成後回 BS。
+- BS 固定在 `(0,0)`，作為 MyWSN sink + 充電中心；WCV 固定單台，每趟 mission 完成後回 BS。
 - `Prate_change` 是單次測試固定值；同一 run 先產生固定 rate-change schedule，所有演算法共用，不自動跑 `0, 0.1, 0.2, 0.3`。
 - 每個 run 的 map、event、initial residual、routing parent、rate-change schedule 皆由 seed 決定，並以 artifact hash 記錄在 Excel。
 - 能耗模型採連續背景耗能 + MyWSN 封包 TX/RX/forward 耗能；每 `10000 s` 以 `Prate_change` 機率套用 `0.875~1.125` 倍耗能率變動。
@@ -21,7 +21,7 @@
   - `powercontrol.exe --experiment-smoke`
   - `powercontrol.exe --experiment [settings.xml]`
 - 預設演算法：EDF、NJF、TADP/LIN、RCSS、NJF+BP&R、FUZZY。
-- 可選 simplified wrapper baseline：GENE、PSO、Cuckoo；不是完整移植舊版最佳化流程。
+- 可選正式 route optimization baseline：GENE、PSO、Cuckoo；三者共用 route fitness，分別使用 GA、random-key PSO、Cuckoo Search。
 - FUZZY 採單台 WCV 改寫版 Mamdani FLCSD-style：剩餘能量、距離、耗能率、critical node density 輸入，輸出排程優先度。
 
 ## Excel Output

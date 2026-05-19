@@ -193,7 +193,7 @@ namespace WindowsFormsApplication1
             expWcvMoveCostBox = add_labeled_textbox(wcvGroup, "移動耗能(J/m)", "WCV 每公尺消耗能量", 18, 132, "");
             expNmaxTaskBox = add_labeled_textbox(wcvGroup, "任務上限", "每趟最多服務節點數", 18, 166, "NmaxTask");
             Label bsLabel = new Label();
-            bsLabel.Text = "基地台 = sink + 充電中心；每趟任務後 WCV 返回基地台。";
+            bsLabel.Text = "基地台 = (0,0) sink + 充電中心；每趟任務後 WCV 返回基地台。";
             bsLabel.Location = new Point(18, 204);
             bsLabel.Size = new Size(320, 42);
             wcvGroup.Controls.Add(bsLabel);
@@ -441,9 +441,9 @@ namespace WindowsFormsApplication1
             if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（公平版，<=NmaxTask）";
             if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（延伸版，可超過NmaxTask）";
             if (key == "FUZZY") return "FUZZY（模糊推論排程）";
-            if (key == "GENE") return "GENE（簡化 wrapper baseline，非完整舊版 GA）";
-            if (key == "PSO") return "PSO（簡化 wrapper baseline，非完整舊版 PSO）";
-            if (key == "Cuckoo") return "Cuckoo（簡化 wrapper baseline，非完整舊版 Cuckoo）";
+            if (key == "GENE") return "GENE（GA route optimization）";
+            if (key == "PSO") return "PSO（random-key PSO route optimization）";
+            if (key == "Cuckoo") return "Cuckoo（Cuckoo Search route optimization）";
             return key;
         }
 
