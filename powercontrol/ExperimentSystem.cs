@@ -900,6 +900,7 @@ namespace WindowsFormsApplication1
         private const string YuBprDangerIntervalRemovalReason = "YU_BPR_DANGER_INTERVAL_REMOVAL";
         private const string RoutingBottleneckEmergencyReason = "ROUTING_BOTTLENECK_EMERGENCY";
         private const double EmergencyForwardPacketsAverageMultiplier = 2.0;
+        private const int EmergencyRoutingBottleneckMaxAddPerDispatch = 1;
         private const int RoutingBottleneckTraceRunIndex = 22;
         private const int RoutingBottleneckTraceSeed = 63;
         private const int RoutingBottleneckTraceNodeId = 292;
@@ -3184,8 +3185,8 @@ namespace WindowsFormsApplication1
                     }
 
                     int emergencyCapacityLeft = allowCapacityOverflow
-                        ? emergencyCandidates.Count
-                        : Math.Max(0, maxTask - cplist.Count);
+                        ? EmergencyRoutingBottleneckMaxAddPerDispatch
+                        : Math.Min(EmergencyRoutingBottleneckMaxAddPerDispatch, Math.Max(0, maxTask - cplist.Count));
                     int emergencyAddCount = Math.Min(emergencyCandidates.Count, emergencyCapacityLeft);
                     if (emergencyAddCount <= 0)
                     {
@@ -3299,8 +3300,8 @@ namespace WindowsFormsApplication1
                     }
 
                     int emergencyCapacityLeft = allowCapacityOverflow
-                        ? emergencyCandidates.Count
-                        : Math.Max(0, maxTask - cplist.Count);
+                        ? EmergencyRoutingBottleneckMaxAddPerDispatch
+                        : Math.Min(EmergencyRoutingBottleneckMaxAddPerDispatch, Math.Max(0, maxTask - cplist.Count));
                     int emergencyAddCount = Math.Min(emergencyCandidates.Count, emergencyCapacityLeft);
                     if (emergencyAddCount <= 0)
                     {
