@@ -898,6 +898,11 @@ namespace WindowsFormsApplication1
         private const double Epsilon = 1e-7;
         private const string ZhengBprWindowRemovalReason = "ZHENG_BPR_WINDOW_REMOVAL";
         private const string YuBprDangerIntervalRemovalReason = "YU_BPR_DANGER_INTERVAL_REMOVAL";
+        private const string RoutingBottleneckEmergencyReason = "ROUTING_BOTTLENECK_EMERGENCY";
+        private const double EmergencyForwardPacketsAverageMultiplier = 2.0;
+        private const int RoutingBottleneckTraceRunIndex = 22;
+        private const int RoutingBottleneckTraceSeed = 63;
+        private const int RoutingBottleneckTraceNodeId = 292;
         private readonly ExperimentSettings settings;
         private readonly ExperimentArtifact artifact;
         private readonly string algorithm;
@@ -1091,6 +1096,28 @@ namespace WindowsFormsApplication1
             public double SlackSeconds;
             public double RouteInsertionCost;
             public double Score;
+            public string Reason;
+        }
+
+        private sealed class EmergencyRoutingBottleneckCandidate
+        {
+            public int NodeId;
+            public double EnergyJ;
+            public double BaseConsumeRateJPerSecond;
+            public double RoutingLoadJPerSecond;
+            public double RoutingTxLoadJPerSecond;
+            public double RoutingRxLoadJPerSecond;
+            public double EffectiveConsumeRateJPerSecond;
+            public int RoutingSubtreeSize;
+            public double ExpectedRoutingForwardPacketsPerSecond;
+            public double AverageExpectedRoutingForwardPacketsPerSecond;
+            public double PredictedRequestTimeSeconds;
+            public double PredictedDeathTimeSeconds;
+            public double RouteInsertionCost;
+            public bool HasPendingRequest;
+            public bool HasActiveRequest;
+            public bool IsScheduledInCurrentMission;
+            public bool IsEmergencyCandidate;
             public string Reason;
         }
 
@@ -1726,11 +1753,18 @@ namespace WindowsFormsApplication1
             List<ChargingRequest> route = BuildMissionRoute();
             int deduplicatedTaskCount;
             route = DeduplicateMissionRoute(route, out deduplicatedTaskCount);
+            TraceRoutingBottleneckNode(
+                "ROUTE_BUILT",
+                GetMissionTaskLimit(),
+                RoutingBottleneckTraceNodeId,
+                false,
+                ContainsChargingRequest(route, RoutingBottleneckTraceNodeId));
             if (route.Count == 0)
             {
                 currentTime = Math.Min(settings.SimulationTimeSeconds, currentTime + 1.0);
                 return;
             }
+            AccumulatePlannedProactiveTasks(route);
 
             MissionRecord mission = new MissionRecord();
             mission.RunIndex = artifact.RunIndex;
@@ -1962,6 +1996,7 @@ namespace WindowsFormsApplication1
             {
                 mission.ProactiveCount++;
                 summary.ProactiveTaskCount++;
+                summary.ExecutedProactiveTaskCount++;
             }
             else
             {
@@ -2149,6 +2184,28 @@ namespace WindowsFormsApplication1
             }
         }
 
+        private void AccumulatePlannedProactiveTasks(List<ChargingRequest> route)
+        {
+            if (route == null)
+                return;
+
+            for (int i = 0; i < route.Count; i++)
+            {
+                ChargingRequest request = route[i];
+                if (request == null || !request.IsProactive)
+                    continue;
+                summary.PlannedProactiveTaskCount++;
+                if (IsEmergencyBottleneckProactive(request))
+                    summary.EmergencyBottleneckProactiveCount++;
+            }
+        }
+
+        private static bool IsEmergencyBottleneckProactive(ChargingRequest request)
+        {
+            return request != null &&
+                String.Equals(request.ProactiveReason, RoutingBottleneckEmergencyReason, StringComparison.Ordinal);
+        }
+
         private bool IsNodeReservedForCurrentMission(int nodeId)
         {
             return plannedMissionNodeIds != null && plannedMissionNodeIds.Contains(nodeId);
@@ -2300,11 +2357,15 @@ namespace WindowsFormsApplication1
                 algorithm == "NJF_ROUTE_YU_BPR_EXTENDED")
             {
                 List<YuPredictedInterval> intervals = BuildYuPredictedIntervals(maxTask, new HashSet<int>());
-                return BuildYuDangerWindows(intervals, maxTask).Count > 0;
+                if (BuildYuDangerWindows(intervals, maxTask).Count > 0)
+                    return true;
+                return HasEmergencyRoutingBottleneckCandidate(maxTask);
             }
 
             List<BprPredictedRequest> predictedRequests = BuildBprPredictedRequests(maxTask, new HashSet<int>());
-            return BuildBprSlidingWindows(predictedRequests, maxTask).Count > 0;
+            if (BuildBprSlidingWindows(predictedRequests, maxTask).Count > 0)
+                return true;
+            return HasEmergencyRoutingBottleneckCandidate(maxTask);
         }
 
         private double FindNextBprBottleneckCandidateTime()
@@ -2320,23 +2381,246 @@ namespace WindowsFormsApplication1
                 return FindNextYuBprBottleneckCandidateTime();
             }
 
+            double windowTime = Double.PositiveInfinity;
             List<BprPredictedRequest> predictedRequests = BuildBprPredictedRequests(maxTask, new HashSet<int>());
             List<BprWindow> windows = BuildBprSlidingWindows(predictedRequests, maxTask);
-            if (windows.Count == 0)
-                return Double.PositiveInfinity;
+            if (windows.Count > 0)
+                windowTime = windows[0].WindowStartSeconds - EstimateBprTjobSeconds(maxTask);
 
-            return Math.Max(currentTime, windows[0].WindowStartSeconds - EstimateBprTjobSeconds(maxTask));
+            double emergencyTime = FindNextEmergencyRoutingBottleneckCandidateTime(maxTask);
+            double next = Math.Min(windowTime, emergencyTime);
+            if (Double.IsPositiveInfinity(next))
+                return next;
+            return Math.Max(currentTime, next);
         }
 
         private double FindNextYuBprBottleneckCandidateTime()
         {
             int maxTask = GetMissionTaskLimit();
+            double windowTime = Double.PositiveInfinity;
             List<YuPredictedInterval> intervals = BuildYuPredictedIntervals(maxTask, new HashSet<int>());
             List<YuDangerWindow> windows = BuildYuDangerWindows(intervals, maxTask);
-            if (windows.Count == 0)
+            if (windows.Count > 0)
+                windowTime = windows[0].WindowStartSeconds - EstimateBprTjobSeconds(maxTask);
+
+            double emergencyTime = FindNextEmergencyRoutingBottleneckCandidateTime(maxTask);
+            double next = Math.Min(windowTime, emergencyTime);
+            if (Double.IsPositiveInfinity(next))
+                return next;
+            return Math.Max(currentTime, next);
+        }
+
+        private bool HasEmergencyRoutingBottleneckCandidate(int maxTask)
+        {
+            return BuildEmergencyRoutingBottleneckCandidates(
+                maxTask,
+                new HashSet<int>(),
+                new List<ChargingRequest>()).Count > 0;
+        }
+
+        private double FindNextEmergencyRoutingBottleneckCandidateTime(int maxTask)
+        {
+            List<EmergencyRoutingBottleneckCandidate> candidates = BuildEmergencyRoutingBottleneckCandidates(
+                maxTask,
+                new HashSet<int>(),
+                new List<ChargingRequest>());
+            if (candidates.Count == 0)
                 return Double.PositiveInfinity;
 
-            return Math.Max(currentTime, windows[0].WindowStartSeconds - EstimateBprTjobSeconds(maxTask));
+            return candidates[0].PredictedDeathTimeSeconds - EstimateBprTjobSeconds(maxTask);
+        }
+
+        private List<EmergencyRoutingBottleneckCandidate> BuildEmergencyRoutingBottleneckCandidates(
+            int maxTask,
+            HashSet<int> reservedNodeIds,
+            List<ChargingRequest> cplist)
+        {
+            List<EmergencyRoutingBottleneckCandidate> candidates = new List<EmergencyRoutingBottleneckCandidate>();
+            double averageForwardPackets = ComputeAverageExpectedRoutingForwardPacketsPerSecond();
+            List<ChargingRequest> route = BuildNearestRoute(cplist ?? new List<ChargingRequest>(),
+                cplist == null ? 0 : cplist.Count);
+
+            for (int nodeId = 1; nodeId < sensors.Length; nodeId++)
+            {
+                EmergencyRoutingBottleneckCandidate candidate = EvaluateEmergencyRoutingBottleneckCandidate(
+                    nodeId,
+                    maxTask,
+                    reservedNodeIds,
+                    route,
+                    averageForwardPackets);
+                TraceRoutingBottleneckNode(
+                    "EMERGENCY_EVALUATE",
+                    maxTask,
+                    candidate,
+                    false,
+                    false);
+                if (candidate.IsEmergencyCandidate)
+                    candidates.Add(candidate);
+            }
+
+            candidates.Sort(CompareEmergencyRoutingBottleneckCandidates);
+            return candidates;
+        }
+
+        private EmergencyRoutingBottleneckCandidate EvaluateEmergencyRoutingBottleneckCandidate(
+            int nodeId,
+            int maxTask,
+            HashSet<int> reservedNodeIds,
+            List<ChargingRequest> currentRoute,
+            double averageForwardPackets)
+        {
+            EmergencyRoutingBottleneckCandidate candidate = new EmergencyRoutingBottleneckCandidate();
+            candidate.NodeId = nodeId;
+            candidate.PredictedRequestTimeSeconds = Double.PositiveInfinity;
+            candidate.PredictedDeathTimeSeconds = Double.PositiveInfinity;
+            candidate.RouteInsertionCost = Double.PositiveInfinity;
+            candidate.AverageExpectedRoutingForwardPacketsPerSecond = averageForwardPackets;
+            candidate.Reason = "";
+
+            if (nodeId <= 0 || nodeId >= sensors.Length)
+            {
+                candidate.Reason = "INVALID_NODE";
+                return candidate;
+            }
+
+            SensorState sensor = sensors[nodeId];
+            if (sensor == null)
+            {
+                candidate.Reason = "MISSING_SENSOR";
+                return candidate;
+            }
+
+            candidate.EnergyJ = sensor.EnergyJ;
+            candidate.BaseConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
+            candidate.RoutingTxLoadJPerSecond = GetRoutingTxLoadJPerSecond(sensor);
+            candidate.RoutingRxLoadJPerSecond = GetRoutingRxLoadJPerSecond(sensor);
+            candidate.RoutingLoadJPerSecond = candidate.RoutingTxLoadJPerSecond + candidate.RoutingRxLoadJPerSecond;
+            candidate.EffectiveConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond + candidate.RoutingLoadJPerSecond;
+            candidate.RoutingSubtreeSize = GetRoutingSubtreeSize(nodeId);
+            candidate.ExpectedRoutingForwardPacketsPerSecond = GetExpectedRoutingForwardPacketsPerSecond(nodeId);
+            candidate.HasPendingRequest = sensor.HasPendingRequest;
+            candidate.HasActiveRequest = HasActiveRequestForNode(nodeId);
+            candidate.IsScheduledInCurrentMission = IsNodeReservedForCurrentMission(nodeId) ||
+                (reservedNodeIds != null && reservedNodeIds.Contains(nodeId));
+
+            if (!sensor.Alive)
+            {
+                candidate.Reason = "NOT_ALIVE";
+                return candidate;
+            }
+            if (candidate.HasPendingRequest)
+            {
+                candidate.Reason = "HAS_PENDING_REQUEST";
+                return candidate;
+            }
+            if (candidate.HasActiveRequest)
+            {
+                candidate.Reason = "HAS_ACTIVE_REQUEST";
+                return candidate;
+            }
+            if (candidate.IsScheduledInCurrentMission)
+            {
+                candidate.Reason = "SCHEDULED_IN_CURRENT_MISSION";
+                return candidate;
+            }
+            if (candidate.EffectiveConsumeRateJPerSecond <= 1e-12)
+            {
+                candidate.Reason = "NON_POSITIVE_EFFECTIVE_RATE";
+                return candidate;
+            }
+
+            double horizonEnd = GetBprPredictionHorizonEndSeconds(maxTask);
+            List<BprPredictionSegment> timeline = BuildBprPredictionTimelineFromState(
+                nodeId,
+                horizonEnd,
+                sensor.EnergyJ,
+                sensor.RateScale);
+            double predictedDeathTime = sensor.EnergyJ <= Epsilon ? currentTime : Double.PositiveInfinity;
+            double predictedRequestTime = ComputeCurrentPredictedRequestTime(sensor, candidate.EffectiveConsumeRateJPerSecond);
+            for (int i = 0; i < timeline.Count; i++)
+            {
+                if (timeline[i].CrossesDeathThreshold && Double.IsPositiveInfinity(predictedDeathTime))
+                    predictedDeathTime = timeline[i].DeathTimeSeconds;
+                if (timeline[i].CrossesRequestThreshold && Double.IsPositiveInfinity(predictedRequestTime))
+                    predictedRequestTime = timeline[i].RequestTimeSeconds;
+            }
+            candidate.PredictedRequestTimeSeconds = predictedRequestTime;
+            candidate.PredictedDeathTimeSeconds = predictedDeathTime;
+
+            double horizonSeconds = ResolveProactivePredictionHorizonSeconds(maxTask);
+            if (Double.IsPositiveInfinity(predictedDeathTime) ||
+                predictedDeathTime > currentTime + horizonSeconds + Epsilon)
+            {
+                candidate.Reason = "PREDICTED_DEATH_AFTER_HORIZON";
+                return candidate;
+            }
+
+            bool routingRatioHigh = candidate.BaseConsumeRateJPerSecond <= 1e-12
+                ? candidate.RoutingLoadJPerSecond > 1e-12
+                : candidate.RoutingLoadJPerSecond / candidate.BaseConsumeRateJPerSecond >= 1.0 - Epsilon;
+            bool forwardPacketsHigh = averageForwardPackets > 1e-12 &&
+                candidate.ExpectedRoutingForwardPacketsPerSecond >=
+                averageForwardPackets * EmergencyForwardPacketsAverageMultiplier - Epsilon;
+            if (!routingRatioHigh && !forwardPacketsHigh)
+            {
+                candidate.Reason = "ROUTING_LOAD_NOT_HIGH";
+                return candidate;
+            }
+
+            if (routingRatioHigh && forwardPacketsHigh)
+                candidate.Reason = "ROUTING_LOAD_RATIO_AND_FORWARD_PACKETS";
+            else if (routingRatioHigh)
+                candidate.Reason = "ROUTING_LOAD_RATIO";
+            else
+                candidate.Reason = "FORWARD_PACKETS_ABOVE_AVERAGE";
+
+            candidate.RouteInsertionCost = ComputeRouteInsertionCost(nodeId, currentRoute);
+            candidate.IsEmergencyCandidate = true;
+            return candidate;
+        }
+
+        private double ComputeCurrentPredictedRequestTime(SensorState sensor, double effectiveRate)
+        {
+            if (sensor == null || effectiveRate <= 1e-12)
+                return Double.PositiveInfinity;
+
+            double threshold = GetPredictedRequestThresholdJ(sensor, effectiveRate, sensor.RateScale);
+            if (sensor.EnergyJ <= threshold + Epsilon)
+                return currentTime;
+            return Double.PositiveInfinity;
+        }
+
+        private double ComputeAverageExpectedRoutingForwardPacketsPerSecond()
+        {
+            double sum = 0.0;
+            int count = 0;
+            for (int nodeId = 1; nodeId < sensors.Length; nodeId++)
+            {
+                if (sensors[nodeId] == null || !sensors[nodeId].Alive)
+                    continue;
+                sum += GetExpectedRoutingForwardPacketsPerSecond(nodeId);
+                count++;
+            }
+            return count <= 0 ? 0.0 : sum / count;
+        }
+
+        private static int CompareEmergencyRoutingBottleneckCandidates(
+            EmergencyRoutingBottleneckCandidate a,
+            EmergencyRoutingBottleneckCandidate b)
+        {
+            int compare = a.PredictedDeathTimeSeconds.CompareTo(b.PredictedDeathTimeSeconds);
+            if (compare != 0)
+                return compare;
+            compare = b.RoutingLoadJPerSecond.CompareTo(a.RoutingLoadJPerSecond);
+            if (compare != 0)
+                return compare;
+            compare = a.RouteInsertionCost.CompareTo(b.RouteInsertionCost);
+            if (compare != 0)
+                return compare;
+            compare = b.ExpectedRoutingForwardPacketsPerSecond.CompareTo(a.ExpectedRoutingForwardPacketsPerSecond);
+            if (compare != 0)
+                return compare;
+            return a.NodeId.CompareTo(b.NodeId);
         }
 
         private void AddProactiveCandidates(List<ChargingRequest> pool, int maxTask)
@@ -2471,9 +2755,25 @@ namespace WindowsFormsApplication1
             double horizonEnd,
             HashSet<int> reservedNodeIds)
         {
-            List<BprPredictionSegment> timeline = new List<BprPredictionSegment>();
             BprSTableEntry entry;
             if (!IsPredictionEligibleNode(nodeId, reservedNodeIds, out entry))
+                return new List<BprPredictionSegment>();
+            if (nodeId <= 0 || nodeId >= sensors.Length)
+                return new List<BprPredictionSegment>();
+
+            SensorState sensor = sensors[nodeId];
+            double startEnergy = Double.IsNaN(entry.EnergyJ) ? sensor.EnergyJ : entry.EnergyJ;
+            return BuildBprPredictionTimelineFromState(nodeId, horizonEnd, startEnergy, sensor.RateScale);
+        }
+
+        private List<BprPredictionSegment> BuildBprPredictionTimelineFromState(
+            int nodeId,
+            double horizonEnd,
+            double startEnergyJ,
+            double startRateScale)
+        {
+            List<BprPredictionSegment> timeline = new List<BprPredictionSegment>();
+            if (nodeId <= 0 || nodeId >= sensors.Length)
                 return timeline;
             if (horizonEnd <= currentTime + Epsilon)
                 return timeline;
@@ -2495,8 +2795,8 @@ namespace WindowsFormsApplication1
             }
             breakpoints.Sort();
 
-            double predictedEnergy = Double.IsNaN(entry.EnergyJ) ? sensor.EnergyJ : entry.EnergyJ;
-            double predictedRateScale = sensor.RateScale;
+            double predictedEnergy = startEnergyJ;
+            double predictedRateScale = startRateScale;
             int rateChangeIndex = 0;
             for (int i = 0; i < breakpoints.Count - 1; i++)
             {
@@ -2875,7 +3175,38 @@ namespace WindowsFormsApplication1
                 List<BprWindow> windows = BuildBprSlidingWindows(predictedRequests, maxTask);
                 if (windows.Count == 0)
                 {
-                    WriteBprDebug(iteration, null, null, "NO_OVERFLOW_WINDOW", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
+                    List<EmergencyRoutingBottleneckCandidate> emergencyCandidates =
+                        BuildEmergencyRoutingBottleneckCandidates(maxTask, reservedNodeIds, cplist);
+                    if (emergencyCandidates.Count == 0)
+                    {
+                        WriteBprDebug(iteration, null, null, "NO_OVERFLOW_WINDOW", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
+                        break;
+                    }
+
+                    int emergencyCapacityLeft = allowCapacityOverflow
+                        ? emergencyCandidates.Count
+                        : Math.Max(0, maxTask - cplist.Count);
+                    int emergencyAddCount = Math.Min(emergencyCandidates.Count, emergencyCapacityLeft);
+                    if (emergencyAddCount <= 0)
+                    {
+                        WriteBprDebug(iteration, null, null, "LIMITED_CAPACITY_FULL", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, emergencyCandidates.Count, emergencyCandidates[0]);
+                        return cplist;
+                    }
+
+                    for (int i = 0; i < emergencyAddCount; i++)
+                    {
+                        EmergencyRoutingBottleneckCandidate candidate = emergencyCandidates[i];
+                        int before = cplist.Count;
+                        cplist.Add(CreateEmergencyRoutingBottleneckProactiveRequest(candidate));
+                        reservedNodeIds.Add(candidate.NodeId);
+                        TraceRoutingBottleneckNode(
+                            "ZHENG_EMERGENCY_CPLIST_ADD",
+                            maxTask,
+                            candidate,
+                            true,
+                            false);
+                        WriteBprDebug(iteration, null, null, RoutingBottleneckEmergencyReason, before, cplist.Count, maxTask, allowCapacityOverflow, emergencyCandidates.Count, candidate);
+                    }
                     break;
                 }
 
@@ -2886,7 +3217,7 @@ namespace WindowsFormsApplication1
                 int addCount = Math.Min(worstWindow.OverflowCount, capacityLeft);
                 if (addCount <= 0)
                 {
-                    WriteBprDebug(iteration, worstWindow, null, "LIMITED_CAPACITY_FULL", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
+                    WriteBprDebug(iteration, worstWindow, null, "LIMITED_CAPACITY_FULL", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
                     return cplist;
                 }
 
@@ -2897,7 +3228,7 @@ namespace WindowsFormsApplication1
                     selectionMode);
                 if (decisions.Count == 0)
                 {
-                    WriteBprDebug(iteration, worstWindow, null, "NO_SELECTABLE_NODE", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
+                    WriteBprDebug(iteration, worstWindow, null, "NO_SELECTABLE_NODE", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
                     break;
                 }
 
@@ -2907,7 +3238,13 @@ namespace WindowsFormsApplication1
                     int before = cplist.Count;
                     cplist.Add(CreateZhengBprProactiveRequest(decision));
                     reservedNodeIds.Add(decision.NodeId);
-                    WriteBprDebug(iteration, worstWindow, decision, decision.Reason, before, cplist.Count, maxTask, allowCapacityOverflow);
+                    TraceRoutingBottleneckNode(
+                        "ZHENG_WINDOW_CPLIST_ADD",
+                        maxTask,
+                        decision.NodeId,
+                        true,
+                        false);
+                    WriteBprDebug(iteration, worstWindow, decision, decision.Reason, before, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
                 }
 
                 if (!allowCapacityOverflow && cplist.Count >= maxTask)
@@ -2953,7 +3290,38 @@ namespace WindowsFormsApplication1
                 List<YuDangerWindow> windows = BuildYuDangerWindows(intervals, maxTask);
                 if (windows.Count == 0)
                 {
-                    WriteYuBprDebug(iteration, null, null, "NO_DANGER_WINDOW", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
+                    List<EmergencyRoutingBottleneckCandidate> emergencyCandidates =
+                        BuildEmergencyRoutingBottleneckCandidates(maxTask, reservedNodeIds, cplist);
+                    if (emergencyCandidates.Count == 0)
+                    {
+                        WriteYuBprDebug(iteration, null, null, "NO_DANGER_WINDOW", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
+                        break;
+                    }
+
+                    int emergencyCapacityLeft = allowCapacityOverflow
+                        ? emergencyCandidates.Count
+                        : Math.Max(0, maxTask - cplist.Count);
+                    int emergencyAddCount = Math.Min(emergencyCandidates.Count, emergencyCapacityLeft);
+                    if (emergencyAddCount <= 0)
+                    {
+                        WriteYuBprDebug(iteration, null, null, "LIMITED_CAPACITY_FULL", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, emergencyCandidates.Count, emergencyCandidates[0]);
+                        return cplist;
+                    }
+
+                    for (int i = 0; i < emergencyAddCount; i++)
+                    {
+                        EmergencyRoutingBottleneckCandidate candidate = emergencyCandidates[i];
+                        int before = cplist.Count;
+                        cplist.Add(CreateEmergencyRoutingBottleneckProactiveRequest(candidate));
+                        reservedNodeIds.Add(candidate.NodeId);
+                        TraceRoutingBottleneckNode(
+                            "YU_EMERGENCY_CPLIST_ADD",
+                            maxTask,
+                            candidate,
+                            true,
+                            false);
+                        WriteYuBprDebug(iteration, null, null, RoutingBottleneckEmergencyReason, before, cplist.Count, maxTask, allowCapacityOverflow, emergencyCandidates.Count, candidate);
+                    }
                     break;
                 }
 
@@ -2964,7 +3332,7 @@ namespace WindowsFormsApplication1
                 int addCount = Math.Min(worstWindow.RemovalNeededCount, capacityLeft);
                 if (addCount <= 0)
                 {
-                    WriteYuBprDebug(iteration, worstWindow, null, "LIMITED_CAPACITY_FULL", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
+                    WriteYuBprDebug(iteration, worstWindow, null, "LIMITED_CAPACITY_FULL", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
                     return cplist;
                 }
 
@@ -2975,7 +3343,7 @@ namespace WindowsFormsApplication1
                     selectionMode);
                 if (decisions.Count == 0)
                 {
-                    WriteYuBprDebug(iteration, worstWindow, null, "NO_SELECTABLE_NODE", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
+                    WriteYuBprDebug(iteration, worstWindow, null, "NO_SELECTABLE_NODE", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
                     break;
                 }
 
@@ -2985,7 +3353,13 @@ namespace WindowsFormsApplication1
                     int before = cplist.Count;
                     cplist.Add(CreateYuProactiveRequest(decision));
                     reservedNodeIds.Add(decision.NodeId);
-                    WriteYuBprDebug(iteration, worstWindow, decision, decision.Reason, before, cplist.Count, maxTask, allowCapacityOverflow);
+                    TraceRoutingBottleneckNode(
+                        "YU_WINDOW_CPLIST_ADD",
+                        maxTask,
+                        decision.NodeId,
+                        true,
+                        false);
+                    WriteYuBprDebug(iteration, worstWindow, decision, decision.Reason, before, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
                 }
 
                 if (!allowCapacityOverflow && cplist.Count >= maxTask)
@@ -3098,6 +3472,29 @@ namespace WindowsFormsApplication1
             proactive.CriticalDensity = 0.0;
             proactive.IsProactive = true;
             proactive.ProactiveReason = ZhengBprWindowRemovalReason;
+            return proactive;
+        }
+
+        private ChargingRequest CreateEmergencyRoutingBottleneckProactiveRequest(
+            EmergencyRoutingBottleneckCandidate candidate)
+        {
+            ChargingRequest proactive = new ChargingRequest();
+            proactive.RequestId = -candidate.NodeId;
+            proactive.NodeId = candidate.NodeId;
+            proactive.RequestTimeSeconds = currentTime;
+            proactive.DeadlineSeconds = candidate.PredictedDeathTimeSeconds;
+            proactive.RequestEnergyJ = candidate.EnergyJ;
+            proactive.ConsumeRateJPerSecond = candidate.BaseConsumeRateJPerSecond;
+            proactive.BaseConsumeRateJPerSecond = candidate.BaseConsumeRateJPerSecond;
+            proactive.EffectiveConsumeRateJPerSecond = candidate.EffectiveConsumeRateJPerSecond;
+            proactive.RoutingLoadJPerSecond = candidate.RoutingLoadJPerSecond;
+            proactive.RoutingTxLoadJPerSecond = candidate.RoutingTxLoadJPerSecond;
+            proactive.RoutingRxLoadJPerSecond = candidate.RoutingRxLoadJPerSecond;
+            proactive.RoutingSubtreeSize = candidate.RoutingSubtreeSize;
+            proactive.ExpectedRoutingForwardPacketsPerSecond = candidate.ExpectedRoutingForwardPacketsPerSecond;
+            proactive.CriticalDensity = 0.0;
+            proactive.IsProactive = true;
+            proactive.ProactiveReason = RoutingBottleneckEmergencyReason;
             return proactive;
         }
 
@@ -3241,7 +3638,9 @@ namespace WindowsFormsApplication1
             int cplistCountBefore,
             int cplistCountAfter,
             int maxTask,
-            bool allowCapacityOverflow)
+            bool allowCapacityOverflow,
+            int emergencyCandidateCount,
+            EmergencyRoutingBottleneckCandidate emergencySelected)
         {
             if (csvWriter == null)
                 return;
@@ -3266,7 +3665,13 @@ namespace WindowsFormsApplication1
                 cplistCountBefore,
                 cplistCountAfter,
                 maxTask,
-                allowCapacityOverflow);
+                allowCapacityOverflow,
+                emergencyCandidateCount,
+                emergencySelected == null ? -1 : emergencySelected.NodeId,
+                emergencySelected == null ? Double.NaN : emergencySelected.PredictedDeathTimeSeconds,
+                emergencySelected == null ? Double.NaN : emergencySelected.RoutingLoadJPerSecond,
+                emergencySelected == null ? Double.NaN : emergencySelected.ExpectedRoutingForwardPacketsPerSecond,
+                emergencySelected == null ? "" : emergencySelected.Reason);
         }
 
         private void WriteYuBprDebug(
@@ -3277,7 +3682,9 @@ namespace WindowsFormsApplication1
             int cplistCountBefore,
             int cplistCountAfter,
             int maxTask,
-            bool allowCapacityOverflow)
+            bool allowCapacityOverflow,
+            int emergencyCandidateCount,
+            EmergencyRoutingBottleneckCandidate emergencySelected)
         {
             if (csvWriter == null)
                 return;
@@ -3307,7 +3714,78 @@ namespace WindowsFormsApplication1
                 cplistCountBefore,
                 cplistCountAfter,
                 maxTask,
-                allowCapacityOverflow);
+                allowCapacityOverflow,
+                emergencyCandidateCount,
+                emergencySelected == null ? -1 : emergencySelected.NodeId,
+                emergencySelected == null ? Double.NaN : emergencySelected.PredictedDeathTimeSeconds,
+                emergencySelected == null ? Double.NaN : emergencySelected.RoutingLoadJPerSecond,
+                emergencySelected == null ? Double.NaN : emergencySelected.ExpectedRoutingForwardPacketsPerSecond,
+                emergencySelected == null ? "" : emergencySelected.Reason);
+        }
+
+        private bool ShouldTraceRoutingBottleneckNode(int nodeId)
+        {
+            return csvWriter != null &&
+                artifact.RunIndex == RoutingBottleneckTraceRunIndex &&
+                artifact.Seed == RoutingBottleneckTraceSeed &&
+                nodeId == RoutingBottleneckTraceNodeId;
+        }
+
+        private void TraceRoutingBottleneckNode(
+            string phase,
+            int maxTask,
+            int nodeId,
+            bool addedToCplist,
+            bool addedToRoute)
+        {
+            if (!ShouldTraceRoutingBottleneckNode(nodeId))
+                return;
+
+            double averageForwardPackets = ComputeAverageExpectedRoutingForwardPacketsPerSecond();
+            EmergencyRoutingBottleneckCandidate candidate = EvaluateEmergencyRoutingBottleneckCandidate(
+                nodeId,
+                maxTask,
+                new HashSet<int>(),
+                new List<ChargingRequest>(),
+                averageForwardPackets);
+            TraceRoutingBottleneckNode(phase, maxTask, candidate, addedToCplist, addedToRoute);
+        }
+
+        private void TraceRoutingBottleneckNode(
+            string phase,
+            int maxTask,
+            EmergencyRoutingBottleneckCandidate candidate,
+            bool addedToCplist,
+            bool addedToRoute)
+        {
+            if (candidate == null || !ShouldTraceRoutingBottleneckNode(candidate.NodeId))
+                return;
+
+            csvWriter.WriteRoutingBottleneckTrace(
+                artifact.RunIndex,
+                artifact.Seed,
+                algorithm,
+                missionId,
+                phase,
+                currentTime,
+                maxTask,
+                candidate.NodeId,
+                candidate.EnergyJ,
+                candidate.BaseConsumeRateJPerSecond,
+                candidate.RoutingLoadJPerSecond,
+                candidate.EffectiveConsumeRateJPerSecond,
+                candidate.PredictedRequestTimeSeconds,
+                candidate.PredictedDeathTimeSeconds,
+                candidate.HasPendingRequest,
+                candidate.HasActiveRequest,
+                candidate.IsScheduledInCurrentMission,
+                candidate.IsEmergencyCandidate,
+                addedToCplist,
+                addedToRoute,
+                candidate.RouteInsertionCost,
+                candidate.ExpectedRoutingForwardPacketsPerSecond,
+                candidate.AverageExpectedRoutingForwardPacketsPerSecond,
+                candidate.Reason);
         }
 
         private List<YuPredictedInterval> BuildYuRequestIntervals(int maxTask, HashSet<int> reservedNodeIds)
@@ -5835,6 +6313,69 @@ namespace WindowsFormsApplication1
                 "ApplyContinuousEnergy should subtract only base continuous consume rate.");
             AssertSelfTest(effectiveRate > baseRate,
                 "Routing load should not be double-counted into continuous energy consumption.");
+
+            ExperimentSettings emergencySettings = CreateBprSelfTestSettings(tempDirectory);
+            emergencySettings.EventRatePerSecond = 50.0;
+            emergencySettings.PacketBits = 819200.0;
+            emergencySettings.RadioRangeMeters = 30.0;
+            emergencySettings.SensorBackgroundLifetimeSeconds = 100.0;
+            emergencySettings.SimulationTimeSeconds = 240.0;
+            emergencySettings.ProactivePredictionHorizonSeconds = 120.0;
+            emergencySettings.NmaxTask = 3;
+            emergencySettings.WcvSpeedMetersPerSecond = 1000.0;
+            emergencySettings.WcvChargeRateJPerSecond = 100.0;
+            emergencySettings.Normalize();
+            ExperimentArtifact emergencyArtifact = CreateChainRoutingSelfTestArtifact(new double[] { 90.0, 90.0, 90.0 });
+            ExperimentSimulation zhengEmergencySimulation = new ExperimentSimulation(
+                emergencySettings,
+                emergencyArtifact,
+                "NJF_ZHENG_BPR",
+                null);
+            simulations.Add(zhengEmergencySimulation);
+            List<BprPredictedRequest> emergencyPredictedRequests =
+                zhengEmergencySimulation.BuildBprPredictedRequests(3, new HashSet<int>());
+            AssertSelfTest(zhengEmergencySimulation.BuildBprSlidingWindows(emergencyPredictedRequests, 3).Count == 0,
+                "Emergency routing bottleneck self-test must start without a ZHENG overflow window.");
+            List<EmergencyRoutingBottleneckCandidate> zhengEmergencyCandidates =
+                zhengEmergencySimulation.BuildEmergencyRoutingBottleneckCandidates(3, new HashSet<int>(), new List<ChargingRequest>());
+            AssertSelfTest(zhengEmergencyCandidates.Count > 0 && zhengEmergencyCandidates[0].NodeId == 1,
+                "Emergency routing bottleneck selection should prioritize the forwarding-heavy node nearest the base station.");
+            AssertSelfTest(zhengEmergencySimulation.HasBprBottleneckCandidate(),
+                "HasBprBottleneckCandidate should be true when only an emergency routing bottleneck candidate exists.");
+            AssertNear(zhengEmergencySimulation.FindNextBprBottleneckCandidateTime(),
+                Math.Max(zhengEmergencySimulation.currentTime,
+                    zhengEmergencyCandidates[0].PredictedDeathTimeSeconds - zhengEmergencySimulation.EstimateBprTjobSeconds(3)),
+                1e-9,
+                "FindNextBprBottleneckCandidateTime should include emergency latest safe dispatch time.");
+            List<ChargingRequest> zhengEmergencyCplist = zhengEmergencySimulation.BuildZhengBprCplist(
+                new List<ChargingRequest>(),
+                3,
+                BprProactiveSelectionMode.Deterministic,
+                false);
+            AssertSelfTest(zhengEmergencyCplist.Count > 0 &&
+                    zhengEmergencyCplist[0].NodeId == 1 &&
+                    zhengEmergencyCplist[0].ProactiveReason == RoutingBottleneckEmergencyReason,
+                "ZHENG BP&R should add emergency routing bottleneck candidates when no overflow window exists.");
+
+            ExperimentSimulation yuEmergencySimulation = new ExperimentSimulation(
+                emergencySettings,
+                emergencyArtifact,
+                "NJF_YU_BPR",
+                null);
+            simulations.Add(yuEmergencySimulation);
+            List<YuPredictedInterval> emergencyIntervals =
+                yuEmergencySimulation.BuildYuPredictedIntervals(3, new HashSet<int>());
+            AssertSelfTest(yuEmergencySimulation.BuildYuDangerWindows(emergencyIntervals, 3).Count == 0,
+                "Emergency routing bottleneck self-test must start without a YU danger window.");
+            List<ChargingRequest> yuEmergencyCplist = yuEmergencySimulation.BuildYuBprCplist(
+                new List<ChargingRequest>(),
+                3,
+                false,
+                YuProactiveSelectionMode.Deterministic);
+            AssertSelfTest(yuEmergencyCplist.Count > 0 &&
+                    yuEmergencyCplist[0].NodeId == 1 &&
+                    yuEmergencyCplist[0].ProactiveReason == RoutingBottleneckEmergencyReason,
+                "YU BP&R should add emergency routing bottleneck candidates when no danger window exists.");
         }
 
         private static void RunCompleteBprYuPredictionSelfTest(string tempDirectory, List<ExperimentSimulation> simulations)
@@ -6221,6 +6762,9 @@ namespace WindowsFormsApplication1
         public int FailedOrLateTasks;
         public int NaturalRequestCount;
         public int ProactiveTaskCount;
+        public int PlannedProactiveTaskCount;
+        public int ExecutedProactiveTaskCount;
+        public int EmergencyBottleneckProactiveCount;
         public int UniqueServedNodeCount;
         public int RepeatChargeCount;
         public int ProactiveNearFullCount;
@@ -6347,6 +6891,8 @@ namespace WindowsFormsApplication1
         private readonly StreamWriter routingLoadWriter;
         private readonly StreamWriter bprDebugWriter;
         private readonly StreamWriter yuBprDebugWriter;
+        private readonly string routingBottleneckTracePath;
+        private StreamWriter routingBottleneckTraceWriter;
         private bool disposed;
 
         public MissionDetailCsvWriter(string directory, int runIndex, string algorithm)
@@ -6363,6 +6909,8 @@ namespace WindowsFormsApplication1
                 "run{0:D3}-{1}-bpr-debug.csv", runIndex, safeAlgorithm));
             string yuBprDebugPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
                 "run{0:D3}-{1}-yu-bpr-debug.csv", runIndex, safeAlgorithm));
+            routingBottleneckTracePath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
+                "run{0:D3}-{1}-routing-bottleneck-trace.csv", runIndex, safeAlgorithm));
 
             Encoding utf8 = new UTF8Encoding(true);
             missionWriter = new StreamWriter(missionPath, false, utf8);
@@ -6511,7 +7059,13 @@ namespace WindowsFormsApplication1
             int cplistCountBefore,
             int cplistCountAfter,
             int maxTask,
-            bool allowCapacityOverflow)
+            bool allowCapacityOverflow,
+            int emergencyCandidateCount,
+            int emergencySelectedNodeId,
+            double emergencyPredictedDeathTime,
+            double emergencyRoutingLoadJPerSecond,
+            double emergencyExpectedForwardPacketsPerSecond,
+            string emergencyReason)
         {
             if (disposed)
                 return;
@@ -6537,7 +7091,13 @@ namespace WindowsFormsApplication1
                 cplistCountBefore,
                 cplistCountAfter,
                 maxTask,
-                allowCapacityOverflow));
+                allowCapacityOverflow,
+                emergencyCandidateCount,
+                emergencySelectedNodeId,
+                emergencyPredictedDeathTime,
+                emergencyRoutingLoadJPerSecond,
+                emergencyExpectedForwardPacketsPerSecond,
+                emergencyReason));
         }
 
         public void WriteYuBprDebug(
@@ -6566,7 +7126,13 @@ namespace WindowsFormsApplication1
             int cplistCountBefore,
             int cplistCountAfter,
             int maxTask,
-            bool allowCapacityOverflow)
+            bool allowCapacityOverflow,
+            int emergencyCandidateCount,
+            int emergencySelectedNodeId,
+            double emergencyPredictedDeathTime,
+            double emergencyRoutingLoadJPerSecond,
+            double emergencyExpectedForwardPacketsPerSecond,
+            string emergencyReason)
         {
             if (disposed)
                 return;
@@ -6597,7 +7163,70 @@ namespace WindowsFormsApplication1
                 cplistCountBefore,
                 cplistCountAfter,
                 maxTask,
-                allowCapacityOverflow));
+                allowCapacityOverflow,
+                emergencyCandidateCount,
+                emergencySelectedNodeId,
+                emergencyPredictedDeathTime,
+                emergencyRoutingLoadJPerSecond,
+                emergencyExpectedForwardPacketsPerSecond,
+                emergencyReason));
+        }
+
+        public void WriteRoutingBottleneckTrace(
+            int runIndex,
+            int seed,
+            string algorithm,
+            int missionId,
+            string phase,
+            double currentTimeSeconds,
+            int maxTask,
+            int nodeId,
+            double energyJ,
+            double baseConsumeRateJPerSecond,
+            double routingLoadJPerSecond,
+            double effectiveConsumeRateJPerSecond,
+            double predictedRequestTime,
+            double predictedDeathTime,
+            bool hasPendingRequest,
+            bool hasActiveRequest,
+            bool isScheduledInCurrentMission,
+            bool isEmergencyCandidate,
+            bool addedToCplist,
+            bool addedToRoute,
+            double routeInsertionCost,
+            double expectedRoutingForwardPacketsPerSecond,
+            double averageExpectedRoutingForwardPacketsPerSecond,
+            string emergencyReason)
+        {
+            if (disposed)
+                return;
+
+            EnsureRoutingBottleneckTraceWriter();
+            routingBottleneckTraceWriter.WriteLine(CsvRow(
+                runIndex,
+                seed,
+                algorithm,
+                missionId,
+                phase,
+                currentTimeSeconds,
+                maxTask,
+                nodeId,
+                energyJ,
+                baseConsumeRateJPerSecond,
+                routingLoadJPerSecond,
+                effectiveConsumeRateJPerSecond,
+                predictedRequestTime,
+                predictedDeathTime,
+                hasPendingRequest,
+                hasActiveRequest,
+                isScheduledInCurrentMission,
+                isEmergencyCandidate,
+                addedToCplist,
+                addedToRoute,
+                routeInsertionCost,
+                expectedRoutingForwardPacketsPerSecond,
+                averageExpectedRoutingForwardPacketsPerSecond,
+                emergencyReason));
         }
 
         public void Dispose()
@@ -6610,6 +7239,20 @@ namespace WindowsFormsApplication1
             routingLoadWriter.Dispose();
             bprDebugWriter.Dispose();
             yuBprDebugWriter.Dispose();
+            if (routingBottleneckTraceWriter != null)
+                routingBottleneckTraceWriter.Dispose();
+        }
+
+        private void EnsureRoutingBottleneckTraceWriter()
+        {
+            if (routingBottleneckTraceWriter != null)
+                return;
+
+            routingBottleneckTraceWriter = new StreamWriter(
+                routingBottleneckTracePath,
+                false,
+                new UTF8Encoding(true));
+            WriteRoutingBottleneckTraceHeader();
         }
 
         private void WriteMissionHeader()
@@ -6646,7 +7289,9 @@ namespace WindowsFormsApplication1
                 "Iteration", "WindowStartSeconds", "WindowEndSeconds", "BottleneckCount", "OverflowCount",
                 "SelectedNodeId", "SelectedRequestTimeSeconds", "SelectedDeathTimeSeconds", "SelectedSlackSeconds",
                 "SelectedEffectiveRateJPerSecond", "SelectedRouteInsertionCost", "SelectionReason",
-                "CplistCountBefore", "CplistCountAfter", "MaxTask", "AllowCapacityOverflow"));
+                "CplistCountBefore", "CplistCountAfter", "MaxTask", "AllowCapacityOverflow",
+                "EmergencyCandidateCount", "EmergencySelectedNodeId", "EmergencyPredictedDeathTime",
+                "EmergencyRoutingLoadJPerSecond", "EmergencyExpectedForwardPacketsPerSecond", "EmergencyReason"));
         }
 
         private void WriteYuBprDebugHeader()
@@ -6657,7 +7302,20 @@ namespace WindowsFormsApplication1
                 "SelectedIntervalEndSeconds", "SelectedEarliestDeathTimeSeconds", "SelectedLatestSafeServiceTimeSeconds",
                 "SelectedSlackSeconds", "SelectedUncertaintySeconds", "SelectedEffectiveRateJPerSecond",
                 "SelectedRouteInsertionCost", "SelectionReason", "CplistCountBefore", "CplistCountAfter",
-                "MaxTask", "AllowCapacityOverflow"));
+                "MaxTask", "AllowCapacityOverflow", "EmergencyCandidateCount", "EmergencySelectedNodeId",
+                "EmergencyPredictedDeathTime", "EmergencyRoutingLoadJPerSecond",
+                "EmergencyExpectedForwardPacketsPerSecond", "EmergencyReason"));
+        }
+
+        private void WriteRoutingBottleneckTraceHeader()
+        {
+            routingBottleneckTraceWriter.WriteLine(CsvRow("RunIndex", "Seed", "Algorithm", "MissionId", "Phase",
+                "CurrentTimeSeconds", "MaxTask", "NodeId", "EnergyJ", "BaseConsumeRateJPerSecond",
+                "RoutingLoadJPerSecond", "EffectiveConsumeRateJPerSecond", "PredictedRequestTime",
+                "PredictedDeathTime", "HasPendingRequest", "HasActiveRequest", "IsScheduledInCurrentMission",
+                "IsEmergencyCandidate", "AddedToCplist", "AddedToRoute", "RouteInsertionCost",
+                "ExpectedRoutingForwardPacketsPerSecond", "AverageExpectedRoutingForwardPacketsPerSecond",
+                "EmergencyReason"));
         }
 
         private static object SafeArrayValue(int[] values, int index)
@@ -6852,6 +7510,9 @@ namespace WindowsFormsApplication1
         {
             row.Add("UniqueServedNodeCount");
             row.Add("RepeatChargeCount");
+            row.Add("PlannedProactiveTaskCount");
+            row.Add("ExecutedProactiveTaskCount");
+            row.Add("EmergencyBottleneckProactiveCount");
             row.Add("ProactiveNearFullCount");
             row.Add("MeaningfulProactiveCount");
             row.Add("AverageDeliveredEnergyPerTask");
@@ -6862,6 +7523,9 @@ namespace WindowsFormsApplication1
         {
             row.Add(s.UniqueServedNodeCount);
             row.Add(s.RepeatChargeCount);
+            row.Add(s.PlannedProactiveTaskCount);
+            row.Add(s.ExecutedProactiveTaskCount);
+            row.Add(s.EmergencyBottleneckProactiveCount);
             row.Add(s.ProactiveNearFullCount);
             row.Add(s.MeaningfulProactiveCount);
             row.Add(s.AverageDeliveredEnergyPerTask);
@@ -6931,6 +7595,9 @@ namespace WindowsFormsApplication1
         {
             row.Add("平均UniqueServedNodeCount");
             row.Add("平均RepeatChargeCount");
+            row.Add("平均PlannedProactiveTaskCount");
+            row.Add("平均ExecutedProactiveTaskCount");
+            row.Add("平均EmergencyBottleneckProactiveCount");
             row.Add("平均ProactiveNearFullCount");
             row.Add("平均MeaningfulProactiveCount");
             row.Add("平均DeliveredEnergyPerTask");
@@ -6941,6 +7608,9 @@ namespace WindowsFormsApplication1
         {
             row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.UniqueServedNodeCount; }));
             row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.RepeatChargeCount; }));
+            row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.PlannedProactiveTaskCount; }));
+            row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.ExecutedProactiveTaskCount; }));
+            row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.EmergencyBottleneckProactiveCount; }));
             row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.ProactiveNearFullCount; }));
             row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.MeaningfulProactiveCount; }));
             row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.AverageDeliveredEnergyPerTask; }));
