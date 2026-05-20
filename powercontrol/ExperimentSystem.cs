@@ -587,20 +587,25 @@ namespace WindowsFormsApplication1
 
     public class ExperimentArtifact
     {
+        private static readonly List<RateChangeTemplate> EmptyRateChanges = new List<RateChangeTemplate>();
         public int RunIndex;
         public int Seed;
         public string ArtifactHash;
         public List<SensorTemplate> Sensors;
         public List<PacketEventTemplate> PacketEvents;
         public List<RateChangeTemplate> RateChanges;
+        public Dictionary<int, List<RateChangeTemplate>> RateChangesByNodeId;
         public double BaseX;
         public double BaseY;
+        private int rateChangeIndexSourceCount;
 
         public ExperimentArtifact()
         {
             Sensors = new List<SensorTemplate>();
             PacketEvents = new List<PacketEventTemplate>();
             RateChanges = new List<RateChangeTemplate>();
+            RateChangesByNodeId = new Dictionary<int, List<RateChangeTemplate>>();
+            rateChangeIndexSourceCount = -1;
             ArtifactHash = "";
         }
 
@@ -664,8 +669,58 @@ namespace WindowsFormsApplication1
                 }
             }
 
+            artifact.BuildRateChangesByNodeId();
             artifact.ArtifactHash = artifact.ComputeHash(settings);
             return artifact;
+        }
+
+        public void BuildRateChangesByNodeId()
+        {
+            RateChangesByNodeId = new Dictionary<int, List<RateChangeTemplate>>();
+            if (RateChanges == null)
+            {
+                rateChangeIndexSourceCount = 0;
+                return;
+            }
+
+            for (int i = 0; i < RateChanges.Count; i++)
+            {
+                RateChangeTemplate change = RateChanges[i];
+                List<RateChangeTemplate> nodeChanges;
+                if (!RateChangesByNodeId.TryGetValue(change.NodeId, out nodeChanges))
+                {
+                    nodeChanges = new List<RateChangeTemplate>();
+                    RateChangesByNodeId[change.NodeId] = nodeChanges;
+                }
+                nodeChanges.Add(change);
+            }
+
+            foreach (KeyValuePair<int, List<RateChangeTemplate>> pair in RateChangesByNodeId)
+            {
+                pair.Value.Sort(delegate (RateChangeTemplate a, RateChangeTemplate b)
+                {
+                    int compare = a.TimeSeconds.CompareTo(b.TimeSeconds);
+                    if (compare != 0)
+                        return compare;
+                    return a.NodeId.CompareTo(b.NodeId);
+                });
+            }
+            rateChangeIndexSourceCount = RateChanges.Count;
+        }
+
+        public List<RateChangeTemplate> GetRateChangesForNode(int nodeId)
+        {
+            if (RateChangesByNodeId == null ||
+                RateChanges == null ||
+                rateChangeIndexSourceCount != RateChanges.Count)
+            {
+                BuildRateChangesByNodeId();
+            }
+
+            List<RateChangeTemplate> nodeChanges;
+            if (RateChangesByNodeId.TryGetValue(nodeId, out nodeChanges))
+                return nodeChanges;
+            return EmptyRateChanges;
         }
 
         private static void BuildRandomSensors(ExperimentSettings settings, ExperimentArtifact artifact, Random random)
@@ -872,6 +927,9 @@ namespace WindowsFormsApplication1
         private double[] estimatedRoutingTxLoadJPerSecondByNodeId;
         private double[] estimatedRoutingRxLoadJPerSecondByNodeId;
         private double[] estimatedRoutingLoadJPerSecondByNodeId;
+        private long predictionCacheVersion;
+        private BprPredictedRequestCache bprPredictedRequestCache;
+        private YuPredictedIntervalCache yuPredictedIntervalCache;
 
         private enum BprProactiveSelectionMode
         {
@@ -1036,6 +1094,26 @@ namespace WindowsFormsApplication1
             public string Reason;
         }
 
+        private sealed class BprPredictedRequestCache
+        {
+            public double CurrentTimeSeconds;
+            public int MissionId;
+            public int MaxTask;
+            public string ReservedSignature;
+            public long Version;
+            public List<BprPredictedRequest> Requests;
+        }
+
+        private sealed class YuPredictedIntervalCache
+        {
+            public double CurrentTimeSeconds;
+            public int MissionId;
+            public int MaxTask;
+            public string ReservedSignature;
+            public long Version;
+            public List<YuPredictedInterval> Intervals;
+        }
+
         public ExperimentSimulation(ExperimentSettings experimentSettings, ExperimentArtifact sharedArtifact, string schedulerName)
             : this(experimentSettings, sharedArtifact, schedulerName, null)
         {
@@ -1064,9 +1142,13 @@ namespace WindowsFormsApplication1
             totalDeliveredEnergyForTasks = 0.0;
             totalDeliveredEnergyForProactiveTasks = 0.0;
             proactiveTaskRecordCount = 0;
+            predictionCacheVersion = 0;
+            bprPredictedRequestCache = null;
+            yuPredictedIntervalCache = null;
 
             for (int i = 0; i < artifact.Sensors.Count; i++)
                 sensors[i] = new SensorState(artifact.Sensors[i], settings);
+            artifact.GetRateChangesForNode(0);
             InitializeRoutingLoadEstimates();
             if (csvWriter != null)
                 csvWriter.WriteRoutingLoad(artifact, routingSubtreeSizeByNodeId,
@@ -1167,6 +1249,30 @@ namespace WindowsFormsApplication1
             bprSTableByNodeId = new Dictionary<int, BprSTableEntry>();
             for (int id = 1; id < sensors.Length; id++)
                 RefreshBprSTableEntry(id, "initialize", true);
+        }
+
+        private void InvalidatePredictionCache()
+        {
+            predictionCacheVersion++;
+            bprPredictedRequestCache = null;
+            yuPredictedIntervalCache = null;
+        }
+
+        private static string BuildReservedNodeSignature(HashSet<int> reservedNodeIds)
+        {
+            if (reservedNodeIds == null || reservedNodeIds.Count == 0)
+                return "";
+
+            List<int> reserved = new List<int>(reservedNodeIds);
+            reserved.Sort();
+            StringBuilder builder = new StringBuilder();
+            for (int i = 0; i < reserved.Count; i++)
+            {
+                if (i > 0)
+                    builder.Append('|');
+                builder.Append(reserved[i].ToString(CultureInfo.InvariantCulture));
+            }
+            return builder.ToString();
         }
 
         private void InitializeRoutingLoadEstimates()
@@ -1342,11 +1448,10 @@ namespace WindowsFormsApplication1
                 return 1.0;
 
             double predictedRateScale = sensors[nodeId].RateScale;
-            for (int i = 0; i < artifact.RateChanges.Count; i++)
+            List<RateChangeTemplate> nodeRateChanges = artifact.GetRateChangesForNode(nodeId);
+            for (int i = 0; i < nodeRateChanges.Count; i++)
             {
-                RateChangeTemplate change = artifact.RateChanges[i];
-                if (change.NodeId != nodeId)
-                    continue;
+                RateChangeTemplate change = nodeRateChanges[i];
                 if (change.TimeSeconds <= currentTime + Epsilon)
                     continue;
                 if (change.TimeSeconds <= segmentStart + Epsilon)
@@ -1442,17 +1547,20 @@ namespace WindowsFormsApplication1
             if (forceUpdate)
             {
                 UpdateBprSTableEntrySnapshot(entry, sensor, newDeadline, reason);
+                InvalidatePredictionCache();
                 return;
             }
 
             if (ShouldRefreshBprDeadline(entry.LatestReportedDeadlineSeconds, newDeadline))
             {
                 UpdateBprSTableEntrySnapshot(entry, sensor, newDeadline, reason);
+                InvalidatePredictionCache();
                 return;
             }
 
             string snapshotReason = String.IsNullOrEmpty(reason) ? "snapshot_only" : reason + "_snapshot_only";
             UpdateBprSTableEntryStateFields(entry, sensor, snapshotReason);
+            InvalidatePredictionCache();
         }
 
         private bool ShouldRefreshBprDeadline(double oldDeadline, double newDeadline)
@@ -1505,6 +1613,7 @@ namespace WindowsFormsApplication1
                 entry.IsPendingRequest = false;
                 entry.IsScheduledInCurrentMission = false;
                 entry.LastUpdateReason = "rate_change_dead";
+                InvalidatePredictionCache();
                 return;
             }
 
@@ -1536,6 +1645,7 @@ namespace WindowsFormsApplication1
             entry.IsAlive = sensor.Alive;
             entry.IsPendingRequest = sensor.HasPendingRequest || HasActiveRequestForNode(nodeId);
             entry.IsScheduledInCurrentMission = IsNodeReservedForCurrentMission(nodeId);
+            InvalidatePredictionCache();
         }
 
         private void UpdateBprSTableEntrySnapshot(
@@ -1751,6 +1861,7 @@ namespace WindowsFormsApplication1
                     RefreshBprSTableEntry(request.NodeId, "charged", true);
                     BprSTableEntry chargedEntry = GetOrCreateBprSTableEntry(request.NodeId);
                     chargedEntry.LastChargedTimeSeconds = currentTime;
+                    InvalidatePredictionCache();
                 }
 
                 ExperimentTaskRecord record = new ExperimentTaskRecord();
@@ -2034,6 +2145,7 @@ namespace WindowsFormsApplication1
                     continue;
                 BprSTableEntry entry = GetOrCreateBprSTableEntry(request.NodeId);
                 entry.LastProactiveSelectedTimeSeconds = currentTime;
+                InvalidatePredictionCache();
             }
         }
 
@@ -2371,11 +2483,10 @@ namespace WindowsFormsApplication1
             List<double> breakpoints = new List<double>();
             AddUniqueBreakpoint(breakpoints, currentTime);
             AddUniqueBreakpoint(breakpoints, horizonEnd);
-            for (int i = 0; i < artifact.RateChanges.Count; i++)
+            List<RateChangeTemplate> nodeRateChanges = artifact.GetRateChangesForNode(nodeId);
+            for (int i = 0; i < nodeRateChanges.Count; i++)
             {
-                RateChangeTemplate change = artifact.RateChanges[i];
-                if (change.NodeId != nodeId)
-                    continue;
+                RateChangeTemplate change = nodeRateChanges[i];
                 if (change.TimeSeconds <= currentTime + Epsilon ||
                     change.TimeSeconds > horizonEnd + Epsilon)
                     continue;
@@ -2383,13 +2494,6 @@ namespace WindowsFormsApplication1
                 AddUniqueBreakpoint(breakpoints, change.TimeSeconds);
             }
             breakpoints.Sort();
-            futureRateChanges.Sort(delegate (RateChangeTemplate a, RateChangeTemplate b)
-            {
-                int compare = a.TimeSeconds.CompareTo(b.TimeSeconds);
-                if (compare != 0)
-                    return compare;
-                return a.NodeId.CompareTo(b.NodeId);
-            });
 
             double predictedEnergy = Double.IsNaN(entry.EnergyJ) ? sensor.EnergyJ : entry.EnergyJ;
             double predictedRateScale = sensor.RateScale;
@@ -2461,6 +2565,17 @@ namespace WindowsFormsApplication1
 
         private List<BprPredictedRequest> BuildBprPredictedRequests(int maxTask, HashSet<int> reservedNodeIds)
         {
+            string reservedSignature = BuildReservedNodeSignature(reservedNodeIds);
+            if (bprPredictedRequestCache != null &&
+                Math.Abs(bprPredictedRequestCache.CurrentTimeSeconds - currentTime) <= Epsilon &&
+                bprPredictedRequestCache.MissionId == missionId &&
+                bprPredictedRequestCache.MaxTask == maxTask &&
+                bprPredictedRequestCache.Version == predictionCacheVersion &&
+                String.Equals(bprPredictedRequestCache.ReservedSignature, reservedSignature, StringComparison.Ordinal))
+            {
+                return new List<BprPredictedRequest>(bprPredictedRequestCache.Requests);
+            }
+
             List<BprPredictedRequest> predictedRequests = new List<BprPredictedRequest>();
             double horizonEnd = GetBprPredictionHorizonEndSeconds(maxTask);
             for (int nodeId = 1; nodeId < sensors.Length; nodeId++)
@@ -2498,6 +2613,13 @@ namespace WindowsFormsApplication1
             }
 
             predictedRequests.Sort(CompareBprPredictedRequestByRequestTime);
+            bprPredictedRequestCache = new BprPredictedRequestCache();
+            bprPredictedRequestCache.CurrentTimeSeconds = currentTime;
+            bprPredictedRequestCache.MissionId = missionId;
+            bprPredictedRequestCache.MaxTask = maxTask;
+            bprPredictedRequestCache.ReservedSignature = reservedSignature;
+            bprPredictedRequestCache.Version = predictionCacheVersion;
+            bprPredictedRequestCache.Requests = new List<BprPredictedRequest>(predictedRequests);
             return predictedRequests;
         }
 
@@ -2583,6 +2705,17 @@ namespace WindowsFormsApplication1
 
         private List<YuPredictedInterval> BuildYuPredictedIntervals(int maxTask, HashSet<int> reservedNodeIds)
         {
+            string reservedSignature = BuildReservedNodeSignature(reservedNodeIds);
+            if (yuPredictedIntervalCache != null &&
+                Math.Abs(yuPredictedIntervalCache.CurrentTimeSeconds - currentTime) <= Epsilon &&
+                yuPredictedIntervalCache.MissionId == missionId &&
+                yuPredictedIntervalCache.MaxTask == maxTask &&
+                yuPredictedIntervalCache.Version == predictionCacheVersion &&
+                String.Equals(yuPredictedIntervalCache.ReservedSignature, reservedSignature, StringComparison.Ordinal))
+            {
+                return new List<YuPredictedInterval>(yuPredictedIntervalCache.Intervals);
+            }
+
             List<YuPredictedInterval> intervals = new List<YuPredictedInterval>();
             double horizonEnd = GetYuPredictionHorizonEndSeconds(maxTask);
             for (int nodeId = 1; nodeId < sensors.Length; nodeId++)
@@ -2629,6 +2762,13 @@ namespace WindowsFormsApplication1
             }
 
             intervals.Sort(CompareYuPredictedIntervalByStart);
+            yuPredictedIntervalCache = new YuPredictedIntervalCache();
+            yuPredictedIntervalCache.CurrentTimeSeconds = currentTime;
+            yuPredictedIntervalCache.MissionId = missionId;
+            yuPredictedIntervalCache.MaxTask = maxTask;
+            yuPredictedIntervalCache.ReservedSignature = reservedSignature;
+            yuPredictedIntervalCache.Version = predictionCacheVersion;
+            yuPredictedIntervalCache.Intervals = new List<YuPredictedInterval>(intervals);
             return intervals;
         }
 
@@ -5771,6 +5911,8 @@ namespace WindowsFormsApplication1
                 "NJF_ZHENG_BPR",
                 null);
             simulations.Add(predictionSimulation);
+            AssertSelfTest(predictionArtifact.GetRateChangesForNode(1).Count == 1,
+                "ExperimentArtifact should group future rate changes by node id for prediction timeline scans.");
             List<BprPredictedRequest> predictedRequests = predictionSimulation.BuildBprPredictedRequests(1, new HashSet<int>());
             AssertSelfTest(predictedRequests.Count == 1,
                 "ZHENG prediction timeline should produce one predicted request for the rate-change test node.");
@@ -5819,8 +5961,27 @@ namespace WindowsFormsApplication1
             List<YuPredictedInterval> yuPredicted = simulation.BuildYuPredictedIntervals(maxTask, new HashSet<int>());
             simulation.BuildYuDangerWindows(yuPredicted, maxTask);
             simulation.BuildYuPredictionTimeline(1, simulation.GetYuPredictionHorizonEndSeconds(maxTask), new HashSet<int>());
+
+            simulation.bprPredictedRequestCache = null;
+            simulation.yuPredictedIntervalCache = null;
             simulation.HasBprBottleneckCandidate();
+            BprPredictedRequestCache bprCacheAfterHas = simulation.bprPredictedRequestCache;
+            YuPredictedIntervalCache yuCacheAfterHas = simulation.yuPredictedIntervalCache;
             simulation.FindNextBprBottleneckCandidateTime();
+            if (simulation.algorithm == "NJF_YU_BPR" ||
+                simulation.algorithm == "NJF_ROUTE_YU_BPR_LIMITED" ||
+                simulation.algorithm == "NJF_ROUTE_YU_BPR_EXTENDED")
+            {
+                AssertSelfTest(yuCacheAfterHas != null &&
+                    Object.ReferenceEquals(yuCacheAfterHas, simulation.yuPredictedIntervalCache),
+                    "YU bottleneck preview and next-time lookup should reuse the same predicted interval cache.");
+            }
+            else if (simulation.UsesBprBottleneckCandidates())
+            {
+                AssertSelfTest(bprCacheAfterHas != null &&
+                    Object.ReferenceEquals(bprCacheAfterHas, simulation.bprPredictedRequestCache),
+                    "ZHENG bottleneck preview and next-time lookup should reuse the same predicted request cache.");
+            }
 
             AssertNear(simulation.sensors[1].EnergyJ, energyBefore, 1e-12,
                 "Prediction timeline helpers must not mutate sensor energy.");
