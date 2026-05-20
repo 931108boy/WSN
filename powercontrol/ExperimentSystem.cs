@@ -255,16 +255,22 @@ namespace WindowsFormsApplication1
             ReceiverEnergyNjPerBit = Math.Max(0.0, ReceiverEnergyNjPerBit);
             AmplifierEnergyNjPerBitM2 = Math.Max(0.0, AmplifierEnergyNjPerBitM2);
             PowerExponent = Math.Max(1.0, PowerExponent);
-            WcvSpeedMetersPerSecond = Math.Max(0.001, WcvSpeedMetersPerSecond);
-            WcvChargeRateJPerSecond = Math.Max(0.001, WcvChargeRateJPerSecond);
+            if (WcvSpeedMetersPerSecond <= 0.0)
+                throw new InvalidOperationException("WcvSpeedMetersPerSecond must be greater than 0 for WCV travel time and CHENG Treq calculation.");
+            if (WcvChargeRateJPerSecond <= 0.0)
+                throw new InvalidOperationException("WcvChargeRateJPerSecond must be greater than 0 for sensor full-charge time and CHENG Treq calculation.");
             WcvCapacityJ = Math.Max(0.001, WcvCapacityJ);
             WcvMoveCostJPerMeter = Math.Max(0.0, WcvMoveCostJPerMeter);
             NmaxTask = Math.Max(1, NmaxTask);
             if (String.IsNullOrWhiteSpace(ThresholdMode))
                 ThresholdMode = "Percent";
-            if (ThresholdMode != "TreqSeconds")
+            if (String.Equals(ThresholdMode, "TreqSeconds", StringComparison.OrdinalIgnoreCase))
+                ThresholdMode = "TreqSeconds";
+            else if (String.Equals(ThresholdMode, "ChengTreq", StringComparison.OrdinalIgnoreCase))
+                ThresholdMode = "ChengTreq";
+            else
                 ThresholdMode = "Percent";
-            RequestThresholdPercent = Clamp(RequestThresholdPercent, 0.1, 99.0);
+            RequestThresholdPercent = Clamp(RequestThresholdPercent, 1.0, 90.0);
             TreqSeconds = Math.Max(1.0, TreqSeconds);
             BprDeadlineThresholdSeconds = Math.Max(1.0, BprDeadlineThresholdSeconds);
             ProactivePredictionHorizonSeconds = Math.Max(0.0, ProactivePredictionHorizonSeconds);
@@ -282,6 +288,11 @@ namespace WindowsFormsApplication1
             else
                 SelectedAlgorithmsCsv = String.Join(",", selectedAlgorithms.ToArray());
             ClearStaleLastOutputWorkbookPath();
+        }
+
+        public double ComputeAutoTreqSeconds()
+        {
+            return ChengTreqCalculator.Compute(this, NmaxTask).TreqSeconds;
         }
 
         public List<string> GetSelectedAlgorithms()
@@ -407,6 +418,89 @@ namespace WindowsFormsApplication1
         }
     }
 
+    internal sealed class ChengTreqMetrics
+    {
+        public int MaxTask;
+        public double SensorFullChargeSeconds;
+        public double LpathMeters;
+        public double TjobSeconds;
+        public double LmaxStepMeters;
+        public double TreqSeconds;
+    }
+
+    internal static class ChengTreqCalculator
+    {
+        public static bool IsChengTreqMode(string thresholdMode)
+        {
+            return String.Equals(thresholdMode, "ChengTreq", StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static bool IsTimeThresholdMode(string thresholdMode)
+        {
+            return String.Equals(thresholdMode, "TreqSeconds", StringComparison.OrdinalIgnoreCase) ||
+                IsChengTreqMode(thresholdMode);
+        }
+
+        public static double GetEffectiveTreqSeconds(ExperimentSettings settings, int maxTask)
+        {
+            if (settings == null)
+                return 0.0;
+            if (IsChengTreqMode(settings.ThresholdMode))
+                return Compute(settings, maxTask).TreqSeconds;
+            return Math.Max(0.0, settings.TreqSeconds);
+        }
+
+        public static ChengTreqMetrics Compute(ExperimentSettings settings, int maxTask)
+        {
+            if (settings == null)
+                throw new InvalidOperationException("ExperimentSettings is required for CHENG Treq calculation.");
+            if (settings.WcvSpeedMetersPerSecond <= 0.0)
+                throw new InvalidOperationException("WcvSpeedMetersPerSecond must be greater than 0 for CHENG Treq calculation.");
+            if (settings.WcvChargeRateJPerSecond <= 0.0)
+                throw new InvalidOperationException("WcvChargeRateJPerSecond must be greater than 0 for CHENG Treq calculation.");
+
+            int k = Math.Max(1, maxTask);
+            double width = Math.Max(1.0, settings.MapWidthMeters);
+            double height = Math.Max(1.0, settings.MapHeightMeters);
+            double side = Math.Max(width, height);
+            double lmaxStep = Math.Sqrt(width * width + height * height);
+            double sensorFullChargeSeconds = Math.Max(0.0, settings.InitialEnergyJ) /
+                settings.WcvChargeRateJPerSecond;
+
+            double lpath;
+            double tjob;
+            double treq;
+            if (k <= 1)
+            {
+                lpath = 2.0 * lmaxStep;
+                tjob = lpath / settings.WcvSpeedMetersPerSecond + sensorFullChargeSeconds;
+                treq = tjob;
+            }
+            else
+            {
+                double denominator = Math.Sqrt(k) - 1.0;
+                if (denominator <= 1e-12)
+                    lpath = 2.0 * lmaxStep;
+                else
+                    lpath = ((k - 1) * side) / denominator + 2.0 * Math.Sqrt(2.0) * side;
+
+                tjob = lpath / settings.WcvSpeedMetersPerSecond + k * sensorFullChargeSeconds;
+                treq = tjob +
+                    (lpath - lmaxStep) / settings.WcvSpeedMetersPerSecond +
+                    (k - 1) * sensorFullChargeSeconds;
+            }
+
+            ChengTreqMetrics metrics = new ChengTreqMetrics();
+            metrics.MaxTask = k;
+            metrics.SensorFullChargeSeconds = sensorFullChargeSeconds;
+            metrics.LpathMeters = lpath;
+            metrics.TjobSeconds = Math.Max(0.0, tjob);
+            metrics.LmaxStepMeters = lmaxStep;
+            metrics.TreqSeconds = Math.Max(0.0, treq);
+            return metrics;
+        }
+    }
+
     public class ExperimentBatchRunner
     {
         private readonly Action<string> progress;
@@ -450,6 +544,24 @@ namespace WindowsFormsApplication1
                 "平行批次啟動：runs={0}, algorithms={1}, max parallel jobs={2}{3}",
                 settings.RunCount, algorithms.Count, maxParallelJobs,
                 settings.MaxParallelJobs > 0 ? " (manual)" : " (auto)"));
+
+            ChengTreqMetrics chengMetrics = ChengTreqCalculator.Compute(settings, settings.NmaxTask);
+            string treqSource = ChengTreqCalculator.IsChengTreqMode(settings.ThresholdMode)
+                ? "Auto"
+                : (String.Equals(settings.ThresholdMode, "TreqSeconds", StringComparison.OrdinalIgnoreCase) ? "Manual" : "NotUsed");
+            Report(String.Format(CultureInfo.InvariantCulture,
+                "ThresholdMode={0}, RequestThresholdPercent={1}, ConfiguredTreqSeconds={2}, EffectiveTreqSeconds={3}, TreqSource={4}, NmaxTask={5}, MapWidthMeters={6}, MapHeightMeters={7}, ComputedLpathMeters={8}, ComputedTjobSeconds={9}, ComputedLmaxStepMeters={10}",
+                settings.ThresholdMode,
+                settings.RequestThresholdPercent,
+                settings.TreqSeconds,
+                ChengTreqCalculator.GetEffectiveTreqSeconds(settings, settings.NmaxTask),
+                treqSource,
+                settings.NmaxTask,
+                settings.MapWidthMeters,
+                settings.MapHeightMeters,
+                chengMetrics.LpathMeters,
+                chengMetrics.TjobSeconds,
+                chengMetrics.LmaxStepMeters));
 
             ParallelOptions options = new ParallelOptions();
             options.MaxDegreeOfParallelism = maxParallelJobs;
@@ -898,12 +1010,6 @@ namespace WindowsFormsApplication1
         private const double Epsilon = 1e-7;
         private const string ZhengBprWindowRemovalReason = "ZHENG_BPR_WINDOW_REMOVAL";
         private const string YuBprDangerIntervalRemovalReason = "YU_BPR_DANGER_INTERVAL_REMOVAL";
-        private const string RoutingBottleneckEmergencyReason = "ROUTING_BOTTLENECK_EMERGENCY";
-        private const double EmergencyForwardPacketsAverageMultiplier = 2.0;
-        private const int EmergencyRoutingBottleneckMaxAddPerDispatch = 1;
-        private const int RoutingBottleneckTraceRunIndex = 22;
-        private const int RoutingBottleneckTraceSeed = 63;
-        private const int RoutingBottleneckTraceNodeId = 292;
         private readonly ExperimentSettings settings;
         private readonly ExperimentArtifact artifact;
         private readonly string algorithm;
@@ -1097,28 +1203,6 @@ namespace WindowsFormsApplication1
             public double SlackSeconds;
             public double RouteInsertionCost;
             public double Score;
-            public string Reason;
-        }
-
-        private sealed class EmergencyRoutingBottleneckCandidate
-        {
-            public int NodeId;
-            public double EnergyJ;
-            public double BaseConsumeRateJPerSecond;
-            public double RoutingLoadJPerSecond;
-            public double RoutingTxLoadJPerSecond;
-            public double RoutingRxLoadJPerSecond;
-            public double EffectiveConsumeRateJPerSecond;
-            public int RoutingSubtreeSize;
-            public double ExpectedRoutingForwardPacketsPerSecond;
-            public double AverageExpectedRoutingForwardPacketsPerSecond;
-            public double PredictedRequestTimeSeconds;
-            public double PredictedDeathTimeSeconds;
-            public double RouteInsertionCost;
-            public bool HasPendingRequest;
-            public bool HasActiveRequest;
-            public bool IsScheduledInCurrentMission;
-            public bool IsEmergencyCandidate;
             public string Reason;
         }
 
@@ -1493,15 +1577,16 @@ namespace WindowsFormsApplication1
             if (sensor == null)
                 return 0.0;
 
-            if (settings.ThresholdMode == "TreqSeconds")
+            if (ChengTreqCalculator.IsTimeThresholdMode(settings.ThresholdMode))
             {
                 double serviceFloor = Math.Max(
                     ComputePredictedTxEnergyJ(rateScale, settings.PacketBits) * 2.0,
                     settings.InitialEnergyJ * 0.005);
-                return Math.Min(sensor.CapacityJ * 0.95, effectiveRate * settings.TreqSeconds + serviceFloor);
+                return Math.Min(sensor.CapacityJ * 0.95, effectiveRate * GetEffectiveTreqSeconds() + serviceFloor);
             }
 
-            return sensor.CapacityJ * settings.RequestThresholdPercent / 100.0;
+            return Math.Min(sensor.CapacityJ * 0.95,
+                sensor.CapacityJ * settings.RequestThresholdPercent / 100.0);
         }
 
         private int GetRoutingSubtreeSize(int nodeId)
@@ -1754,12 +1839,6 @@ namespace WindowsFormsApplication1
             List<ChargingRequest> route = BuildMissionRoute();
             int deduplicatedTaskCount;
             route = DeduplicateMissionRoute(route, out deduplicatedTaskCount);
-            TraceRoutingBottleneckNode(
-                "ROUTE_BUILT",
-                GetMissionTaskLimit(),
-                RoutingBottleneckTraceNodeId,
-                false,
-                ContainsChargingRequest(route, RoutingBottleneckTraceNodeId));
             if (route.Count == 0)
             {
                 currentTime = Math.Min(settings.SimulationTimeSeconds, currentTime + 1.0);
@@ -2196,15 +2275,7 @@ namespace WindowsFormsApplication1
                 if (request == null || !request.IsProactive)
                     continue;
                 summary.PlannedProactiveTaskCount++;
-                if (IsEmergencyBottleneckProactive(request))
-                    summary.EmergencyBottleneckProactiveCount++;
             }
-        }
-
-        private static bool IsEmergencyBottleneckProactive(ChargingRequest request)
-        {
-            return request != null &&
-                String.Equals(request.ProactiveReason, RoutingBottleneckEmergencyReason, StringComparison.Ordinal);
         }
 
         private bool IsNodeReservedForCurrentMission(int nodeId)
@@ -2358,15 +2429,11 @@ namespace WindowsFormsApplication1
                 algorithm == "NJF_ROUTE_YU_BPR_EXTENDED")
             {
                 List<YuPredictedInterval> intervals = BuildYuPredictedIntervals(maxTask, new HashSet<int>());
-                if (BuildYuDangerWindows(intervals, maxTask).Count > 0)
-                    return true;
-                return HasEmergencyRoutingBottleneckCandidate(maxTask);
+                return BuildYuDangerWindows(intervals, maxTask).Count > 0;
             }
 
             List<BprPredictedRequest> predictedRequests = BuildBprPredictedRequests(maxTask, new HashSet<int>());
-            if (BuildBprSlidingWindows(predictedRequests, maxTask).Count > 0)
-                return true;
-            return HasEmergencyRoutingBottleneckCandidate(maxTask);
+            return BuildBprSlidingWindows(predictedRequests, maxTask).Count > 0;
         }
 
         private double FindNextBprBottleneckCandidateTime()
@@ -2388,11 +2455,9 @@ namespace WindowsFormsApplication1
             if (windows.Count > 0)
                 windowTime = windows[0].WindowStartSeconds - EstimateBprTjobSeconds(maxTask);
 
-            double emergencyTime = FindNextEmergencyRoutingBottleneckCandidateTime(maxTask);
-            double next = Math.Min(windowTime, emergencyTime);
-            if (Double.IsPositiveInfinity(next))
-                return next;
-            return Math.Max(currentTime, next);
+            if (Double.IsPositiveInfinity(windowTime))
+                return windowTime;
+            return Math.Max(currentTime, windowTime);
         }
 
         private double FindNextYuBprBottleneckCandidateTime()
@@ -2404,224 +2469,9 @@ namespace WindowsFormsApplication1
             if (windows.Count > 0)
                 windowTime = windows[0].WindowStartSeconds - EstimateBprTjobSeconds(maxTask);
 
-            double emergencyTime = FindNextEmergencyRoutingBottleneckCandidateTime(maxTask);
-            double next = Math.Min(windowTime, emergencyTime);
-            if (Double.IsPositiveInfinity(next))
-                return next;
-            return Math.Max(currentTime, next);
-        }
-
-        private bool HasEmergencyRoutingBottleneckCandidate(int maxTask)
-        {
-            return BuildEmergencyRoutingBottleneckCandidates(
-                maxTask,
-                new HashSet<int>(),
-                new List<ChargingRequest>()).Count > 0;
-        }
-
-        private double FindNextEmergencyRoutingBottleneckCandidateTime(int maxTask)
-        {
-            List<EmergencyRoutingBottleneckCandidate> candidates = BuildEmergencyRoutingBottleneckCandidates(
-                maxTask,
-                new HashSet<int>(),
-                new List<ChargingRequest>());
-            if (candidates.Count == 0)
-                return Double.PositiveInfinity;
-
-            return candidates[0].PredictedDeathTimeSeconds - EstimateBprTjobSeconds(maxTask);
-        }
-
-        private List<EmergencyRoutingBottleneckCandidate> BuildEmergencyRoutingBottleneckCandidates(
-            int maxTask,
-            HashSet<int> reservedNodeIds,
-            List<ChargingRequest> cplist)
-        {
-            List<EmergencyRoutingBottleneckCandidate> candidates = new List<EmergencyRoutingBottleneckCandidate>();
-            double averageForwardPackets = ComputeAverageExpectedRoutingForwardPacketsPerSecond();
-            List<ChargingRequest> route = BuildNearestRoute(cplist ?? new List<ChargingRequest>(),
-                cplist == null ? 0 : cplist.Count);
-
-            for (int nodeId = 1; nodeId < sensors.Length; nodeId++)
-            {
-                EmergencyRoutingBottleneckCandidate candidate = EvaluateEmergencyRoutingBottleneckCandidate(
-                    nodeId,
-                    maxTask,
-                    reservedNodeIds,
-                    route,
-                    averageForwardPackets);
-                TraceRoutingBottleneckNode(
-                    "EMERGENCY_EVALUATE",
-                    maxTask,
-                    candidate,
-                    false,
-                    false);
-                if (candidate.IsEmergencyCandidate)
-                    candidates.Add(candidate);
-            }
-
-            candidates.Sort(CompareEmergencyRoutingBottleneckCandidates);
-            return candidates;
-        }
-
-        private EmergencyRoutingBottleneckCandidate EvaluateEmergencyRoutingBottleneckCandidate(
-            int nodeId,
-            int maxTask,
-            HashSet<int> reservedNodeIds,
-            List<ChargingRequest> currentRoute,
-            double averageForwardPackets)
-        {
-            EmergencyRoutingBottleneckCandidate candidate = new EmergencyRoutingBottleneckCandidate();
-            candidate.NodeId = nodeId;
-            candidate.PredictedRequestTimeSeconds = Double.PositiveInfinity;
-            candidate.PredictedDeathTimeSeconds = Double.PositiveInfinity;
-            candidate.RouteInsertionCost = Double.PositiveInfinity;
-            candidate.AverageExpectedRoutingForwardPacketsPerSecond = averageForwardPackets;
-            candidate.Reason = "";
-
-            if (nodeId <= 0 || nodeId >= sensors.Length)
-            {
-                candidate.Reason = "INVALID_NODE";
-                return candidate;
-            }
-
-            SensorState sensor = sensors[nodeId];
-            if (sensor == null)
-            {
-                candidate.Reason = "MISSING_SENSOR";
-                return candidate;
-            }
-
-            candidate.EnergyJ = sensor.EnergyJ;
-            candidate.BaseConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
-            candidate.RoutingTxLoadJPerSecond = GetRoutingTxLoadJPerSecond(sensor);
-            candidate.RoutingRxLoadJPerSecond = GetRoutingRxLoadJPerSecond(sensor);
-            candidate.RoutingLoadJPerSecond = candidate.RoutingTxLoadJPerSecond + candidate.RoutingRxLoadJPerSecond;
-            candidate.EffectiveConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond + candidate.RoutingLoadJPerSecond;
-            candidate.RoutingSubtreeSize = GetRoutingSubtreeSize(nodeId);
-            candidate.ExpectedRoutingForwardPacketsPerSecond = GetExpectedRoutingForwardPacketsPerSecond(nodeId);
-            candidate.HasPendingRequest = sensor.HasPendingRequest;
-            candidate.HasActiveRequest = HasActiveRequestForNode(nodeId);
-            candidate.IsScheduledInCurrentMission = IsNodeReservedForCurrentMission(nodeId) ||
-                (reservedNodeIds != null && reservedNodeIds.Contains(nodeId));
-
-            if (!sensor.Alive)
-            {
-                candidate.Reason = "NOT_ALIVE";
-                return candidate;
-            }
-            if (candidate.HasPendingRequest)
-            {
-                candidate.Reason = "HAS_PENDING_REQUEST";
-                return candidate;
-            }
-            if (candidate.HasActiveRequest)
-            {
-                candidate.Reason = "HAS_ACTIVE_REQUEST";
-                return candidate;
-            }
-            if (candidate.IsScheduledInCurrentMission)
-            {
-                candidate.Reason = "SCHEDULED_IN_CURRENT_MISSION";
-                return candidate;
-            }
-            if (candidate.EffectiveConsumeRateJPerSecond <= 1e-12)
-            {
-                candidate.Reason = "NON_POSITIVE_EFFECTIVE_RATE";
-                return candidate;
-            }
-
-            double horizonEnd = GetBprPredictionHorizonEndSeconds(maxTask);
-            List<BprPredictionSegment> timeline = BuildBprPredictionTimelineFromState(
-                nodeId,
-                horizonEnd,
-                sensor.EnergyJ,
-                sensor.RateScale);
-            double predictedDeathTime = sensor.EnergyJ <= Epsilon ? currentTime : Double.PositiveInfinity;
-            double predictedRequestTime = ComputeCurrentPredictedRequestTime(sensor, candidate.EffectiveConsumeRateJPerSecond);
-            for (int i = 0; i < timeline.Count; i++)
-            {
-                if (timeline[i].CrossesDeathThreshold && Double.IsPositiveInfinity(predictedDeathTime))
-                    predictedDeathTime = timeline[i].DeathTimeSeconds;
-                if (timeline[i].CrossesRequestThreshold && Double.IsPositiveInfinity(predictedRequestTime))
-                    predictedRequestTime = timeline[i].RequestTimeSeconds;
-            }
-            candidate.PredictedRequestTimeSeconds = predictedRequestTime;
-            candidate.PredictedDeathTimeSeconds = predictedDeathTime;
-
-            double horizonSeconds = ResolveProactivePredictionHorizonSeconds(maxTask);
-            if (Double.IsPositiveInfinity(predictedDeathTime) ||
-                predictedDeathTime > currentTime + horizonSeconds + Epsilon)
-            {
-                candidate.Reason = "PREDICTED_DEATH_AFTER_HORIZON";
-                return candidate;
-            }
-
-            bool routingRatioHigh = candidate.BaseConsumeRateJPerSecond <= 1e-12
-                ? candidate.RoutingLoadJPerSecond > 1e-12
-                : candidate.RoutingLoadJPerSecond / candidate.BaseConsumeRateJPerSecond >= 1.0 - Epsilon;
-            bool forwardPacketsHigh = averageForwardPackets > 1e-12 &&
-                candidate.ExpectedRoutingForwardPacketsPerSecond >=
-                averageForwardPackets * EmergencyForwardPacketsAverageMultiplier - Epsilon;
-            if (!routingRatioHigh && !forwardPacketsHigh)
-            {
-                candidate.Reason = "ROUTING_LOAD_NOT_HIGH";
-                return candidate;
-            }
-
-            if (routingRatioHigh && forwardPacketsHigh)
-                candidate.Reason = "ROUTING_LOAD_RATIO_AND_FORWARD_PACKETS";
-            else if (routingRatioHigh)
-                candidate.Reason = "ROUTING_LOAD_RATIO";
-            else
-                candidate.Reason = "FORWARD_PACKETS_ABOVE_AVERAGE";
-
-            candidate.RouteInsertionCost = ComputeRouteInsertionCost(nodeId, currentRoute);
-            candidate.IsEmergencyCandidate = true;
-            return candidate;
-        }
-
-        private double ComputeCurrentPredictedRequestTime(SensorState sensor, double effectiveRate)
-        {
-            if (sensor == null || effectiveRate <= 1e-12)
-                return Double.PositiveInfinity;
-
-            double threshold = GetPredictedRequestThresholdJ(sensor, effectiveRate, sensor.RateScale);
-            if (sensor.EnergyJ <= threshold + Epsilon)
-                return currentTime;
-            return Double.PositiveInfinity;
-        }
-
-        private double ComputeAverageExpectedRoutingForwardPacketsPerSecond()
-        {
-            double sum = 0.0;
-            int count = 0;
-            for (int nodeId = 1; nodeId < sensors.Length; nodeId++)
-            {
-                if (sensors[nodeId] == null || !sensors[nodeId].Alive)
-                    continue;
-                sum += GetExpectedRoutingForwardPacketsPerSecond(nodeId);
-                count++;
-            }
-            return count <= 0 ? 0.0 : sum / count;
-        }
-
-        private static int CompareEmergencyRoutingBottleneckCandidates(
-            EmergencyRoutingBottleneckCandidate a,
-            EmergencyRoutingBottleneckCandidate b)
-        {
-            int compare = a.PredictedDeathTimeSeconds.CompareTo(b.PredictedDeathTimeSeconds);
-            if (compare != 0)
-                return compare;
-            compare = b.RoutingLoadJPerSecond.CompareTo(a.RoutingLoadJPerSecond);
-            if (compare != 0)
-                return compare;
-            compare = a.RouteInsertionCost.CompareTo(b.RouteInsertionCost);
-            if (compare != 0)
-                return compare;
-            compare = b.ExpectedRoutingForwardPacketsPerSecond.CompareTo(a.ExpectedRoutingForwardPacketsPerSecond);
-            if (compare != 0)
-                return compare;
-            return a.NodeId.CompareTo(b.NodeId);
+            if (Double.IsPositiveInfinity(windowTime))
+                return windowTime;
+            return Math.Max(currentTime, windowTime);
         }
 
         private void AddProactiveCandidates(List<ChargingRequest> pool, int maxTask)
@@ -2647,7 +2497,7 @@ namespace WindowsFormsApplication1
                     continue;
                 double timeToRequest = Math.Max(0.0, (sensor.EnergyJ - threshold) / effectiveRate);
                 double timeToDeath = Math.Max(0.0, sensor.EnergyJ / effectiveRate);
-                if (timeToRequest > settings.TreqSeconds * 1.5 && sensor.EnergyJ > settings.InitialEnergyJ * 0.35)
+                if (timeToRequest > GetEffectiveTreqSeconds(maxTask) * 1.5 && sensor.EnergyJ > settings.InitialEnergyJ * 0.35)
                     continue;
 
                 ChargingRequest proactive = new ChargingRequest();
@@ -3176,38 +3026,7 @@ namespace WindowsFormsApplication1
                 List<BprWindow> windows = BuildBprSlidingWindows(predictedRequests, maxTask);
                 if (windows.Count == 0)
                 {
-                    List<EmergencyRoutingBottleneckCandidate> emergencyCandidates =
-                        BuildEmergencyRoutingBottleneckCandidates(maxTask, reservedNodeIds, cplist);
-                    if (emergencyCandidates.Count == 0)
-                    {
-                        WriteBprDebug(iteration, null, null, "NO_OVERFLOW_WINDOW", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
-                        break;
-                    }
-
-                    int emergencyCapacityLeft = allowCapacityOverflow
-                        ? EmergencyRoutingBottleneckMaxAddPerDispatch
-                        : Math.Min(EmergencyRoutingBottleneckMaxAddPerDispatch, Math.Max(0, maxTask - cplist.Count));
-                    int emergencyAddCount = Math.Min(emergencyCandidates.Count, emergencyCapacityLeft);
-                    if (emergencyAddCount <= 0)
-                    {
-                        WriteBprDebug(iteration, null, null, "LIMITED_CAPACITY_FULL", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, emergencyCandidates.Count, emergencyCandidates[0]);
-                        return cplist;
-                    }
-
-                    for (int i = 0; i < emergencyAddCount; i++)
-                    {
-                        EmergencyRoutingBottleneckCandidate candidate = emergencyCandidates[i];
-                        int before = cplist.Count;
-                        cplist.Add(CreateEmergencyRoutingBottleneckProactiveRequest(candidate));
-                        reservedNodeIds.Add(candidate.NodeId);
-                        TraceRoutingBottleneckNode(
-                            "ZHENG_EMERGENCY_CPLIST_ADD",
-                            maxTask,
-                            candidate,
-                            true,
-                            false);
-                        WriteBprDebug(iteration, null, null, RoutingBottleneckEmergencyReason, before, cplist.Count, maxTask, allowCapacityOverflow, emergencyCandidates.Count, candidate);
-                    }
+                    WriteBprDebug(iteration, null, null, "NO_OVERFLOW_WINDOW", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
                     break;
                 }
 
@@ -3218,7 +3037,7 @@ namespace WindowsFormsApplication1
                 int addCount = Math.Min(worstWindow.OverflowCount, capacityLeft);
                 if (addCount <= 0)
                 {
-                    WriteBprDebug(iteration, worstWindow, null, "LIMITED_CAPACITY_FULL", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
+                    WriteBprDebug(iteration, worstWindow, null, "LIMITED_CAPACITY_FULL", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
                     return cplist;
                 }
 
@@ -3229,7 +3048,7 @@ namespace WindowsFormsApplication1
                     selectionMode);
                 if (decisions.Count == 0)
                 {
-                    WriteBprDebug(iteration, worstWindow, null, "NO_SELECTABLE_NODE", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
+                    WriteBprDebug(iteration, worstWindow, null, "NO_SELECTABLE_NODE", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
                     break;
                 }
 
@@ -3239,13 +3058,7 @@ namespace WindowsFormsApplication1
                     int before = cplist.Count;
                     cplist.Add(CreateZhengBprProactiveRequest(decision));
                     reservedNodeIds.Add(decision.NodeId);
-                    TraceRoutingBottleneckNode(
-                        "ZHENG_WINDOW_CPLIST_ADD",
-                        maxTask,
-                        decision.NodeId,
-                        true,
-                        false);
-                    WriteBprDebug(iteration, worstWindow, decision, decision.Reason, before, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
+                    WriteBprDebug(iteration, worstWindow, decision, decision.Reason, before, cplist.Count, maxTask, allowCapacityOverflow);
                 }
 
                 if (!allowCapacityOverflow && cplist.Count >= maxTask)
@@ -3291,38 +3104,7 @@ namespace WindowsFormsApplication1
                 List<YuDangerWindow> windows = BuildYuDangerWindows(intervals, maxTask);
                 if (windows.Count == 0)
                 {
-                    List<EmergencyRoutingBottleneckCandidate> emergencyCandidates =
-                        BuildEmergencyRoutingBottleneckCandidates(maxTask, reservedNodeIds, cplist);
-                    if (emergencyCandidates.Count == 0)
-                    {
-                        WriteYuBprDebug(iteration, null, null, "NO_DANGER_WINDOW", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
-                        break;
-                    }
-
-                    int emergencyCapacityLeft = allowCapacityOverflow
-                        ? EmergencyRoutingBottleneckMaxAddPerDispatch
-                        : Math.Min(EmergencyRoutingBottleneckMaxAddPerDispatch, Math.Max(0, maxTask - cplist.Count));
-                    int emergencyAddCount = Math.Min(emergencyCandidates.Count, emergencyCapacityLeft);
-                    if (emergencyAddCount <= 0)
-                    {
-                        WriteYuBprDebug(iteration, null, null, "LIMITED_CAPACITY_FULL", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, emergencyCandidates.Count, emergencyCandidates[0]);
-                        return cplist;
-                    }
-
-                    for (int i = 0; i < emergencyAddCount; i++)
-                    {
-                        EmergencyRoutingBottleneckCandidate candidate = emergencyCandidates[i];
-                        int before = cplist.Count;
-                        cplist.Add(CreateEmergencyRoutingBottleneckProactiveRequest(candidate));
-                        reservedNodeIds.Add(candidate.NodeId);
-                        TraceRoutingBottleneckNode(
-                            "YU_EMERGENCY_CPLIST_ADD",
-                            maxTask,
-                            candidate,
-                            true,
-                            false);
-                        WriteYuBprDebug(iteration, null, null, RoutingBottleneckEmergencyReason, before, cplist.Count, maxTask, allowCapacityOverflow, emergencyCandidates.Count, candidate);
-                    }
+                    WriteYuBprDebug(iteration, null, null, "NO_DANGER_WINDOW", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
                     break;
                 }
 
@@ -3333,7 +3115,7 @@ namespace WindowsFormsApplication1
                 int addCount = Math.Min(worstWindow.RemovalNeededCount, capacityLeft);
                 if (addCount <= 0)
                 {
-                    WriteYuBprDebug(iteration, worstWindow, null, "LIMITED_CAPACITY_FULL", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
+                    WriteYuBprDebug(iteration, worstWindow, null, "LIMITED_CAPACITY_FULL", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
                     return cplist;
                 }
 
@@ -3344,7 +3126,7 @@ namespace WindowsFormsApplication1
                     selectionMode);
                 if (decisions.Count == 0)
                 {
-                    WriteYuBprDebug(iteration, worstWindow, null, "NO_SELECTABLE_NODE", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
+                    WriteYuBprDebug(iteration, worstWindow, null, "NO_SELECTABLE_NODE", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
                     break;
                 }
 
@@ -3354,13 +3136,7 @@ namespace WindowsFormsApplication1
                     int before = cplist.Count;
                     cplist.Add(CreateYuProactiveRequest(decision));
                     reservedNodeIds.Add(decision.NodeId);
-                    TraceRoutingBottleneckNode(
-                        "YU_WINDOW_CPLIST_ADD",
-                        maxTask,
-                        decision.NodeId,
-                        true,
-                        false);
-                    WriteYuBprDebug(iteration, worstWindow, decision, decision.Reason, before, cplist.Count, maxTask, allowCapacityOverflow, 0, null);
+                    WriteYuBprDebug(iteration, worstWindow, decision, decision.Reason, before, cplist.Count, maxTask, allowCapacityOverflow);
                 }
 
                 if (!allowCapacityOverflow && cplist.Count >= maxTask)
@@ -3473,29 +3249,6 @@ namespace WindowsFormsApplication1
             proactive.CriticalDensity = 0.0;
             proactive.IsProactive = true;
             proactive.ProactiveReason = ZhengBprWindowRemovalReason;
-            return proactive;
-        }
-
-        private ChargingRequest CreateEmergencyRoutingBottleneckProactiveRequest(
-            EmergencyRoutingBottleneckCandidate candidate)
-        {
-            ChargingRequest proactive = new ChargingRequest();
-            proactive.RequestId = -candidate.NodeId;
-            proactive.NodeId = candidate.NodeId;
-            proactive.RequestTimeSeconds = currentTime;
-            proactive.DeadlineSeconds = candidate.PredictedDeathTimeSeconds;
-            proactive.RequestEnergyJ = candidate.EnergyJ;
-            proactive.ConsumeRateJPerSecond = candidate.BaseConsumeRateJPerSecond;
-            proactive.BaseConsumeRateJPerSecond = candidate.BaseConsumeRateJPerSecond;
-            proactive.EffectiveConsumeRateJPerSecond = candidate.EffectiveConsumeRateJPerSecond;
-            proactive.RoutingLoadJPerSecond = candidate.RoutingLoadJPerSecond;
-            proactive.RoutingTxLoadJPerSecond = candidate.RoutingTxLoadJPerSecond;
-            proactive.RoutingRxLoadJPerSecond = candidate.RoutingRxLoadJPerSecond;
-            proactive.RoutingSubtreeSize = candidate.RoutingSubtreeSize;
-            proactive.ExpectedRoutingForwardPacketsPerSecond = candidate.ExpectedRoutingForwardPacketsPerSecond;
-            proactive.CriticalDensity = 0.0;
-            proactive.IsProactive = true;
-            proactive.ProactiveReason = RoutingBottleneckEmergencyReason;
             return proactive;
         }
 
@@ -3639,9 +3392,7 @@ namespace WindowsFormsApplication1
             int cplistCountBefore,
             int cplistCountAfter,
             int maxTask,
-            bool allowCapacityOverflow,
-            int emergencyCandidateCount,
-            EmergencyRoutingBottleneckCandidate emergencySelected)
+            bool allowCapacityOverflow)
         {
             if (csvWriter == null)
                 return;
@@ -3666,13 +3417,7 @@ namespace WindowsFormsApplication1
                 cplistCountBefore,
                 cplistCountAfter,
                 maxTask,
-                allowCapacityOverflow,
-                emergencyCandidateCount,
-                emergencySelected == null ? -1 : emergencySelected.NodeId,
-                emergencySelected == null ? Double.NaN : emergencySelected.PredictedDeathTimeSeconds,
-                emergencySelected == null ? Double.NaN : emergencySelected.RoutingLoadJPerSecond,
-                emergencySelected == null ? Double.NaN : emergencySelected.ExpectedRoutingForwardPacketsPerSecond,
-                emergencySelected == null ? "" : emergencySelected.Reason);
+                allowCapacityOverflow);
         }
 
         private void WriteYuBprDebug(
@@ -3683,9 +3428,7 @@ namespace WindowsFormsApplication1
             int cplistCountBefore,
             int cplistCountAfter,
             int maxTask,
-            bool allowCapacityOverflow,
-            int emergencyCandidateCount,
-            EmergencyRoutingBottleneckCandidate emergencySelected)
+            bool allowCapacityOverflow)
         {
             if (csvWriter == null)
                 return;
@@ -3715,78 +3458,7 @@ namespace WindowsFormsApplication1
                 cplistCountBefore,
                 cplistCountAfter,
                 maxTask,
-                allowCapacityOverflow,
-                emergencyCandidateCount,
-                emergencySelected == null ? -1 : emergencySelected.NodeId,
-                emergencySelected == null ? Double.NaN : emergencySelected.PredictedDeathTimeSeconds,
-                emergencySelected == null ? Double.NaN : emergencySelected.RoutingLoadJPerSecond,
-                emergencySelected == null ? Double.NaN : emergencySelected.ExpectedRoutingForwardPacketsPerSecond,
-                emergencySelected == null ? "" : emergencySelected.Reason);
-        }
-
-        private bool ShouldTraceRoutingBottleneckNode(int nodeId)
-        {
-            return csvWriter != null &&
-                artifact.RunIndex == RoutingBottleneckTraceRunIndex &&
-                artifact.Seed == RoutingBottleneckTraceSeed &&
-                nodeId == RoutingBottleneckTraceNodeId;
-        }
-
-        private void TraceRoutingBottleneckNode(
-            string phase,
-            int maxTask,
-            int nodeId,
-            bool addedToCplist,
-            bool addedToRoute)
-        {
-            if (!ShouldTraceRoutingBottleneckNode(nodeId))
-                return;
-
-            double averageForwardPackets = ComputeAverageExpectedRoutingForwardPacketsPerSecond();
-            EmergencyRoutingBottleneckCandidate candidate = EvaluateEmergencyRoutingBottleneckCandidate(
-                nodeId,
-                maxTask,
-                new HashSet<int>(),
-                new List<ChargingRequest>(),
-                averageForwardPackets);
-            TraceRoutingBottleneckNode(phase, maxTask, candidate, addedToCplist, addedToRoute);
-        }
-
-        private void TraceRoutingBottleneckNode(
-            string phase,
-            int maxTask,
-            EmergencyRoutingBottleneckCandidate candidate,
-            bool addedToCplist,
-            bool addedToRoute)
-        {
-            if (candidate == null || !ShouldTraceRoutingBottleneckNode(candidate.NodeId))
-                return;
-
-            csvWriter.WriteRoutingBottleneckTrace(
-                artifact.RunIndex,
-                artifact.Seed,
-                algorithm,
-                missionId,
-                phase,
-                currentTime,
-                maxTask,
-                candidate.NodeId,
-                candidate.EnergyJ,
-                candidate.BaseConsumeRateJPerSecond,
-                candidate.RoutingLoadJPerSecond,
-                candidate.EffectiveConsumeRateJPerSecond,
-                candidate.PredictedRequestTimeSeconds,
-                candidate.PredictedDeathTimeSeconds,
-                candidate.HasPendingRequest,
-                candidate.HasActiveRequest,
-                candidate.IsScheduledInCurrentMission,
-                candidate.IsEmergencyCandidate,
-                addedToCplist,
-                addedToRoute,
-                candidate.RouteInsertionCost,
-                candidate.ExpectedRoutingForwardPacketsPerSecond,
-                candidate.AverageExpectedRoutingForwardPacketsPerSecond,
-                candidate.Reason);
+                allowCapacityOverflow);
         }
 
         private List<YuPredictedInterval> BuildYuRequestIntervals(int maxTask, HashSet<int> reservedNodeIds)
@@ -3976,14 +3648,36 @@ namespace WindowsFormsApplication1
         {
             if (settings.ProactivePredictionHorizonSeconds > 0.0)
                 return settings.ProactivePredictionHorizonSeconds;
-            return settings.TreqSeconds + EstimateBprTjobSeconds(maxTask);
+            return GetEffectiveTreqSeconds(maxTask) + EstimateBprTjobSeconds(maxTask);
         }
 
         private double ResolveProactiveCooldownSeconds()
         {
             if (settings.ProactiveCooldownSeconds > 0.0)
                 return settings.ProactiveCooldownSeconds;
-            return settings.TreqSeconds;
+            return GetEffectiveTreqSeconds();
+        }
+
+        private double GetEffectiveTreqSeconds()
+        {
+            return GetEffectiveTreqSeconds(GetMissionTaskLimit());
+        }
+
+        private double GetEffectiveTreqSeconds(int maxTask)
+        {
+            if (ChengTreqCalculator.IsChengTreqMode(settings.ThresholdMode))
+                return ComputeChengTreqSeconds(maxTask);
+            return Math.Max(0.0, settings.TreqSeconds);
+        }
+
+        private ChengTreqMetrics ComputeChengTreqMetrics(int maxTask)
+        {
+            return ChengTreqCalculator.Compute(settings, maxTask);
+        }
+
+        private double ComputeChengTreqSeconds(int maxTask)
+        {
+            return ComputeChengTreqMetrics(maxTask).TreqSeconds;
         }
 
         private static int CompareYuIntervalByStart(YuRequestInterval a, YuRequestInterval b)
@@ -4119,25 +3813,7 @@ namespace WindowsFormsApplication1
 
         private double EstimateBprTjobSeconds(int maxTask)
         {
-            maxTask = Math.Max(1, maxTask);
-            double side = Math.Max(1.0, Math.Max(settings.MapWidthMeters, settings.MapHeightMeters));
-            double pathLength;
-            if (maxTask <= 1)
-            {
-                pathLength = 2.0 * Math.Sqrt(2.0) * side;
-            }
-            else
-            {
-                double denominator = Math.Sqrt(maxTask) - 1.0;
-                if (denominator <= 0.0)
-                    pathLength = (maxTask + 1) * Math.Sqrt(2.0) * side;
-                else
-                    pathLength = ((maxTask - 1) * side) / denominator + 2.0 * Math.Sqrt(2.0) * side;
-            }
-
-            double travelSeconds = pathLength / Math.Max(1e-9, settings.WcvSpeedMetersPerSecond);
-            double fullChargeSeconds = settings.InitialEnergyJ / Math.Max(1e-9, settings.WcvChargeRateJPerSecond);
-            return Math.Max(1.0, travelSeconds + fullChargeSeconds * maxTask);
+            return Math.Max(1.0, ComputeChengTreqMetrics(maxTask).TjobSeconds);
         }
 
         private double ComputeRouteInsertionCost(int nodeId, List<ChargingRequest> route)
@@ -5477,13 +5153,17 @@ namespace WindowsFormsApplication1
 
         private double GetRequestThresholdJ(SensorState sensor)
         {
-            if (settings.ThresholdMode == "TreqSeconds")
+            if (sensor == null)
+                return 0.0;
+
+            if (ChengTreqCalculator.IsTimeThresholdMode(settings.ThresholdMode))
             {
                 double serviceFloor = Math.Max(TxEnergyJ(sensor, settings.PacketBits) * 2.0, settings.InitialEnergyJ * 0.005);
-                return Math.Min(sensor.CapacityJ * 0.95, sensor.ConsumeRateJPerSecond * settings.TreqSeconds + serviceFloor);
+                return Math.Min(sensor.CapacityJ * 0.95, sensor.ConsumeRateJPerSecond * GetEffectiveTreqSeconds() + serviceFloor);
             }
 
-            return sensor.CapacityJ * settings.RequestThresholdPercent / 100.0;
+            return Math.Min(sensor.CapacityJ * 0.95,
+                sensor.CapacityJ * settings.RequestThresholdPercent / 100.0);
         }
 
         private void CheckDeadSensors(string directReason)
@@ -6306,6 +5986,52 @@ namespace WindowsFormsApplication1
                     treqSimulation.sensors[3].RateScale),
                 "BPR/YU prediction threshold should still include routing-aware effective load.");
 
+            ExperimentSettings cheng500Settings = CreateBprSelfTestSettings(tempDirectory);
+            cheng500Settings.MapWidthMeters = 500.0;
+            cheng500Settings.MapHeightMeters = 500.0;
+            cheng500Settings.NmaxTask = 30;
+            cheng500Settings.InitialEnergyJ = 100.0;
+            cheng500Settings.WcvSpeedMetersPerSecond = 5.0;
+            cheng500Settings.WcvChargeRateJPerSecond = 5.0;
+            cheng500Settings.ThresholdMode = "ChengTreq";
+            cheng500Settings.Normalize();
+            ExperimentSimulation cheng500Simulation = new ExperimentSimulation(
+                cheng500Settings,
+                CreateBprSelfTestArtifact(new double[] { 100.0 }),
+                "NJF",
+                null);
+            simulations.Add(cheng500Simulation);
+            AssertNear(cheng500Simulation.ComputeChengTreqSeconds(30), 2899.8, 1.0,
+                "CHENG Treq for 500m x 500m, NmaxTask=30 should be near 2899.8 seconds.");
+
+            ExperimentSettings cheng1000Settings = CreateBprSelfTestSettings(tempDirectory);
+            cheng1000Settings.MapWidthMeters = 1000.0;
+            cheng1000Settings.MapHeightMeters = 1000.0;
+            cheng1000Settings.NmaxTask = 30;
+            cheng1000Settings.InitialEnergyJ = 100.0;
+            cheng1000Settings.WcvSpeedMetersPerSecond = 5.0;
+            cheng1000Settings.WcvChargeRateJPerSecond = 5.0;
+            cheng1000Settings.ThresholdMode = "ChengTreq";
+            cheng1000Settings.Normalize();
+            ExperimentSimulation cheng1000Simulation = new ExperimentSimulation(
+                cheng1000Settings,
+                CreateBprSelfTestArtifact(new double[] { 100.0 }),
+                "NJF",
+                null);
+            simulations.Add(cheng1000Simulation);
+            AssertNear(cheng1000Simulation.ComputeChengTreqSeconds(30), 4619.6, 1.0,
+                "CHENG Treq for 1000m x 1000m, NmaxTask=30 should be near 4619.6 seconds.");
+            double chengThreshold = cheng500Simulation.GetRequestThresholdJ(cheng500Simulation.sensors[1]);
+            double chengServiceFloor = Math.Max(
+                cheng500Simulation.TxEnergyJ(cheng500Simulation.sensors[1], cheng500Settings.PacketBits) * 2.0,
+                cheng500Settings.InitialEnergyJ * 0.005);
+            AssertNear(chengThreshold,
+                Math.Min(cheng500Simulation.sensors[1].CapacityJ * 0.95,
+                    cheng500Simulation.sensors[1].ConsumeRateJPerSecond *
+                    cheng500Simulation.ComputeChengTreqSeconds(30) + chengServiceFloor),
+                1e-9,
+                "ChengTreq mode should convert computed Treq seconds into the natural request energy threshold.");
+
             double beforeEnergy = simulation.sensors[1].EnergyJ;
             double baseRate = simulation.sensors[1].ConsumeRateJPerSecond;
             double effectiveRate = simulation.GetEffectiveConsumeRateJPerSecond(simulation.sensors[1]);
@@ -6315,68 +6041,6 @@ namespace WindowsFormsApplication1
             AssertSelfTest(effectiveRate > baseRate,
                 "Routing load should not be double-counted into continuous energy consumption.");
 
-            ExperimentSettings emergencySettings = CreateBprSelfTestSettings(tempDirectory);
-            emergencySettings.EventRatePerSecond = 50.0;
-            emergencySettings.PacketBits = 819200.0;
-            emergencySettings.RadioRangeMeters = 30.0;
-            emergencySettings.SensorBackgroundLifetimeSeconds = 100.0;
-            emergencySettings.SimulationTimeSeconds = 240.0;
-            emergencySettings.ProactivePredictionHorizonSeconds = 120.0;
-            emergencySettings.NmaxTask = 3;
-            emergencySettings.WcvSpeedMetersPerSecond = 1000.0;
-            emergencySettings.WcvChargeRateJPerSecond = 100.0;
-            emergencySettings.Normalize();
-            ExperimentArtifact emergencyArtifact = CreateChainRoutingSelfTestArtifact(new double[] { 90.0, 90.0, 90.0 });
-            ExperimentSimulation zhengEmergencySimulation = new ExperimentSimulation(
-                emergencySettings,
-                emergencyArtifact,
-                "NJF_ZHENG_BPR",
-                null);
-            simulations.Add(zhengEmergencySimulation);
-            List<BprPredictedRequest> emergencyPredictedRequests =
-                zhengEmergencySimulation.BuildBprPredictedRequests(3, new HashSet<int>());
-            AssertSelfTest(zhengEmergencySimulation.BuildBprSlidingWindows(emergencyPredictedRequests, 3).Count == 0,
-                "Emergency routing bottleneck self-test must start without a ZHENG overflow window.");
-            List<EmergencyRoutingBottleneckCandidate> zhengEmergencyCandidates =
-                zhengEmergencySimulation.BuildEmergencyRoutingBottleneckCandidates(3, new HashSet<int>(), new List<ChargingRequest>());
-            AssertSelfTest(zhengEmergencyCandidates.Count > 0 && zhengEmergencyCandidates[0].NodeId == 1,
-                "Emergency routing bottleneck selection should prioritize the forwarding-heavy node nearest the base station.");
-            AssertSelfTest(zhengEmergencySimulation.HasBprBottleneckCandidate(),
-                "HasBprBottleneckCandidate should be true when only an emergency routing bottleneck candidate exists.");
-            AssertNear(zhengEmergencySimulation.FindNextBprBottleneckCandidateTime(),
-                Math.Max(zhengEmergencySimulation.currentTime,
-                    zhengEmergencyCandidates[0].PredictedDeathTimeSeconds - zhengEmergencySimulation.EstimateBprTjobSeconds(3)),
-                1e-9,
-                "FindNextBprBottleneckCandidateTime should include emergency latest safe dispatch time.");
-            List<ChargingRequest> zhengEmergencyCplist = zhengEmergencySimulation.BuildZhengBprCplist(
-                new List<ChargingRequest>(),
-                3,
-                BprProactiveSelectionMode.Deterministic,
-                false);
-            AssertSelfTest(zhengEmergencyCplist.Count > 0 &&
-                    zhengEmergencyCplist[0].NodeId == 1 &&
-                    zhengEmergencyCplist[0].ProactiveReason == RoutingBottleneckEmergencyReason,
-                "ZHENG BP&R should add emergency routing bottleneck candidates when no overflow window exists.");
-
-            ExperimentSimulation yuEmergencySimulation = new ExperimentSimulation(
-                emergencySettings,
-                emergencyArtifact,
-                "NJF_YU_BPR",
-                null);
-            simulations.Add(yuEmergencySimulation);
-            List<YuPredictedInterval> emergencyIntervals =
-                yuEmergencySimulation.BuildYuPredictedIntervals(3, new HashSet<int>());
-            AssertSelfTest(yuEmergencySimulation.BuildYuDangerWindows(emergencyIntervals, 3).Count == 0,
-                "Emergency routing bottleneck self-test must start without a YU danger window.");
-            List<ChargingRequest> yuEmergencyCplist = yuEmergencySimulation.BuildYuBprCplist(
-                new List<ChargingRequest>(),
-                3,
-                false,
-                YuProactiveSelectionMode.Deterministic);
-            AssertSelfTest(yuEmergencyCplist.Count > 0 &&
-                    yuEmergencyCplist[0].NodeId == 1 &&
-                    yuEmergencyCplist[0].ProactiveReason == RoutingBottleneckEmergencyReason,
-                "YU BP&R should add emergency routing bottleneck candidates when no danger window exists.");
         }
 
         private static void RunCompleteBprYuPredictionSelfTest(string tempDirectory, List<ExperimentSimulation> simulations)
@@ -6765,7 +6429,6 @@ namespace WindowsFormsApplication1
         public int ProactiveTaskCount;
         public int PlannedProactiveTaskCount;
         public int ExecutedProactiveTaskCount;
-        public int EmergencyBottleneckProactiveCount;
         public int UniqueServedNodeCount;
         public int RepeatChargeCount;
         public int ProactiveNearFullCount;
@@ -6892,8 +6555,6 @@ namespace WindowsFormsApplication1
         private readonly StreamWriter routingLoadWriter;
         private readonly StreamWriter bprDebugWriter;
         private readonly StreamWriter yuBprDebugWriter;
-        private readonly string routingBottleneckTracePath;
-        private StreamWriter routingBottleneckTraceWriter;
         private bool disposed;
 
         public MissionDetailCsvWriter(string directory, int runIndex, string algorithm)
@@ -6910,8 +6571,6 @@ namespace WindowsFormsApplication1
                 "run{0:D3}-{1}-bpr-debug.csv", runIndex, safeAlgorithm));
             string yuBprDebugPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
                 "run{0:D3}-{1}-yu-bpr-debug.csv", runIndex, safeAlgorithm));
-            routingBottleneckTracePath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
-                "run{0:D3}-{1}-routing-bottleneck-trace.csv", runIndex, safeAlgorithm));
 
             Encoding utf8 = new UTF8Encoding(true);
             missionWriter = new StreamWriter(missionPath, false, utf8);
@@ -7060,13 +6719,7 @@ namespace WindowsFormsApplication1
             int cplistCountBefore,
             int cplistCountAfter,
             int maxTask,
-            bool allowCapacityOverflow,
-            int emergencyCandidateCount,
-            int emergencySelectedNodeId,
-            double emergencyPredictedDeathTime,
-            double emergencyRoutingLoadJPerSecond,
-            double emergencyExpectedForwardPacketsPerSecond,
-            string emergencyReason)
+            bool allowCapacityOverflow)
         {
             if (disposed)
                 return;
@@ -7092,13 +6745,7 @@ namespace WindowsFormsApplication1
                 cplistCountBefore,
                 cplistCountAfter,
                 maxTask,
-                allowCapacityOverflow,
-                emergencyCandidateCount,
-                emergencySelectedNodeId,
-                emergencyPredictedDeathTime,
-                emergencyRoutingLoadJPerSecond,
-                emergencyExpectedForwardPacketsPerSecond,
-                emergencyReason));
+                allowCapacityOverflow));
         }
 
         public void WriteYuBprDebug(
@@ -7127,13 +6774,7 @@ namespace WindowsFormsApplication1
             int cplistCountBefore,
             int cplistCountAfter,
             int maxTask,
-            bool allowCapacityOverflow,
-            int emergencyCandidateCount,
-            int emergencySelectedNodeId,
-            double emergencyPredictedDeathTime,
-            double emergencyRoutingLoadJPerSecond,
-            double emergencyExpectedForwardPacketsPerSecond,
-            string emergencyReason)
+            bool allowCapacityOverflow)
         {
             if (disposed)
                 return;
@@ -7164,70 +6805,7 @@ namespace WindowsFormsApplication1
                 cplistCountBefore,
                 cplistCountAfter,
                 maxTask,
-                allowCapacityOverflow,
-                emergencyCandidateCount,
-                emergencySelectedNodeId,
-                emergencyPredictedDeathTime,
-                emergencyRoutingLoadJPerSecond,
-                emergencyExpectedForwardPacketsPerSecond,
-                emergencyReason));
-        }
-
-        public void WriteRoutingBottleneckTrace(
-            int runIndex,
-            int seed,
-            string algorithm,
-            int missionId,
-            string phase,
-            double currentTimeSeconds,
-            int maxTask,
-            int nodeId,
-            double energyJ,
-            double baseConsumeRateJPerSecond,
-            double routingLoadJPerSecond,
-            double effectiveConsumeRateJPerSecond,
-            double predictedRequestTime,
-            double predictedDeathTime,
-            bool hasPendingRequest,
-            bool hasActiveRequest,
-            bool isScheduledInCurrentMission,
-            bool isEmergencyCandidate,
-            bool addedToCplist,
-            bool addedToRoute,
-            double routeInsertionCost,
-            double expectedRoutingForwardPacketsPerSecond,
-            double averageExpectedRoutingForwardPacketsPerSecond,
-            string emergencyReason)
-        {
-            if (disposed)
-                return;
-
-            EnsureRoutingBottleneckTraceWriter();
-            routingBottleneckTraceWriter.WriteLine(CsvRow(
-                runIndex,
-                seed,
-                algorithm,
-                missionId,
-                phase,
-                currentTimeSeconds,
-                maxTask,
-                nodeId,
-                energyJ,
-                baseConsumeRateJPerSecond,
-                routingLoadJPerSecond,
-                effectiveConsumeRateJPerSecond,
-                predictedRequestTime,
-                predictedDeathTime,
-                hasPendingRequest,
-                hasActiveRequest,
-                isScheduledInCurrentMission,
-                isEmergencyCandidate,
-                addedToCplist,
-                addedToRoute,
-                routeInsertionCost,
-                expectedRoutingForwardPacketsPerSecond,
-                averageExpectedRoutingForwardPacketsPerSecond,
-                emergencyReason));
+                allowCapacityOverflow));
         }
 
         public void Dispose()
@@ -7240,20 +6818,6 @@ namespace WindowsFormsApplication1
             routingLoadWriter.Dispose();
             bprDebugWriter.Dispose();
             yuBprDebugWriter.Dispose();
-            if (routingBottleneckTraceWriter != null)
-                routingBottleneckTraceWriter.Dispose();
-        }
-
-        private void EnsureRoutingBottleneckTraceWriter()
-        {
-            if (routingBottleneckTraceWriter != null)
-                return;
-
-            routingBottleneckTraceWriter = new StreamWriter(
-                routingBottleneckTracePath,
-                false,
-                new UTF8Encoding(true));
-            WriteRoutingBottleneckTraceHeader();
         }
 
         private void WriteMissionHeader()
@@ -7290,9 +6854,7 @@ namespace WindowsFormsApplication1
                 "Iteration", "WindowStartSeconds", "WindowEndSeconds", "BottleneckCount", "OverflowCount",
                 "SelectedNodeId", "SelectedRequestTimeSeconds", "SelectedDeathTimeSeconds", "SelectedSlackSeconds",
                 "SelectedEffectiveRateJPerSecond", "SelectedRouteInsertionCost", "SelectionReason",
-                "CplistCountBefore", "CplistCountAfter", "MaxTask", "AllowCapacityOverflow",
-                "EmergencyCandidateCount", "EmergencySelectedNodeId", "EmergencyPredictedDeathTime",
-                "EmergencyRoutingLoadJPerSecond", "EmergencyExpectedForwardPacketsPerSecond", "EmergencyReason"));
+                "CplistCountBefore", "CplistCountAfter", "MaxTask", "AllowCapacityOverflow"));
         }
 
         private void WriteYuBprDebugHeader()
@@ -7303,20 +6865,7 @@ namespace WindowsFormsApplication1
                 "SelectedIntervalEndSeconds", "SelectedEarliestDeathTimeSeconds", "SelectedLatestSafeServiceTimeSeconds",
                 "SelectedSlackSeconds", "SelectedUncertaintySeconds", "SelectedEffectiveRateJPerSecond",
                 "SelectedRouteInsertionCost", "SelectionReason", "CplistCountBefore", "CplistCountAfter",
-                "MaxTask", "AllowCapacityOverflow", "EmergencyCandidateCount", "EmergencySelectedNodeId",
-                "EmergencyPredictedDeathTime", "EmergencyRoutingLoadJPerSecond",
-                "EmergencyExpectedForwardPacketsPerSecond", "EmergencyReason"));
-        }
-
-        private void WriteRoutingBottleneckTraceHeader()
-        {
-            routingBottleneckTraceWriter.WriteLine(CsvRow("RunIndex", "Seed", "Algorithm", "MissionId", "Phase",
-                "CurrentTimeSeconds", "MaxTask", "NodeId", "EnergyJ", "BaseConsumeRateJPerSecond",
-                "RoutingLoadJPerSecond", "EffectiveConsumeRateJPerSecond", "PredictedRequestTime",
-                "PredictedDeathTime", "HasPendingRequest", "HasActiveRequest", "IsScheduledInCurrentMission",
-                "IsEmergencyCandidate", "AddedToCplist", "AddedToRoute", "RouteInsertionCost",
-                "ExpectedRoutingForwardPacketsPerSecond", "AverageExpectedRoutingForwardPacketsPerSecond",
-                "EmergencyReason"));
+                "MaxTask", "AllowCapacityOverflow"));
         }
 
         private static object SafeArrayValue(int[] values, int index)
@@ -7414,9 +6963,23 @@ namespace WindowsFormsApplication1
             writer.Save(path);
         }
 
+        private static string ResolveTreqSource(ExperimentSettings settings)
+        {
+            if (settings == null)
+                return "NotUsed";
+            if (ChengTreqCalculator.IsChengTreqMode(settings.ThresholdMode))
+                return "Auto";
+            if (String.Equals(settings.ThresholdMode, "TreqSeconds", StringComparison.OrdinalIgnoreCase))
+                return "Manual";
+            return "NotUsed";
+        }
+
         private static List<List<object>> BuildSettingsRows(ExperimentBatchResult result)
         {
             ExperimentSettings s = result.Settings;
+            ChengTreqMetrics chengMetrics = ChengTreqCalculator.Compute(s, s.NmaxTask);
+            double effectiveTreqSeconds = ChengTreqCalculator.GetEffectiveTreqSeconds(s, s.NmaxTask);
+            string treqSource = ResolveTreqSource(s);
             List<List<object>> rows = new List<List<object>>();
             rows.Add(Row("欄位", "值", "說明"));
             rows.Add(Row("實作根目錄", s.ProjectRoot, "所有修改與輸出都在 WSN 目錄"));
@@ -7442,13 +7005,21 @@ namespace WindowsFormsApplication1
             rows.Add(Row("WCV 容量(J)", s.WcvCapacityJ, ""));
             rows.Add(Row("WCV 移動耗能(J/m)", s.WcvMoveCostJPerMeter, ""));
             rows.Add(Row("每趟任務上限", s.NmaxTask, s.DynamicNmaxTask ? "動態上限" : "固定上限"));
-            rows.Add(Row("門檻模式", s.ThresholdMode == "TreqSeconds" ? "Treq 秒數門檻" : "百分比門檻", ""));
-            rows.Add(Row("Treq 秒數", s.TreqSeconds, ""));
+            rows.Add(Row("門檻模式", s.ThresholdMode == "TreqSeconds" ? "Treq 秒數門檻" : (s.ThresholdMode == "ChengTreq" ? "CHENG Treq 自動門檻" : "百分比門檻"), ""));
+            rows.Add(Row("ThresholdMode", s.ThresholdMode, "Percent / TreqSeconds / ChengTreq"));
+            rows.Add(Row("RequestThresholdPercent", s.RequestThresholdPercent, "used when ThresholdMode = Percent"));
+            rows.Add(Row("TreqSeconds", effectiveTreqSeconds, "effective Treq seconds used by time-threshold modes"));
+            rows.Add(Row("TreqSource", treqSource, "Auto / Manual / NotUsed"));
+            rows.Add(Row("ConfiguredTreqSeconds", s.TreqSeconds, "manual TreqSeconds setting"));
+            rows.Add(Row("EffectiveTreqSeconds", effectiveTreqSeconds, "actual Treq used by time-threshold modes"));
+            rows.Add(Row("ComputedLpathMeters", chengMetrics.LpathMeters, "CHENG/NJF path length upper bound"));
+            rows.Add(Row("ComputedTjobSeconds", chengMetrics.TjobSeconds, "CHENG mission time Tjob(NmaxTask)"));
+            rows.Add(Row("ComputedLmaxStepMeters", chengMetrics.LmaxStepMeters, "map diagonal / farthest two-point step"));
             rows.Add(Row("BP&R deadline threshold(s)", s.BprDeadlineThresholdSeconds, "Persistent STable deadline maintenance threshold"));
             rows.Add(Row("AllowStandaloneProactiveDispatch", s.AllowStandaloneProactiveDispatch, "false = BP&R/YU proactive tasks are inserted only into natural-request missions"));
-            rows.Add(Row("ProactivePredictionHorizonSeconds", s.ProactivePredictionHorizonSeconds, "0 = TreqSeconds + EstimateBprTjobSeconds(NmaxTask)"));
+            rows.Add(Row("ProactivePredictionHorizonSeconds", s.ProactivePredictionHorizonSeconds, "0 = EffectiveTreqSeconds + EstimateBprTjobSeconds(NmaxTask)"));
             rows.Add(Row("ProactiveCandidateMaxEnergyRatio", s.ProactiveCandidateMaxEnergyRatio, "nodes at or above this capacity ratio are excluded from proactive candidates"));
-            rows.Add(Row("ProactiveCooldownSeconds", s.ProactiveCooldownSeconds, "0 = TreqSeconds after charged or proactive-selected"));
+            rows.Add(Row("ProactiveCooldownSeconds", s.ProactiveCooldownSeconds, "0 = EffectiveTreqSeconds after charged or proactive-selected"));
             rows.Add(Row("YU danger window(s)", s.YuDangerWindowSeconds, "0 = use EstimateBprTjobSeconds(NmaxTask)"));
             rows.Add(Row("YU danger threshold K", s.YuDangerThresholdK, "0 = use NmaxTask + 1"));
             rows.Add(Row("YU interval uncertainty(s)", s.YuIntervalUncertaintySeconds, "0 = use BprDeadlineThresholdSeconds"));
@@ -7513,7 +7084,6 @@ namespace WindowsFormsApplication1
             row.Add("RepeatChargeCount");
             row.Add("PlannedProactiveTaskCount");
             row.Add("ExecutedProactiveTaskCount");
-            row.Add("EmergencyBottleneckProactiveCount");
             row.Add("ProactiveNearFullCount");
             row.Add("MeaningfulProactiveCount");
             row.Add("AverageDeliveredEnergyPerTask");
@@ -7526,7 +7096,6 @@ namespace WindowsFormsApplication1
             row.Add(s.RepeatChargeCount);
             row.Add(s.PlannedProactiveTaskCount);
             row.Add(s.ExecutedProactiveTaskCount);
-            row.Add(s.EmergencyBottleneckProactiveCount);
             row.Add(s.ProactiveNearFullCount);
             row.Add(s.MeaningfulProactiveCount);
             row.Add(s.AverageDeliveredEnergyPerTask);
@@ -7558,6 +7127,11 @@ namespace WindowsFormsApplication1
                 "平均成功充電", "平均失敗/逾期", "平均request", "平均移動距離(m)", "平均等待(s)",
                 "平均封包遺失", "平均routing failed遺失", "平均ParentId=-1節點數", "平均不連通比例", "平均充電效率"));
 
+            rows[0].Add("ThresholdMode");
+            rows[0].Add("RequestThresholdPercent");
+            rows[0].Add("TreqSeconds");
+            rows[0].Add("TreqSource");
+
             AppendSummaryAntiInflationHeaders(rows[0]);
 
             Dictionary<string, List<ExperimentRunSummary>> groups = new Dictionary<string, List<ExperimentRunSummary>>();
@@ -7586,6 +7160,10 @@ namespace WindowsFormsApplication1
                     Average(list, delegate (ExperimentRunSummary s) { return s.RoutingParentMissingNodeCount; }),
                     Average(list, delegate (ExperimentRunSummary s) { return s.RoutingDisconnectedNodeRatio; }),
                     Average(list, delegate (ExperimentRunSummary s) { return s.ChargeEfficiency; })));
+                rows[rows.Count - 1].Add(result.Settings.ThresholdMode);
+                rows[rows.Count - 1].Add(result.Settings.RequestThresholdPercent);
+                rows[rows.Count - 1].Add(ChengTreqCalculator.GetEffectiveTreqSeconds(result.Settings, result.Settings.NmaxTask));
+                rows[rows.Count - 1].Add(ResolveTreqSource(result.Settings));
                 AddSummaryAntiInflationValues(rows[rows.Count - 1], list);
             }
 
@@ -7598,7 +7176,6 @@ namespace WindowsFormsApplication1
             row.Add("平均RepeatChargeCount");
             row.Add("平均PlannedProactiveTaskCount");
             row.Add("平均ExecutedProactiveTaskCount");
-            row.Add("平均EmergencyBottleneckProactiveCount");
             row.Add("平均ProactiveNearFullCount");
             row.Add("平均MeaningfulProactiveCount");
             row.Add("平均DeliveredEnergyPerTask");
@@ -7611,7 +7188,6 @@ namespace WindowsFormsApplication1
             row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.RepeatChargeCount; }));
             row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.PlannedProactiveTaskCount; }));
             row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.ExecutedProactiveTaskCount; }));
-            row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.EmergencyBottleneckProactiveCount; }));
             row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.ProactiveNearFullCount; }));
             row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.MeaningfulProactiveCount; }));
             row.Add(Average(list, delegate (ExperimentRunSummary s) { return s.AverageDeliveredEnergyPerTask; }));
@@ -8090,6 +7666,12 @@ namespace WindowsFormsApplication1
             boxes["WcvMoveCostJPerMeter"].Text = settings.WcvMoveCostJPerMeter.ToString(CultureInfo.InvariantCulture);
             boxes["NmaxTask"].Text = settings.NmaxTask.ToString(CultureInfo.InvariantCulture);
             boxes["ThresholdMode"].Text = settings.ThresholdMode == "TreqSeconds" ? "Treq 秒數門檻" : "百分比門檻";
+            if (settings.ThresholdMode == "ChengTreq")
+                boxes["ThresholdMode"].Text = "ChengTreq";
+            else if (settings.ThresholdMode == "TreqSeconds")
+                boxes["ThresholdMode"].Text = "TreqSeconds";
+            else
+                boxes["ThresholdMode"].Text = "Percent";
             boxes["RequestThresholdPercent"].Text = settings.RequestThresholdPercent.ToString(CultureInfo.InvariantCulture);
             boxes["TreqSeconds"].Text = settings.TreqSeconds.ToString(CultureInfo.InvariantCulture);
             boxes["BprDeadlineThresholdSeconds"].Text = settings.BprDeadlineThresholdSeconds.ToString(CultureInfo.InvariantCulture);
@@ -8161,6 +7743,12 @@ namespace WindowsFormsApplication1
         {
             if (String.IsNullOrWhiteSpace(value))
                 return fallback;
+            if (value.IndexOf("Cheng", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                value.IndexOf("Auto", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                value.IndexOf("自動", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return "ChengTreq";
+            }
             if (value.IndexOf("Treq", StringComparison.OrdinalIgnoreCase) >= 0 || value.Contains("秒"))
                 return "TreqSeconds";
             if (value.IndexOf("Percent", StringComparison.OrdinalIgnoreCase) >= 0 || value.Contains("百分") || value.Contains("%"))

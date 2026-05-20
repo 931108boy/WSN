@@ -181,9 +181,11 @@ namespace WindowsFormsApplication1
             expThresholdModeBox = new ComboBox();
             expThresholdModeBox.DropDownStyle = ComboBoxStyle.DropDownList;
             expThresholdModeBox.Items.Add("百分比門檻");
-            expThresholdModeBox.Items.Add("Treq 秒數門檻");
+            expThresholdModeBox.Items.Add("CHENG Treq 自動門檻");
+            expThresholdModeBox.Items.Add("手動 Treq 秒數門檻");
             expThresholdModeBox.Location = new Point(130, 261);
-            expThresholdModeBox.Size = new Size(135, 22);
+            expThresholdModeBox.Size = new Size(180, 22);
+            expThresholdModeBox.SelectedIndexChanged += expThresholdModeBox_SelectedIndexChanged;
             energyGroup.Controls.Add(expThresholdModeBox);
 
             GroupBox wcvGroup = create_group_box("WCV 與任務流程", 784, 92, 360, 290);
@@ -192,6 +194,13 @@ namespace WindowsFormsApplication1
             expWcvCapacityBox = add_labeled_textbox(wcvGroup, "WCV 容量(J)", "WCV 可用能量", 18, 98, "");
             expWcvMoveCostBox = add_labeled_textbox(wcvGroup, "移動耗能(J/m)", "WCV 每公尺消耗能量", 18, 132, "");
             expNmaxTaskBox = add_labeled_textbox(wcvGroup, "任務上限", "每趟最多服務節點數", 18, 166, "NmaxTask");
+            expMapSizeBox.TextChanged += auto_treq_parameter_changed;
+            expInitialEnergyBox.TextChanged += auto_treq_parameter_changed;
+            expBackgroundLifetimeBox.TextChanged += auto_treq_parameter_changed;
+            expRequestThresholdBox.TextChanged += auto_treq_parameter_changed;
+            expWcvSpeedBox.TextChanged += auto_treq_parameter_changed;
+            expWcvChargeRateBox.TextChanged += auto_treq_parameter_changed;
+            expNmaxTaskBox.TextChanged += auto_treq_parameter_changed;
             Label bsLabel = new Label();
             bsLabel.Text = "基地台 = (0,0) sink + 充電中心；每趟任務後 WCV 返回基地台。";
             bsLabel.Location = new Point(18, 204);
@@ -364,7 +373,12 @@ namespace WindowsFormsApplication1
             expWcvMoveCostBox.Text = experimentSettings.WcvMoveCostJPerMeter.ToString(System.Globalization.CultureInfo.InvariantCulture);
             expNmaxTaskBox.Text = experimentSettings.NmaxTask.ToString(System.Globalization.CultureInfo.InvariantCulture);
             expOutputDirectoryBox.Text = experimentSettings.OutputDirectory;
-            expThresholdModeBox.SelectedIndex = experimentSettings.ThresholdMode == "TreqSeconds" ? 1 : 0;
+            if (ChengTreqCalculator.IsChengTreqMode(experimentSettings.ThresholdMode))
+                expThresholdModeBox.SelectedIndex = 1;
+            else if (String.Equals(experimentSettings.ThresholdMode, "TreqSeconds", StringComparison.OrdinalIgnoreCase))
+                expThresholdModeBox.SelectedIndex = 2;
+            else
+                expThresholdModeBox.SelectedIndex = 0;
 
             expAlgorithmList.Items.Clear();
             List<string> selected = experimentSettings.GetSelectedAlgorithms();
@@ -375,6 +389,7 @@ namespace WindowsFormsApplication1
                 expAlgorithmList.Items.Add(display, selected.Contains(all[i]));
             }
 
+            update_threshold_mode_ui();
             update_last_output_label();
         }
 
@@ -393,15 +408,27 @@ namespace WindowsFormsApplication1
             experimentSettings.EventRatePerSecond = parse_double(expEventRateBox, experimentSettings.EventRatePerSecond);
             experimentSettings.PrateChange = parse_double(expPrateChangeBox, experimentSettings.PrateChange);
             experimentSettings.RateChangeVariationPercent = parse_double(expRateChangeVariationBox, experimentSettings.RateChangeVariationPercent);
-            experimentSettings.RequestThresholdPercent = parse_double(expRequestThresholdBox, experimentSettings.RequestThresholdPercent);
-            experimentSettings.TreqSeconds = parse_double(expTreqBox, experimentSettings.TreqSeconds);
             experimentSettings.WcvSpeedMetersPerSecond = parse_double(expWcvSpeedBox, experimentSettings.WcvSpeedMetersPerSecond);
             experimentSettings.WcvChargeRateJPerSecond = parse_double(expWcvChargeRateBox, experimentSettings.WcvChargeRateJPerSecond);
             experimentSettings.WcvCapacityJ = parse_double(expWcvCapacityBox, experimentSettings.WcvCapacityJ);
             experimentSettings.WcvMoveCostJPerMeter = parse_double(expWcvMoveCostBox, experimentSettings.WcvMoveCostJPerMeter);
             experimentSettings.NmaxTask = parse_int(expNmaxTaskBox, experimentSettings.NmaxTask);
             experimentSettings.OutputDirectory = expOutputDirectoryBox.Text.Trim();
-            experimentSettings.ThresholdMode = expThresholdModeBox.SelectedIndex == 1 ? "TreqSeconds" : "Percent";
+            if (expThresholdModeBox.SelectedIndex == 1)
+            {
+                experimentSettings.ThresholdMode = "ChengTreq";
+                experimentSettings.TreqSeconds = experimentSettings.ComputeAutoTreqSeconds();
+            }
+            else if (expThresholdModeBox.SelectedIndex == 2)
+            {
+                experimentSettings.ThresholdMode = "TreqSeconds";
+                experimentSettings.TreqSeconds = parse_double(expTreqBox, experimentSettings.TreqSeconds);
+            }
+            else
+            {
+                experimentSettings.ThresholdMode = "Percent";
+                experimentSettings.RequestThresholdPercent = parse_double(expRequestThresholdBox, experimentSettings.RequestThresholdPercent);
+            }
 
             List<string> algorithms = new List<string>();
             for (int i = 0; i < expAlgorithmList.CheckedItems.Count; i++)
@@ -409,6 +436,70 @@ namespace WindowsFormsApplication1
             experimentSettings.SetSelectedAlgorithms(algorithms);
             experimentSettings.Normalize();
             populate_experiment_controls_from_settings();
+        }
+
+        void expThresholdModeBox_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            update_threshold_mode_ui();
+        }
+
+        void auto_treq_parameter_changed(object sender, EventArgs e)
+        {
+            if (expThresholdModeBox != null && expThresholdModeBox.SelectedIndex == 1)
+                update_threshold_mode_ui();
+        }
+
+        void update_threshold_mode_ui()
+        {
+            if (expThresholdModeBox == null || expRequestThresholdBox == null || expTreqBox == null)
+                return;
+
+            if (expThresholdModeBox.SelectedIndex == 1)
+            {
+                update_treq_preview_settings_from_controls();
+                experimentSettings.ThresholdMode = "ChengTreq";
+                try
+                {
+                    expTreqBox.Text = experimentSettings.ComputeAutoTreqSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    expTreqBox.Text = ex.Message;
+                }
+                expTreqBox.ReadOnly = true;
+                expTreqBox.Enabled = true;
+                expRequestThresholdBox.ReadOnly = true;
+                expRequestThresholdBox.Enabled = false;
+            }
+            else if (expThresholdModeBox.SelectedIndex == 2)
+            {
+                experimentSettings.ThresholdMode = "TreqSeconds";
+                expTreqBox.ReadOnly = false;
+                expTreqBox.Enabled = true;
+                expRequestThresholdBox.ReadOnly = true;
+                expRequestThresholdBox.Enabled = false;
+            }
+            else
+            {
+                experimentSettings.ThresholdMode = "Percent";
+                expRequestThresholdBox.ReadOnly = false;
+                expRequestThresholdBox.Enabled = true;
+                expTreqBox.ReadOnly = true;
+                expTreqBox.Enabled = false;
+            }
+        }
+
+        void update_treq_preview_settings_from_controls()
+        {
+            double mapSize = parse_double(expMapSizeBox, experimentSettings.MapWidthMeters);
+            experimentSettings.MapWidthMeters = mapSize;
+            experimentSettings.MapHeightMeters = mapSize;
+            experimentSettings.InitialEnergyJ = parse_double(expInitialEnergyBox, experimentSettings.InitialEnergyJ);
+            experimentSettings.SensorBackgroundLifetimeSeconds = parse_double(expBackgroundLifetimeBox, experimentSettings.SensorBackgroundLifetimeSeconds);
+            experimentSettings.RequestThresholdPercent = parse_double(expRequestThresholdBox, experimentSettings.RequestThresholdPercent);
+            experimentSettings.WcvSpeedMetersPerSecond = parse_double(expWcvSpeedBox, experimentSettings.WcvSpeedMetersPerSecond);
+            experimentSettings.WcvChargeRateJPerSecond = parse_double(expWcvChargeRateBox, experimentSettings.WcvChargeRateJPerSecond);
+            experimentSettings.NmaxTask = parse_int(expNmaxTaskBox, experimentSettings.NmaxTask);
         }
 
         int parse_int(TextBox box, int fallback)
