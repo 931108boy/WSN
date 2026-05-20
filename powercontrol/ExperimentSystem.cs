@@ -4626,13 +4626,13 @@ namespace WindowsFormsApplication1
                 if (sensor.EnergyJ <= threshold + Epsilon)
                     return currentTime;
 
-                double effectiveRate = GetEffectiveConsumeRateJPerSecond(sensor);
+                double consumeRate = sensor.ConsumeRateJPerSecond;
                 if (charging != null && charging.NodeId == id)
-                    effectiveRate -= charging.ChargeRateJPerSecond;
-                if (effectiveRate <= 1e-12)
+                    consumeRate -= charging.ChargeRateJPerSecond;
+                if (consumeRate <= 1e-12)
                     continue;
 
-                best = Math.Min(best, currentTime + (sensor.EnergyJ - threshold) / effectiveRate);
+                best = Math.Min(best, currentTime + (sensor.EnergyJ - threshold) / consumeRate);
             }
             return best;
         }
@@ -4648,13 +4648,13 @@ namespace WindowsFormsApplication1
                 if (sensor.EnergyJ <= Epsilon)
                     return currentTime;
 
-                double effectiveRate = GetEffectiveConsumeRateJPerSecond(sensor);
+                double consumeRate = sensor.ConsumeRateJPerSecond;
                 if (charging != null && charging.NodeId == id)
-                    effectiveRate -= charging.ChargeRateJPerSecond;
-                if (effectiveRate <= 1e-12)
+                    consumeRate -= charging.ChargeRateJPerSecond;
+                if (consumeRate <= 1e-12)
                     continue;
 
-                best = Math.Min(best, currentTime + sensor.EnergyJ / effectiveRate);
+                best = Math.Min(best, currentTime + sensor.EnergyJ / consumeRate);
             }
             return best;
         }
@@ -4861,7 +4861,7 @@ namespace WindowsFormsApplication1
             if (settings.ThresholdMode == "TreqSeconds")
             {
                 double serviceFloor = Math.Max(TxEnergyJ(sensor, settings.PacketBits) * 2.0, settings.InitialEnergyJ * 0.005);
-                return Math.Min(sensor.CapacityJ * 0.95, GetEffectiveConsumeRateJPerSecond(sensor) * settings.TreqSeconds + serviceFloor);
+                return Math.Min(sensor.CapacityJ * 0.95, sensor.ConsumeRateJPerSecond * settings.TreqSeconds + serviceFloor);
             }
 
             return sensor.CapacityJ * settings.RequestThresholdPercent / 100.0;
@@ -5650,6 +5650,12 @@ namespace WindowsFormsApplication1
             double effectiveDeadline = simulation.ComputeBprRequestDeadlineSeconds(simulation.sensors[1]);
             AssertSelfTest(effectiveDeadline < baseDeadline,
                 "Routing-aware BP&R deadline should be earlier than base-consume-rate deadline.");
+            AssertNear(simulation.FindNextRequestTime(null), baseDeadline, 1e-9,
+                "Natural request time advancement should use base consume rate, not routing-aware effective rate.");
+            AssertNear(simulation.FindNextDeathTime(null),
+                simulation.currentTime + simulation.sensors[1].EnergyJ / simulation.sensors[1].ConsumeRateJPerSecond,
+                1e-9,
+                "Natural death time advancement should use base consume rate, not routing-aware effective rate.");
 
             ExperimentSettings treqSettings = CreateBprSelfTestSettings(tempDirectory);
             treqSettings.EventRatePerSecond = 3.0;
@@ -5665,9 +5671,21 @@ namespace WindowsFormsApplication1
                 "NJF",
                 null);
             simulations.Add(treqSimulation);
-            AssertSelfTest(treqSimulation.GetRequestThresholdJ(treqSimulation.sensors[1]) >
+            AssertNear(treqSimulation.GetRequestThresholdJ(treqSimulation.sensors[1]),
                 treqSimulation.GetRequestThresholdJ(treqSimulation.sensors[3]),
-                "TreqSeconds threshold should be higher for routing bottleneck nodes.");
+                1e-9,
+                "Natural TreqSeconds threshold should not include predicted routing load.");
+            double predictedNode1Rate = treqSimulation.ComputePredictedEffectiveConsumeRateJPerSecond(1, treqSimulation.sensors[1].RateScale);
+            double predictedNode3Rate = treqSimulation.ComputePredictedEffectiveConsumeRateJPerSecond(3, treqSimulation.sensors[3].RateScale);
+            AssertSelfTest(treqSimulation.GetPredictedRequestThresholdJ(
+                    treqSimulation.sensors[1],
+                    predictedNode1Rate,
+                    treqSimulation.sensors[1].RateScale) >
+                treqSimulation.GetPredictedRequestThresholdJ(
+                    treqSimulation.sensors[3],
+                    predictedNode3Rate,
+                    treqSimulation.sensors[3].RateScale),
+                "BPR/YU prediction threshold should still include routing-aware effective load.");
 
             double beforeEnergy = simulation.sensors[1].EnergyJ;
             double baseRate = simulation.sensors[1].ConsumeRateJPerSecond;
