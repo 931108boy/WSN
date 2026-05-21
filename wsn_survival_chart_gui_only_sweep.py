@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-WSN 存活時間圖表 GUI 產生器（只在 UI 顯示，不輸出 PNG/CSV）
+WSN Sweep 平均生命週期折線圖 GUI 產生器（只在 UI 顯示，不輸出 PNG/CSV）
 
 功能：
 1. 在 VS Code 直接執行後開啟 GUI。
-2. 用「瀏覽...」選擇 WSN Excel 結果檔。
-3. 自動讀取「執行比較」sheet 的「網路生命週期(s)」。
+2. 用「瀏覽...」選擇 WSN sweep Excel 結果檔。
+3. 預設讀取「彙總統計」sheet，也可改讀「執行比較」sheet。
 4. 勾選要畫的演算法。
-5. 直接在 UI 內顯示：
-   - 每次 Run 的存活時間折線圖
-   - 各演算法平均存活時間柱狀圖
+5. 直接在 UI 內顯示折線圖：
+   - x 軸：SweepValue
+   - y 軸：平均生命週期(s)
+   - 點位順序：依 SweepIndex 排序，SweepIndex 0 為第一個點、1 為第二個點，以此類推。
 
 需求：
     pip install matplotlib
@@ -27,16 +28,23 @@ from pathlib import Path
 from collections import defaultdict
 
 import matplotlib
-matplotlib.use("TkAgg")
+try:
+    matplotlib.use("TkAgg")
+except ImportError:
+    # 讓沒有桌面環境的測試環境仍可匯入；一般 Windows / VS Code GUI 執行時會使用 TkAgg。
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib import font_manager
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 
-DEFAULT_SHEET_NAME = "執行比較"
-DEFAULT_RUN_COL = "Run"
+DEFAULT_SHEET_NAME = "彙總統計"
+FALLBACK_SHEET_NAME = "執行比較"
+DEFAULT_SWEEP_INDEX_COL = "SweepIndex"
+DEFAULT_SWEEP_VALUE_COL = "SweepValue"
 DEFAULT_ALGORITHM_COL = "演算法"
+DEFAULT_AVERAGE_LIFETIME_COL = "平均生命週期(s)"
 DEFAULT_LIFETIME_COL = "網路生命週期(s)"
 
 
@@ -202,107 +210,136 @@ def find_column(headers, requested_name, fallback_keywords):
     )
 
 
+def find_column_optional(headers, requested_name, fallback_keywords):
+    try:
+        return find_column(headers, requested_name, fallback_keywords)
+    except ValueError:
+        return None
+
+
+def format_sweep_value(value):
+    text = str(value).strip()
+
+    try:
+        number = float(text)
+        if number.is_integer():
+            return str(int(number))
+        return "{0:g}".format(number)
+    except (ValueError, TypeError):
+        return text
+
+
 def parse_records(rows, sheet_name):
     if not rows:
         raise ValueError("工作表沒有資料：" + sheet_name)
 
     headers = rows[0]
 
-    run_col = find_column(headers, DEFAULT_RUN_COL, ["Run", "run"])
+    sweep_index_col = find_column(
+        headers,
+        DEFAULT_SWEEP_INDEX_COL,
+        ["SweepIndex", "Sweep Index", "sweep index", "掃描序號"]
+    )
+    sweep_value_col = find_column(
+        headers,
+        DEFAULT_SWEEP_VALUE_COL,
+        ["SweepValue", "Sweep Value", "sweep value", "掃描值"]
+    )
     algo_col = find_column(headers, DEFAULT_ALGORITHM_COL, ["演算法", "Algorithm", "algorithm"])
-    lifetime_col = find_column(headers, DEFAULT_LIFETIME_COL, ["網路生命週期", "生命週期", "Lifetime", "lifetime"])
+
+    # 「彙總統計」sheet 通常已經有平均生命週期；若使用「執行比較」sheet，則改讀每次 run 的生命週期再自行平均。
+    lifetime_col = find_column_optional(
+        headers,
+        DEFAULT_AVERAGE_LIFETIME_COL,
+        ["平均生命週期", "AverageLifetime", "average lifetime"]
+    )
+    if lifetime_col is None:
+        lifetime_col = find_column_optional(
+            headers,
+            DEFAULT_LIFETIME_COL,
+            ["網路生命週期", "生命週期", "Lifetime", "lifetime"]
+        )
+
+    if lifetime_col is None:
+        raise ValueError(
+            "找不到生命週期欄位：{0} 或 {1}\n目前欄位：{2}".format(
+                DEFAULT_AVERAGE_LIFETIME_COL,
+                DEFAULT_LIFETIME_COL,
+                ", ".join(map(str, headers))
+            )
+        )
 
     records = []
 
     for row in rows[1:]:
-        if len(row) <= max(run_col, algo_col, lifetime_col):
+        if len(row) <= max(sweep_index_col, sweep_value_col, algo_col, lifetime_col):
             continue
 
         try:
-            run = int(float(row[run_col]))
+            sweep_index = int(float(row[sweep_index_col]))
             lifetime = float(row[lifetime_col])
         except (ValueError, TypeError):
             continue
 
         records.append(
             {
-                "Run": run,
+                "SweepIndex": sweep_index,
+                "SweepValue": format_sweep_value(row[sweep_value_col]),
                 "Algorithm": normalize_algorithm_name(row[algo_col]),
-                "NetworkLifetimeSeconds": lifetime,
+                "LifetimeSeconds": lifetime,
             }
         )
 
     if not records:
-        raise ValueError("沒有讀到可用資料，請確認「執行比較」sheet 內有 Run、演算法、網路生命週期(s)。")
+        raise ValueError(
+            "沒有讀到可用資料，請確認 sheet 內有 SweepIndex、SweepValue、演算法，以及 平均生命週期(s) 或 網路生命週期(s)。"
+        )
 
     return records
 
 
-def build_lifetime_tables(records, selected_algorithms):
+def build_sweep_lifetime_tables(records, selected_algorithms):
     filtered = [r for r in records if r["Algorithm"] in selected_algorithms]
-    runs = sorted(set(r["Run"] for r in filtered))
+    sweep_indices = sorted(set(r["SweepIndex"] for r in filtered))
     algorithms = [a for a in selected_algorithms if any(r["Algorithm"] == a for r in filtered)]
 
-    life_by_algo = defaultdict(dict)
+    sweep_value_by_index = {}
+    values_by_algo_index = defaultdict(list)
+
     for r in filtered:
-        life_by_algo[r["Algorithm"]][r["Run"]] = r["NetworkLifetimeSeconds"]
+        sweep_value_by_index.setdefault(r["SweepIndex"], r["SweepValue"])
+        values_by_algo_index[(r["Algorithm"], r["SweepIndex"])].append(r["LifetimeSeconds"])
 
-    averages = []
-    for algo in algorithms:
-        values = [life_by_algo[algo][run] for run in runs if run in life_by_algo[algo]]
-
+    average_by_algo_index = defaultdict(dict)
+    for key, values in values_by_algo_index.items():
+        algo, sweep_index = key
         if values:
-            averages.append((algo, sum(values) / len(values)))
+            average_by_algo_index[algo][sweep_index] = sum(values) / len(values)
 
-    return runs, algorithms, life_by_algo, averages
+    sweep_values = [sweep_value_by_index.get(i, str(i)) for i in sweep_indices]
+
+    return sweep_indices, sweep_values, algorithms, average_by_algo_index
 
 
-def draw_line_on_figure(fig, runs, algorithms, life_by_algo):
+def draw_line_on_figure(fig, sweep_indices, sweep_values, algorithms, average_by_algo_index):
     fig.clear()
     ax = fig.add_subplot(111)
 
-    for algo in algorithms:
-        y_values = [life_by_algo[algo].get(run, None) for run in runs]
-        ax.plot(runs, y_values, marker="o", linewidth=1.6, markersize=3.5, label=algo)
+    x_positions = list(range(len(sweep_indices)))
 
-    ax.set_title("每次 Run 的網路存活時間")
-    ax.set_xlabel("Run")
-    ax.set_ylabel("網路存活時間（秒）")
-    ax.set_xticks(runs)
+    for algo in algorithms:
+        y_values = [average_by_algo_index[algo].get(sweep_index, None) for sweep_index in sweep_indices]
+        ax.plot(x_positions, y_values, marker="o", linewidth=1.8, markersize=4.5, label=algo)
+
+    ax.set_title("SweepValue 與平均生命週期")
+    ax.set_xlabel("SweepValue")
+    ax.set_ylabel("平均生命週期（秒）")
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(sweep_values)
     ax.grid(True, alpha=0.3)
     ax.legend(loc="best", fontsize=8)
     fig.tight_layout()
 
-
-def draw_bar_on_figure(fig, averages):
-    fig.clear()
-    ax = fig.add_subplot(111)
-
-    algorithms = [x[0] for x in averages]
-    values = [x[1] for x in averages]
-
-    bars = ax.bar(algorithms, values)
-
-    ax.set_title("各演算法平均網路存活時間")
-    ax.set_xlabel("演算法")
-    ax.set_ylabel("平均網路存活時間（秒）")
-    ax.tick_params(axis="x", rotation=35)
-    ax.grid(axis="y", alpha=0.3)
-
-    for label in ax.get_xticklabels():
-        label.set_ha("right")
-
-    for bar, value in zip(bars, values):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height(),
-            "{:.0f}".format(value),
-            ha="center",
-            va="bottom",
-            fontsize=8,
-        )
-
-    fig.tight_layout()
 
 
 class ScrollableCheckFrame(ttk.Frame):
@@ -356,7 +393,7 @@ class WsnChartGui(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.title("WSN 存活時間圖表產生器")
+        self.title("WSN Sweep 平均生命週期折線圖產生器")
         self.geometry("1180x820")
         self.minsize(1050, 720)
 
@@ -373,10 +410,10 @@ class WsnChartGui(tk.Tk):
         root = ttk.Frame(self, padding=12)
         root.pack(fill="both", expand=True)
 
-        title = ttk.Label(root, text="WSN 存活時間圖表產生器", font=("Microsoft JhengHei UI", 16, "bold"))
+        title = ttk.Label(root, text="WSN Sweep 平均生命週期折線圖產生器", font=("Microsoft JhengHei UI", 16, "bold"))
         title.pack(anchor="w")
 
-        subtitle = ttk.Label(root, text="選 Excel、勾選演算法，直接在此視窗顯示折線圖與柱狀圖，不會輸出 PNG/CSV。")
+        subtitle = ttk.Label(root, text="選 Excel、勾選演算法，直接在此視窗顯示 SweepValue 對平均生命週期(s)的折線圖，不會輸出 PNG/CSV。")
         subtitle.pack(anchor="w", pady=(2, 10))
 
         top_pane = ttk.PanedWindow(root, orient="horizontal")
@@ -425,11 +462,9 @@ class WsnChartGui(tk.Tk):
         self.notebook = ttk.Notebook(right_panel)
         self.notebook.pack(fill="both", expand=True)
 
-        self.line_preview = ChartPreviewFrame(self.notebook, "折線圖")
-        self.bar_preview = ChartPreviewFrame(self.notebook, "柱狀圖")
+        self.line_preview = ChartPreviewFrame(self.notebook, "Sweep 折線圖")
 
-        self.notebook.add(self.line_preview, text="折線圖：每次 Run 存活時間")
-        self.notebook.add(self.bar_preview, text="柱狀圖：平均存活時間")
+        self.notebook.add(self.line_preview, text="折線圖：SweepValue / 平均生命週期")
 
     def log(self, text):
         self.log_text.insert("end", text + "\n")
@@ -467,17 +502,27 @@ class WsnChartGui(tk.Tk):
 
         try:
             self.log("讀取 Excel：" + str(xlsx))
-            rows = read_xlsx_sheet_values(xlsx, sheet_name)
+            try:
+                rows = read_xlsx_sheet_values(xlsx, sheet_name)
+            except ValueError:
+                if sheet_name == DEFAULT_SHEET_NAME:
+                    self.log("找不到「{0}」，改讀「{1}」。".format(DEFAULT_SHEET_NAME, FALLBACK_SHEET_NAME))
+                    sheet_name = FALLBACK_SHEET_NAME
+                    self.sheet_name_var.set(sheet_name)
+                    rows = read_xlsx_sheet_values(xlsx, sheet_name)
+                else:
+                    raise
+
             self.records = parse_records(rows, sheet_name)
 
             algorithms = sorted(set(r["Algorithm"] for r in self.records))
-            runs = sorted(set(r["Run"] for r in self.records))
+            sweep_indices = sorted(set(r["SweepIndex"] for r in self.records))
 
             self.populate_algorithms(algorithms)
 
-            self.log("讀取完成：{0} 筆資料，{1} 個 run，{2} 個演算法。".format(
+            self.log("讀取完成：{0} 筆資料，{1} 個 Sweep 點，{2} 個演算法。".format(
                 len(self.records),
-                len(runs),
+                len(sweep_indices),
                 len(algorithms)
             ))
 
@@ -522,19 +567,17 @@ class WsnChartGui(tk.Tk):
         try:
             self.log("開始產生圖表...")
 
-            runs, algorithms, life_by_algo, averages = build_lifetime_tables(self.records, selected)
+            sweep_indices, sweep_values, algorithms, average_by_algo_index = build_sweep_lifetime_tables(self.records, selected)
 
             if not algorithms:
                 raise ValueError("沒有可繪圖的演算法資料。")
 
-            draw_line_on_figure(self.line_preview.figure, runs, algorithms, life_by_algo)
-            draw_bar_on_figure(self.bar_preview.figure, averages)
+            draw_line_on_figure(self.line_preview.figure, sweep_indices, sweep_values, algorithms, average_by_algo_index)
 
             self.line_preview.refresh()
-            self.bar_preview.refresh()
 
             self.log("完成：圖表已更新在 UI 上。")
-            self.log("目前顯示 {0} 個 run、{1} 個演算法。".format(len(runs), len(algorithms)))
+            self.log("目前顯示 {0} 個 Sweep 點、{1} 個演算法。".format(len(sweep_indices), len(algorithms)))
 
             self.notebook.select(self.line_preview)
 
