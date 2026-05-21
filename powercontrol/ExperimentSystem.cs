@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -53,6 +54,8 @@ namespace WindowsFormsApplication1
         public string SelectedAlgorithmsCsv { get; set; }
         public string OutputDirectory { get; set; }
         public string LastOutputWorkbookPath { get; set; }
+        public bool WriteTaskDetailCsv { get; set; }
+        public bool UseFastSimulationScheduling { get; set; }
         public int MaxParallelJobs { get; set; }
         public bool SweepEnabled { get; set; }
         public string SweepParameterKey { get; set; }
@@ -105,6 +108,8 @@ namespace WindowsFormsApplication1
             SelectedAlgorithmsCsv = DefaultAlgorithmSelectionCsv();
             OutputDirectory = Path.Combine(ProjectRoot, "outputs");
             LastOutputWorkbookPath = "";
+            WriteTaskDetailCsv = true;
+            UseFastSimulationScheduling = true;
             MaxParallelJobs = 0;
             SweepEnabled = false;
             SweepParameterKey = "SensorCount";
@@ -576,60 +581,6 @@ namespace WindowsFormsApplication1
         public ExperimentSettings Settings;
     }
 
-    internal static class ExperimentParallel
-    {
-        public static void For(int fromInclusive, int toExclusive, int maxDegreeOfParallelism, Action<int> body)
-        {
-            int count = toExclusive - fromInclusive;
-            if (count <= 0)
-                return;
-
-            int workerCount = Math.Max(1, Math.Min(Math.Max(1, maxDegreeOfParallelism), count));
-            int nextOffset = -1;
-            int stopFlag = 0;
-            object exceptionLock = new object();
-            Exception firstException = null;
-            Thread[] workers = new Thread[workerCount];
-
-            for (int i = 0; i < workerCount; i++)
-            {
-                workers[i] = new Thread(delegate()
-                {
-                    while (Interlocked.CompareExchange(ref stopFlag, 0, 0) == 0)
-                    {
-                        int offset = Interlocked.Increment(ref nextOffset);
-                        if (offset >= count)
-                            break;
-
-                        try
-                        {
-                            body(fromInclusive + offset);
-                        }
-                        catch (Exception ex)
-                        {
-                            lock (exceptionLock)
-                            {
-                                if (firstException == null)
-                                    firstException = ex;
-                            }
-                            Interlocked.Exchange(ref stopFlag, 1);
-                            break;
-                        }
-                    }
-                });
-                workers[i].IsBackground = true;
-                workers[i].Name = String.Format(CultureInfo.InvariantCulture, "WSNExperimentWorker{0}", i + 1);
-                workers[i].Start();
-            }
-
-            for (int i = 0; i < workers.Length; i++)
-                workers[i].Join();
-
-            if (firstException != null)
-                throw new AggregateException(firstException);
-        }
-    }
-
     internal sealed class ChengTreqMetrics
     {
         public int MaxTask;
@@ -713,6 +664,158 @@ namespace WindowsFormsApplication1
         }
     }
 
+    internal sealed class ExperimentSimulationQueueWorkItem
+    {
+        public ExperimentSettings Settings;
+        public ExperimentArtifact Artifact;
+        public string Algorithm;
+        public int AlgorithmIndex;
+        public ExperimentRunResult[] AlgorithmResults;
+        public bool SweepEnabled;
+        public int SweepIndex;
+        public int SweepValueCount;
+        public string SweepParameterName;
+        public string SweepValueText;
+        public int RunIndex;
+        public int RunCount;
+    }
+
+    internal static class ExperimentSimulationQueueRunner
+    {
+        public static int ResolveProducerCount(int maxParallelJobs, int artifactWork)
+        {
+            int requested = Math.Max(1, maxParallelJobs / 4);
+            requested = Math.Min(4, requested);
+            return Math.Max(1, Math.Min(Math.Max(1, artifactWork), requested));
+        }
+
+        public static void Run(
+            int totalWork,
+            int maxParallelJobs,
+            int algorithmCount,
+            string taskDetailsDirectory,
+            Action<BlockingCollection<ExperimentSimulationQueueWorkItem>> produceItems,
+            Action<int, int, string> reportProgress)
+        {
+            int queueCapacity = Math.Max(Math.Max(1, algorithmCount), maxParallelJobs);
+            BlockingCollection<ExperimentSimulationQueueWorkItem> queue =
+                new BlockingCollection<ExperimentSimulationQueueWorkItem>(queueCapacity);
+            ExperimentSimulationQueueExceptionState exceptionState = new ExperimentSimulationQueueExceptionState();
+            int completedWork = 0;
+            Task[] workers = new Task[Math.Max(1, maxParallelJobs)];
+
+            for (int i = 0; i < workers.Length; i++)
+            {
+                workers[i] = Task.Factory.StartNew(delegate
+                {
+                    foreach (ExperimentSimulationQueueWorkItem work in queue.GetConsumingEnumerable())
+                    {
+                        if (exceptionState.HasException())
+                            continue;
+
+                        try
+                        {
+                            ExperimentSimulation simulation = new ExperimentSimulation(
+                                work.Settings, work.Artifact, work.Algorithm, taskDetailsDirectory);
+                            ExperimentRunResult run = simulation.Run();
+                            work.AlgorithmResults[work.AlgorithmIndex] = run;
+
+                            int done = Interlocked.Increment(ref completedWork);
+                            if (reportProgress != null)
+                                reportProgress(done, totalWork, BuildProgressDetail(work, done, totalWork));
+                        }
+                        catch (Exception ex)
+                        {
+                            exceptionState.Record(ex);
+                        }
+                    }
+                }, CancellationToken.None, TaskCreationOptions.None, TaskScheduler.Default);
+            }
+
+            try
+            {
+                produceItems(queue);
+            }
+            catch (Exception ex)
+            {
+                exceptionState.Record(ex);
+            }
+            finally
+            {
+                queue.CompleteAdding();
+            }
+
+            try
+            {
+                Task.WaitAll(workers);
+            }
+            catch (AggregateException ex)
+            {
+                exceptionState.Record(ex);
+            }
+
+            exceptionState.ThrowIfNeeded();
+        }
+
+        private static string BuildProgressDetail(ExperimentSimulationQueueWorkItem work, int done, int totalWork)
+        {
+            if (work.SweepEnabled)
+            {
+                return String.Format(CultureInfo.InvariantCulture,
+                    "完成 value {0}/{1} {2}={3}, run {4}/{5}, algorithm {6} ({7}/{8})",
+                    work.SweepIndex + 1,
+                    work.SweepValueCount,
+                    work.SweepParameterName,
+                    work.SweepValueText,
+                    work.RunIndex,
+                    work.RunCount,
+                    work.Algorithm,
+                    done,
+                    totalWork);
+            }
+
+            return String.Format(CultureInfo.InvariantCulture,
+                "完成 run {0}/{1} {2} ({3}/{4})",
+                work.RunIndex,
+                work.RunCount,
+                work.Algorithm,
+                done,
+                totalWork);
+        }
+
+        private sealed class ExperimentSimulationQueueExceptionState
+        {
+            private readonly object syncRoot = new object();
+            private Exception firstException;
+
+            public bool HasException()
+            {
+                lock (syncRoot)
+                {
+                    return firstException != null;
+                }
+            }
+
+            public void Record(Exception ex)
+            {
+                lock (syncRoot)
+                {
+                    if (firstException == null)
+                        firstException = ex;
+                }
+            }
+
+            public void ThrowIfNeeded()
+            {
+                lock (syncRoot)
+                {
+                    if (firstException != null)
+                        throw new AggregateException(firstException);
+                }
+            }
+        }
+    }
+
     public class ExperimentBatchRunner
     {
         private readonly Action<string> progress;
@@ -745,7 +848,10 @@ namespace WindowsFormsApplication1
 
             ExperimentBatchResult result = new ExperimentBatchResult();
             result.Settings = settings;
-            result.TaskDetailsDirectory = MissionDetailCsvWriter.PrepareTaskDetailsDirectory(settings.OutputDirectory);
+            result.TaskDetailsDirectory = settings.WriteTaskDetailCsv
+                ? MissionDetailCsvWriter.PrepareTaskDetailsDirectory(settings.OutputDirectory)
+                : "";
+            string taskDetailsDirectory = settings.WriteTaskDetailCsv ? result.TaskDetailsDirectory : null;
 
             int totalWork = settings.RunCount * algorithms.Count;
             int completedWork = 0;
@@ -775,33 +881,75 @@ namespace WindowsFormsApplication1
                 chengMetrics.TjobSeconds,
                 chengMetrics.LmaxStepMeters));
 
-            ExperimentParallel.For(1, settings.RunCount + 1, maxParallelJobs, delegate (int runIndex)
+            if (settings.UseFastSimulationScheduling && totalWork > 1)
+            {
+                int producerCount = ExperimentSimulationQueueRunner.ResolveProducerCount(maxParallelJobs, settings.RunCount);
+                RaiseThreadPoolMinimum(maxParallelJobs + producerCount);
+                Report(String.Format(CultureInfo.InvariantCulture,
+                    "高速排程啟用：simulation workers={0}, artifact producers={1}, queue capacity={2}",
+                    maxParallelJobs, producerCount, Math.Max(algorithms.Count, maxParallelJobs)));
+
+                ParallelOptions producerOptions = new ParallelOptions();
+                producerOptions.MaxDegreeOfParallelism = producerCount;
+                ExperimentSimulationQueueRunner.Run(totalWork, maxParallelJobs, algorithms.Count, taskDetailsDirectory,
+                    delegate(BlockingCollection<ExperimentSimulationQueueWorkItem> queue)
+                    {
+                        Parallel.For(1, settings.RunCount + 1, producerOptions, delegate(int runIndex)
+                        {
+                            int seed = settings.BaseSeed + runIndex - 1;
+                            ExperimentRunBatchResult runBatch = new ExperimentRunBatchResult(algorithms.Count);
+                            ExperimentArtifact artifact = ExperimentArtifact.Generate(settings, runIndex, seed);
+                            runBatch.ArtifactSummary = artifact.CreateSummary();
+                            runResults[runIndex - 1] = runBatch;
+
+                            for (int algorithmIndex = 0; algorithmIndex < algorithms.Count; algorithmIndex++)
+                            {
+                                ExperimentSimulationQueueWorkItem work = new ExperimentSimulationQueueWorkItem();
+                                work.Settings = settings;
+                                work.Artifact = artifact;
+                                work.Algorithm = algorithms[algorithmIndex];
+                                work.AlgorithmIndex = algorithmIndex;
+                                work.AlgorithmResults = runBatch.AlgorithmResults;
+                                work.RunIndex = runIndex;
+                                work.RunCount = settings.RunCount;
+                                queue.Add(work);
+                            }
+                        });
+                    },
+                    delegate(int done, int count, string detail)
+                    {
+                        ReportProgress(done, count, detail);
+                    });
+            }
+            else
+            {
+            ParallelOptions options = new ParallelOptions();
+            options.MaxDegreeOfParallelism = maxParallelJobs;
+            Parallel.For(1, settings.RunCount + 1, options, delegate (int runIndex)
             {
                 int seed = settings.BaseSeed + runIndex - 1;
                 ExperimentRunBatchResult runBatch = new ExperimentRunBatchResult(algorithms.Count);
                 ExperimentArtifact artifact = ExperimentArtifact.Generate(settings, runIndex, seed);
-                runBatch.Artifact = artifact;
+                runBatch.ArtifactSummary = artifact.CreateSummary();
+
+                for (int algorithmIndex = 0; algorithmIndex < algorithms.Count; algorithmIndex++)
+                {
+                    string algorithm = algorithms[algorithmIndex];
+                    ExperimentSimulation simulation = new ExperimentSimulation(settings, artifact, algorithm, taskDetailsDirectory);
+                    ExperimentRunResult run = simulation.Run();
+                    runBatch.AlgorithmResults[algorithmIndex] = run;
+
+                    int done = Interlocked.Increment(ref completedWork);
+                    ReportProgress(done, totalWork,
+                        String.Format(CultureInfo.InvariantCulture, "完成 run {0}/{1} {2} ({3}/{4})",
+                            runIndex, settings.RunCount, algorithm, done, totalWork));
+                }
+
                 runResults[runIndex - 1] = runBatch;
             });
+            }
             Report(String.Format(CultureInfo.InvariantCulture,
-                "共用資料產生完成：runs={0}, worker threads={1}", settings.RunCount, maxParallelJobs));
-
-            ExperimentParallel.For(0, totalWork, maxParallelJobs, delegate (int workIndex)
-            {
-                int runIndex = workIndex / algorithms.Count + 1;
-                int algorithmIndex = workIndex % algorithms.Count;
-                string algorithm = algorithms[algorithmIndex];
-                ExperimentRunBatchResult runBatch = runResults[runIndex - 1];
-
-                ExperimentSimulation simulation = new ExperimentSimulation(settings, runBatch.Artifact, algorithm, result.TaskDetailsDirectory);
-                ExperimentRunResult run = simulation.Run();
-                runBatch.AlgorithmResults[algorithmIndex] = run;
-
-                int done = Interlocked.Increment(ref completedWork);
-                ReportProgress(done, totalWork,
-                    String.Format(CultureInfo.InvariantCulture, "完成 run {0}/{1} {2} ({3}/{4})",
-                        runIndex, settings.RunCount, algorithm, done, totalWork));
-            });
+                "共用資料產生完成：runs={0}, max parallel jobs={1}", settings.RunCount, maxParallelJobs));
 
             Report("所有 run 已完成，正在由單一執行緒合併結果並寫出 Excel。");
             MergeRunResults(result, runResults);
@@ -812,6 +960,12 @@ namespace WindowsFormsApplication1
             if (persistSettings)
                 settings.SaveLast();
             result.WorkbookPath = workbookPath;
+            if (!settings.WriteTaskDetailCsv)
+            {
+                Report("Excel written: " + workbookPath);
+                Report("Task detail CSV output is disabled.");
+                return result;
+            }
             Report("Excel 已輸出：" + workbookPath);
             Report("任務明細 CSV 已輸出：" + result.TaskDetailsDirectory);
             return result;
@@ -842,7 +996,8 @@ namespace WindowsFormsApplication1
                 if (runBatch == null)
                     continue;
 
-                result.Artifacts.Add(runBatch.Artifact);
+                if (runBatch.ArtifactSummary != null)
+                    result.ArtifactSummaries.Add(runBatch.ArtifactSummary);
                 for (int i = 0; i < runBatch.AlgorithmResults.Length; i++)
                 {
                     ExperimentRunResult run = runBatch.AlgorithmResults[i];
@@ -872,7 +1027,7 @@ namespace WindowsFormsApplication1
 
         private class ExperimentRunBatchResult
         {
-            public ExperimentArtifact Artifact;
+            public ExperimentArtifactSummary ArtifactSummary;
             public ExperimentRunResult[] AlgorithmResults;
 
             public ExperimentRunBatchResult(int algorithmCount)
@@ -909,7 +1064,10 @@ namespace WindowsFormsApplication1
             ExperimentBatchResult result = new ExperimentBatchResult();
             result.Settings = baseSettings.Copy();
             result.Settings.Normalize();
-            result.TaskDetailsDirectory = MissionDetailCsvWriter.PrepareTaskDetailsDirectory(baseSettings.OutputDirectory);
+            result.TaskDetailsDirectory = baseSettings.WriteTaskDetailCsv
+                ? MissionDetailCsvWriter.PrepareTaskDetailsDirectory(baseSettings.OutputDirectory)
+                : "";
+            string taskDetailsDirectory = baseSettings.WriteTaskDetailCsv ? result.TaskDetailsDirectory : null;
 
             int artifactWork = steps.Count * baseSettings.RunCount;
             int totalWork = artifactWork * algorithms.Count;
@@ -928,7 +1086,60 @@ namespace WindowsFormsApplication1
                 maxParallelJobs,
                 baseSettings.MaxParallelJobs > 0 ? " (manual)" : " (auto)"));
 
-            ExperimentParallel.For(0, artifactWork, maxParallelJobs, delegate(int artifactIndex)
+            if (baseSettings.UseFastSimulationScheduling && totalWork > 1)
+            {
+                int producerCount = ExperimentSimulationQueueRunner.ResolveProducerCount(maxParallelJobs, artifactWork);
+                RaiseThreadPoolMinimum(maxParallelJobs + producerCount);
+                Report(String.Format(CultureInfo.InvariantCulture,
+                    "高速排程啟用：simulation workers={0}, artifact producers={1}, queue capacity={2}",
+                    maxParallelJobs, producerCount, Math.Max(algorithms.Count, maxParallelJobs)));
+
+                ParallelOptions producerOptions = new ParallelOptions();
+                producerOptions.MaxDegreeOfParallelism = producerCount;
+                ExperimentSimulationQueueRunner.Run(totalWork, maxParallelJobs, algorithms.Count, taskDetailsDirectory,
+                    delegate(BlockingCollection<ExperimentSimulationQueueWorkItem> queue)
+                    {
+                        Parallel.For(0, artifactWork, producerOptions, delegate(int artifactIndex)
+                        {
+                            int stepIndex = artifactIndex / baseSettings.RunCount;
+                            int runIndex = artifactIndex % baseSettings.RunCount + 1;
+                            ExperimentSweepStep step = steps[stepIndex];
+                            int seed = baseSettings.BaseSeed + runIndex - 1;
+
+                            SweepRunBatchResult runBatch = new SweepRunBatchResult(algorithms.Count);
+                            ExperimentArtifact artifact = ExperimentArtifact.Generate(step.Settings, runIndex, seed);
+                            runBatch.ArtifactSummary = artifact.CreateSummary();
+                            runResults[artifactIndex] = runBatch;
+
+                            for (int algorithmIndex = 0; algorithmIndex < algorithms.Count; algorithmIndex++)
+                            {
+                                ExperimentSimulationQueueWorkItem work = new ExperimentSimulationQueueWorkItem();
+                                work.Settings = step.Settings;
+                                work.Artifact = artifact;
+                                work.Algorithm = algorithms[algorithmIndex];
+                                work.AlgorithmIndex = algorithmIndex;
+                                work.AlgorithmResults = runBatch.AlgorithmResults;
+                                work.SweepEnabled = true;
+                                work.SweepIndex = stepIndex;
+                                work.SweepValueCount = steps.Count;
+                                work.SweepParameterName = step.ParameterName;
+                                work.SweepValueText = FormatSweepValue(step);
+                                work.RunIndex = runIndex;
+                                work.RunCount = baseSettings.RunCount;
+                                queue.Add(work);
+                            }
+                        });
+                    },
+                    delegate(int done, int count, string detail)
+                    {
+                        ReportProgress(done, count, detail);
+                    });
+            }
+            else
+            {
+            ParallelOptions options = new ParallelOptions();
+            options.MaxDegreeOfParallelism = maxParallelJobs;
+            Parallel.For(0, artifactWork, options, delegate(int artifactIndex)
             {
                 int stepIndex = artifactIndex / baseSettings.RunCount;
                 int runIndex = artifactIndex % baseSettings.RunCount + 1;
@@ -936,40 +1147,36 @@ namespace WindowsFormsApplication1
                 int seed = baseSettings.BaseSeed + runIndex - 1;
 
                 SweepRunBatchResult runBatch = new SweepRunBatchResult(algorithms.Count);
-                runBatch.Artifact = ExperimentArtifact.Generate(step.Settings, runIndex, seed);
+                ExperimentArtifact artifact = ExperimentArtifact.Generate(step.Settings, runIndex, seed);
+                runBatch.ArtifactSummary = artifact.CreateSummary();
+
+                for (int algorithmIndex = 0; algorithmIndex < algorithms.Count; algorithmIndex++)
+                {
+                    string algorithm = algorithms[algorithmIndex];
+                    ExperimentSimulation simulation = new ExperimentSimulation(step.Settings, artifact, algorithm, taskDetailsDirectory);
+                    ExperimentRunResult run = simulation.Run();
+                    runBatch.AlgorithmResults[algorithmIndex] = run;
+
+                    int done = Interlocked.Increment(ref completedWork);
+                    ReportProgress(done, totalWork,
+                        String.Format(CultureInfo.InvariantCulture, "完成 value {0}/{1} {2}={3}, run {4}/{5}, algorithm {6} ({7}/{8})",
+                            stepIndex + 1,
+                            steps.Count,
+                            step.ParameterName,
+                            FormatSweepValue(step),
+                            runIndex,
+                            baseSettings.RunCount,
+                            algorithm,
+                            done,
+                            totalWork));
+                }
+
                 runResults[artifactIndex] = runBatch;
             });
+            }
             Report(String.Format(CultureInfo.InvariantCulture,
-                "共用資料產生完成：values={0}, runsPerValue={1}, worker threads={2}",
+                "共用資料產生完成：values={0}, runsPerValue={1}, max parallel jobs={2}",
                 steps.Count, baseSettings.RunCount, maxParallelJobs));
-
-            ExperimentParallel.For(0, totalWork, maxParallelJobs, delegate(int workIndex)
-            {
-                int artifactIndex = workIndex / algorithms.Count;
-                int algorithmIndex = workIndex % algorithms.Count;
-                int stepIndex = artifactIndex / baseSettings.RunCount;
-                int runIndex = artifactIndex % baseSettings.RunCount + 1;
-                ExperimentSweepStep step = steps[stepIndex];
-                string algorithm = algorithms[algorithmIndex];
-                SweepRunBatchResult runBatch = runResults[artifactIndex];
-
-                ExperimentSimulation simulation = new ExperimentSimulation(step.Settings, runBatch.Artifact, algorithm, result.TaskDetailsDirectory);
-                ExperimentRunResult run = simulation.Run();
-                runBatch.AlgorithmResults[algorithmIndex] = run;
-
-                int done = Interlocked.Increment(ref completedWork);
-                ReportProgress(done, totalWork,
-                    String.Format(CultureInfo.InvariantCulture, "完成 value {0}/{1} {2}={3}, run {4}/{5}, algorithm {6} ({7}/{8})",
-                        stepIndex + 1,
-                        steps.Count,
-                        step.ParameterName,
-                        FormatSweepValue(step),
-                        runIndex,
-                        baseSettings.RunCount,
-                        algorithm,
-                        done,
-                        totalWork));
-            });
 
             MergeSweepRunResults(result, runResults);
 
@@ -979,6 +1186,12 @@ namespace WindowsFormsApplication1
             if (persistSettings)
                 baseSettings.SaveLast();
             result.WorkbookPath = workbookPath;
+            if (!baseSettings.WriteTaskDetailCsv)
+            {
+                Report("Excel written: " + workbookPath);
+                Report("Task detail CSV output is disabled.");
+                return result;
+            }
             Report("參數迭代 Excel 已輸出：" + workbookPath);
             Report("任務明細 CSV 已輸出：" + result.TaskDetailsDirectory);
             return result;
@@ -1048,7 +1261,8 @@ namespace WindowsFormsApplication1
                 if (runBatch == null)
                     continue;
 
-                result.Artifacts.Add(runBatch.Artifact);
+                if (runBatch.ArtifactSummary != null)
+                    result.ArtifactSummaries.Add(runBatch.ArtifactSummary);
                 for (int j = 0; j < runBatch.AlgorithmResults.Length; j++)
                 {
                     ExperimentRunResult run = runBatch.AlgorithmResults[j];
@@ -1078,7 +1292,7 @@ namespace WindowsFormsApplication1
 
         private class SweepRunBatchResult
         {
-            public ExperimentArtifact Artifact;
+            public ExperimentArtifactSummary ArtifactSummary;
             public ExperimentRunResult[] AlgorithmResults;
 
             public SweepRunBatchResult(int algorithmCount)
@@ -1091,7 +1305,7 @@ namespace WindowsFormsApplication1
     public class ExperimentBatchResult
     {
         public ExperimentSettings Settings { get; set; }
-        public List<ExperimentArtifact> Artifacts { get; private set; }
+        public List<ExperimentArtifactSummary> ArtifactSummaries { get; private set; }
         public List<ExperimentRunSummary> RunSummaries { get; private set; }
         public List<ExperimentDeathRecord> DeathRecords { get; private set; }
         public string WorkbookPath { get; set; }
@@ -1100,12 +1314,27 @@ namespace WindowsFormsApplication1
 
         public ExperimentBatchResult()
         {
-            Artifacts = new List<ExperimentArtifact>();
+            ArtifactSummaries = new List<ExperimentArtifactSummary>();
             RunSummaries = new List<ExperimentRunSummary>();
             DeathRecords = new List<ExperimentDeathRecord>();
             WorkbookPath = "";
             TaskDetailsDirectory = "";
         }
+    }
+
+    public class ExperimentArtifactSummary
+    {
+        public int RunIndex;
+        public int Seed;
+        public string ArtifactHash;
+        public int RateChangeScheduleCount;
+        public int RoutingParentMissingNodeCount;
+        public double RoutingDisconnectedNodeRatio;
+        public bool SweepEnabled;
+        public int SweepIndex;
+        public string SweepParameterKey;
+        public string SweepParameterName;
+        public double SweepValue;
     }
 
     public class ExperimentArtifact
@@ -1405,6 +1634,23 @@ namespace WindowsFormsApplication1
         {
             int sensorCount = Math.Max(1, Sensors.Count - 1);
             return (double)CountMissingRoutingParents() / (double)sensorCount;
+        }
+
+        public ExperimentArtifactSummary CreateSummary()
+        {
+            ExperimentArtifactSummary summary = new ExperimentArtifactSummary();
+            summary.RunIndex = RunIndex;
+            summary.Seed = Seed;
+            summary.ArtifactHash = ArtifactHash;
+            summary.RateChangeScheduleCount = RateChanges == null ? 0 : RateChanges.Count;
+            summary.RoutingParentMissingNodeCount = CountMissingRoutingParents();
+            summary.RoutingDisconnectedNodeRatio = MissingRoutingParentRatio();
+            summary.SweepEnabled = SweepEnabled;
+            summary.SweepIndex = SweepIndex;
+            summary.SweepParameterKey = SweepParameterKey;
+            summary.SweepParameterName = SweepParameterName;
+            summary.SweepValue = SweepValue;
+            return summary;
         }
     }
 
@@ -7550,6 +7796,8 @@ namespace WindowsFormsApplication1
             rows.Add(Row("SweepParameterKey", s.SweepEnabled ? s.SweepParameterKey : "", s.SweepEnabled ? ExperimentSweepParameterCatalog.DisplayName(s.SweepParameterKey) : ""));
             rows.Add(Row("SweepIterationCount", s.SweepEnabled ? (object)s.SweepIterationCount : "", "number of increments after the current UI value"));
             rows.Add(Row("SweepStepValue", s.SweepEnabled ? (object)s.SweepStepValue : "", "value added on each increment"));
+            rows.Add(Row("WriteTaskDetailCsv", s.WriteTaskDetailCsv, "false = skip per-run debug CSV files to reduce IO and memory pressure"));
+            rows.Add(Row("UseFastSimulationScheduling", s.UseFastSimulationScheduling, "true = bounded artifact queue with simulation-level parallelism"));
             rows.Add(Row("感測器數量", s.SensorCount, ""));
             rows.Add(Row("地圖邊長(m)", s.MapWidthMeters, "地圖固定為 n x n 正方形"));
             rows.Add(Row("模擬時間(s)", s.SimulationTimeSeconds, ""));
@@ -7603,11 +7851,11 @@ namespace WindowsFormsApplication1
 
             rows.Add(Row("", "", ""));
             rows.Add(Row("Run", "Seed", "共用資料 hash", "rate-change 次數", "ParentId=-1 節點數", "不連通節點比例"));
-            for (int i = 0; i < result.Artifacts.Count; i++)
+            for (int i = 0; i < result.ArtifactSummaries.Count; i++)
             {
-                ExperimentArtifact artifact = result.Artifacts[i];
-                rows.Add(Row(artifact.RunIndex, artifact.Seed, artifact.ArtifactHash, artifact.RateChanges.Count,
-                    artifact.CountMissingRoutingParents(), artifact.MissingRoutingParentRatio()));
+                ExperimentArtifactSummary artifact = result.ArtifactSummaries[i];
+                rows.Add(Row(artifact.RunIndex, artifact.Seed, artifact.ArtifactHash, artifact.RateChangeScheduleCount,
+                    artifact.RoutingParentMissingNodeCount, artifact.RoutingDisconnectedNodeRatio));
             }
 
             return rows;

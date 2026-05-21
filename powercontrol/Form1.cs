@@ -84,6 +84,8 @@ namespace WindowsFormsApplication1
         TextBox expNmaxTaskBox;
         TextBox expOutputDirectoryBox;
         ComboBox expThresholdModeBox;
+        CheckBox expWriteTaskDetailsBox;
+        CheckBox expFastSchedulingBox;
         CheckedListBox expAlgorithmList;
         TextBox expLogBox;
         Label expLastOutputLabel;
@@ -298,6 +300,20 @@ namespace WindowsFormsApplication1
             openOutputButton.Click += openOutputButton_Click;
             outputGroup.Controls.Add(openOutputButton);
 
+            expWriteTaskDetailsBox = new CheckBox();
+            expWriteTaskDetailsBox.Text = "輸出任務明細 CSV";
+            expWriteTaskDetailsBox.Location = new Point(430, 70);
+            expWriteTaskDetailsBox.Size = new Size(180, 22);
+            expWriteTaskDetailsBox.Checked = true;
+            outputGroup.Controls.Add(expWriteTaskDetailsBox);
+
+            expFastSchedulingBox = new CheckBox();
+            expFastSchedulingBox.Text = "高速平行排程";
+            expFastSchedulingBox.Location = new Point(610, 70);
+            expFastSchedulingBox.Size = new Size(120, 22);
+            expFastSchedulingBox.Checked = true;
+            outputGroup.Controls.Add(expFastSchedulingBox);
+
             expLastOutputLabel = new Label();
             expLastOutputLabel.Text = "";
             expLastOutputLabel.Location = new Point(18, 106);
@@ -388,6 +404,10 @@ namespace WindowsFormsApplication1
             expWcvMoveCostBox.Text = experimentSettings.WcvMoveCostJPerMeter.ToString(System.Globalization.CultureInfo.InvariantCulture);
             expNmaxTaskBox.Text = experimentSettings.NmaxTask.ToString(System.Globalization.CultureInfo.InvariantCulture);
             expOutputDirectoryBox.Text = experimentSettings.OutputDirectory;
+            if (expWriteTaskDetailsBox != null)
+                expWriteTaskDetailsBox.Checked = experimentSettings.WriteTaskDetailCsv;
+            if (expFastSchedulingBox != null)
+                expFastSchedulingBox.Checked = experimentSettings.UseFastSimulationScheduling;
             if (ChengTreqCalculator.IsChengTreqMode(experimentSettings.ThresholdMode))
                 expThresholdModeBox.SelectedIndex = 1;
             else if (String.Equals(experimentSettings.ThresholdMode, "TreqSeconds", StringComparison.OrdinalIgnoreCase))
@@ -430,6 +450,10 @@ namespace WindowsFormsApplication1
             experimentSettings.WcvMoveCostJPerMeter = parse_double(expWcvMoveCostBox, experimentSettings.WcvMoveCostJPerMeter);
             experimentSettings.NmaxTask = parse_int(expNmaxTaskBox, experimentSettings.NmaxTask);
             experimentSettings.OutputDirectory = expOutputDirectoryBox.Text.Trim();
+            if (expWriteTaskDetailsBox != null)
+                experimentSettings.WriteTaskDetailCsv = expWriteTaskDetailsBox.Checked;
+            if (expFastSchedulingBox != null)
+                experimentSettings.UseFastSimulationScheduling = expFastSchedulingBox.Checked;
             if (expThresholdModeBox.SelectedIndex == 1)
             {
                 experimentSettings.ThresholdMode = "ChengTreq";
@@ -669,6 +693,10 @@ namespace WindowsFormsApplication1
             experimentRunButton.Enabled = false;
             experimentSaveButton.Enabled = false;
             experimentSweepButton.Enabled = false;
+            if (expWriteTaskDetailsBox != null)
+                expWriteTaskDetailsBox.Enabled = false;
+            if (expFastSchedulingBox != null)
+                expFastSchedulingBox.Enabled = false;
             expProgressLabel.Text = "進度：準備開始";
             log_experiment_message("批次比較執行中...");
 
@@ -732,6 +760,10 @@ namespace WindowsFormsApplication1
                     experimentRunButton.Enabled = true;
                     experimentSaveButton.Enabled = true;
                     experimentSweepButton.Enabled = true;
+                    if (expWriteTaskDetailsBox != null)
+                        expWriteTaskDetailsBox.Enabled = true;
+                    if (expFastSchedulingBox != null)
+                        expFastSchedulingBox.Enabled = true;
                     if (error != null)
                     {
                         if (expProgressLabel != null)
