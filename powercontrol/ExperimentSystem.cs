@@ -14,6 +14,60 @@ using System.Xml.Serialization;
 
 namespace WindowsFormsApplication1
 {
+    public sealed class MissionDetailCsvOutputOptions
+    {
+        public bool WriteMissionDetails { get; set; }
+        public bool WriteTaskRecords { get; set; }
+        public bool WriteRoutingLoad { get; set; }
+        public bool WriteBprDebug { get; set; }
+        public bool WriteYuBprDebug { get; set; }
+
+        public MissionDetailCsvOutputOptions()
+        {
+            WriteMissionDetails = true;
+            WriteTaskRecords = true;
+            WriteRoutingLoad = true;
+            WriteBprDebug = true;
+            WriteYuBprDebug = true;
+        }
+
+        public bool HasAnyOutput()
+        {
+            return WriteMissionDetails || WriteTaskRecords || WriteRoutingLoad ||
+                WriteBprDebug || WriteYuBprDebug;
+        }
+
+        public static MissionDetailCsvOutputOptions All()
+        {
+            return new MissionDetailCsvOutputOptions();
+        }
+
+        public static MissionDetailCsvOutputOptions FromSettings(ExperimentSettings settings)
+        {
+            MissionDetailCsvOutputOptions options = new MissionDetailCsvOutputOptions();
+            if (settings == null)
+                return options;
+
+            options.WriteMissionDetails = settings.WriteMissionDetailsCsv;
+            options.WriteTaskRecords = settings.WriteTaskRecordsCsv;
+            options.WriteRoutingLoad = settings.WriteRoutingLoadCsv;
+            options.WriteBprDebug = settings.WriteBprDebugCsv;
+            options.WriteYuBprDebug = settings.WriteYuBprDebugCsv;
+            return options;
+        }
+
+        public string DescribeSelectedFiles()
+        {
+            List<string> names = new List<string>();
+            if (WriteMissionDetails) names.Add("mission-details.csv");
+            if (WriteTaskRecords) names.Add("task-records.csv");
+            if (WriteRoutingLoad) names.Add("routing-load.csv");
+            if (WriteBprDebug) names.Add("bpr-debug.csv");
+            if (WriteYuBprDebug) names.Add("yu-bpr-debug.csv");
+            return names.Count == 0 ? "none" : String.Join(", ", names.ToArray());
+        }
+    }
+
     public class ExperimentSettings
     {
         public string ProjectRoot { get; set; }
@@ -55,6 +109,11 @@ namespace WindowsFormsApplication1
         public string OutputDirectory { get; set; }
         public string LastOutputWorkbookPath { get; set; }
         public bool WriteTaskDetailCsv { get; set; }
+        public bool WriteMissionDetailsCsv { get; set; }
+        public bool WriteTaskRecordsCsv { get; set; }
+        public bool WriteRoutingLoadCsv { get; set; }
+        public bool WriteBprDebugCsv { get; set; }
+        public bool WriteYuBprDebugCsv { get; set; }
         public bool UseFastSimulationScheduling { get; set; }
         public int MaxParallelJobs { get; set; }
         public bool SweepEnabled { get; set; }
@@ -109,6 +168,11 @@ namespace WindowsFormsApplication1
             OutputDirectory = Path.Combine(ProjectRoot, "outputs");
             LastOutputWorkbookPath = "";
             WriteTaskDetailCsv = true;
+            WriteMissionDetailsCsv = true;
+            WriteTaskRecordsCsv = true;
+            WriteRoutingLoadCsv = true;
+            WriteBprDebugCsv = true;
+            WriteYuBprDebugCsv = true;
             UseFastSimulationScheduling = true;
             MaxParallelJobs = 0;
             SweepEnabled = false;
@@ -307,6 +371,15 @@ namespace WindowsFormsApplication1
             YuIntervalUncertaintySeconds = Math.Max(0.0, YuIntervalUncertaintySeconds);
             PrateChange = Clamp(PrateChange, 0.0, 1.0);
             RateChangeVariationPercent = Clamp(RateChangeVariationPercent, 0.0, 99.0);
+            if (!WriteTaskDetailCsv)
+            {
+                WriteMissionDetailsCsv = false;
+                WriteTaskRecordsCsv = false;
+                WriteRoutingLoadCsv = false;
+                WriteBprDebugCsv = false;
+                WriteYuBprDebugCsv = false;
+            }
+            WriteTaskDetailCsv = HasAnyTaskDetailCsvOutput();
             MaxParallelJobs = Math.Max(0, MaxParallelJobs);
             if (String.IsNullOrWhiteSpace(SweepParameterKey) || ExperimentSweepParameterCatalog.Find(SweepParameterKey) == null)
                 SweepParameterKey = "SensorCount";
@@ -322,6 +395,17 @@ namespace WindowsFormsApplication1
             else
                 SelectedAlgorithmsCsv = String.Join(",", selectedAlgorithms.ToArray());
             ClearStaleLastOutputWorkbookPath();
+        }
+
+        public bool HasAnyTaskDetailCsvOutput()
+        {
+            return WriteMissionDetailsCsv || WriteTaskRecordsCsv || WriteRoutingLoadCsv ||
+                WriteBprDebugCsv || WriteYuBprDebugCsv;
+        }
+
+        public MissionDetailCsvOutputOptions CreateMissionDetailCsvOutputOptions()
+        {
+            return MissionDetailCsvOutputOptions.FromSettings(this);
         }
 
         public double ComputeAutoTreqSeconds()
@@ -436,17 +520,66 @@ namespace WindowsFormsApplication1
         public string CreateOutputWorkbookPath()
         {
             Normalize();
+            string executionDirectory = CreateExecutionOutputDirectory();
+            return CreateOutputWorkbookPath(executionDirectory);
+        }
+
+        public string CreateOutputWorkbookPath(string executionDirectory)
+        {
+            string directory = String.IsNullOrWhiteSpace(executionDirectory) ? OutputDirectory : executionDirectory;
+            Directory.CreateDirectory(directory);
+            return Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
+                "comparison-seed{0}-runs{1}.xlsx", BaseSeed, RunCount));
+        }
+
+        public string CreateExecutionOutputDirectory()
+        {
+            Normalize();
             Directory.CreateDirectory(OutputDirectory);
-            string timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
+            string timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+            string name;
             if (SweepEnabled)
             {
                 string safeSweepKey = MissionDetailCsvWriter.SanitizeFileNameForPath(SweepParameterKey);
-                int sweepValueCount = SweepIterationCount + 1;
-                return Path.Combine(OutputDirectory, String.Format(CultureInfo.InvariantCulture,
-                    "{0}-wsn-sweep-{1}-values{2}-seed{3}-runs{4}.xlsx", timestamp, safeSweepKey, sweepValueCount, BaseSeed, RunCount));
+                int sweepValueCount = Math.Max(1, SweepIterationCount + 1);
+                string startValue = FormatPathNumber(GetSweepStartValue());
+                string stepValue = FormatPathNumber(SweepStepValue);
+                name = String.Format(CultureInfo.InvariantCulture,
+                    "{0}-sweep{1}-{2}-start{3}-step{4}-seed{5}-runs{6}",
+                    timestamp, sweepValueCount, safeSweepKey, startValue, stepValue, BaseSeed, RunCount);
             }
-            return Path.Combine(OutputDirectory, String.Format(CultureInfo.InvariantCulture,
-                "{0}-wsn-comparison-seed{1}-runs{2}.xlsx", timestamp, BaseSeed, RunCount));
+            else
+            {
+                name = String.Format(CultureInfo.InvariantCulture,
+                    "{0}-comparison-seed{1}-runs{2}", timestamp, BaseSeed, RunCount);
+            }
+            return CreateUniqueDirectory(OutputDirectory, name);
+        }
+
+        private double GetSweepStartValue()
+        {
+            ExperimentSweepParameterDefinition definition = ExperimentSweepParameterCatalog.Find(SweepParameterKey);
+            return definition == null ? 0.0 : definition.GetValue(this);
+        }
+
+        private static string FormatPathNumber(double value)
+        {
+            return value.ToString("0.########", CultureInfo.InvariantCulture);
+        }
+
+        private static string CreateUniqueDirectory(string parentDirectory, string baseName)
+        {
+            string safeBaseName = MissionDetailCsvWriter.SanitizeFileNameForPath(baseName);
+            for (int i = 0; i < 1000; i++)
+            {
+                string suffix = i == 0 ? "" : "-" + i.ToString("D3", CultureInfo.InvariantCulture);
+                string candidate = Path.Combine(parentDirectory, safeBaseName + suffix);
+                if (Directory.Exists(candidate))
+                    continue;
+                Directory.CreateDirectory(candidate);
+                return candidate;
+            }
+            throw new IOException("Unable to create a unique output directory under " + parentDirectory);
         }
 
         public static double Clamp(double value, double min, double max)
@@ -694,6 +827,7 @@ namespace WindowsFormsApplication1
             int maxParallelJobs,
             int algorithmCount,
             string taskDetailsDirectory,
+            MissionDetailCsvOutputOptions csvOutputOptions,
             Action<BlockingCollection<ExperimentSimulationQueueWorkItem>> produceItems,
             Action<int, int, string> reportProgress)
         {
@@ -716,7 +850,7 @@ namespace WindowsFormsApplication1
                         try
                         {
                             ExperimentSimulation simulation = new ExperimentSimulation(
-                                work.Settings, work.Artifact, work.Algorithm, taskDetailsDirectory);
+                                work.Settings, work.Artifact, work.Algorithm, taskDetailsDirectory, csvOutputOptions);
                             ExperimentRunResult run = simulation.Run();
                             work.AlgorithmResults[work.AlgorithmIndex] = run;
 
@@ -848,10 +982,11 @@ namespace WindowsFormsApplication1
 
             ExperimentBatchResult result = new ExperimentBatchResult();
             result.Settings = settings;
-            result.TaskDetailsDirectory = settings.WriteTaskDetailCsv
-                ? MissionDetailCsvWriter.PrepareTaskDetailsDirectory(settings.OutputDirectory)
-                : "";
-            string taskDetailsDirectory = settings.WriteTaskDetailCsv ? result.TaskDetailsDirectory : null;
+            string executionDirectory = settings.CreateExecutionOutputDirectory();
+            result.OutputDirectory = executionDirectory;
+            MissionDetailCsvOutputOptions csvOutputOptions = settings.CreateMissionDetailCsvOutputOptions();
+            result.TaskDetailsDirectory = MissionDetailCsvWriter.PrepareTaskDetailsDirectory(executionDirectory);
+            string taskDetailsDirectory = csvOutputOptions.HasAnyOutput() ? result.TaskDetailsDirectory : null;
 
             int totalWork = settings.RunCount * algorithms.Count;
             int completedWork = 0;
@@ -892,6 +1027,7 @@ namespace WindowsFormsApplication1
                 ParallelOptions producerOptions = new ParallelOptions();
                 producerOptions.MaxDegreeOfParallelism = producerCount;
                 ExperimentSimulationQueueRunner.Run(totalWork, maxParallelJobs, algorithms.Count, taskDetailsDirectory,
+                    csvOutputOptions,
                     delegate(BlockingCollection<ExperimentSimulationQueueWorkItem> queue)
                     {
                         Parallel.For(1, settings.RunCount + 1, producerOptions, delegate(int runIndex)
@@ -935,7 +1071,7 @@ namespace WindowsFormsApplication1
                 for (int algorithmIndex = 0; algorithmIndex < algorithms.Count; algorithmIndex++)
                 {
                     string algorithm = algorithms[algorithmIndex];
-                    ExperimentSimulation simulation = new ExperimentSimulation(settings, artifact, algorithm, taskDetailsDirectory);
+                    ExperimentSimulation simulation = new ExperimentSimulation(settings, artifact, algorithm, taskDetailsDirectory, csvOutputOptions);
                     ExperimentRunResult run = simulation.Run();
                     runBatch.AlgorithmResults[algorithmIndex] = run;
 
@@ -954,18 +1090,21 @@ namespace WindowsFormsApplication1
             Report("所有 run 已完成，正在由單一執行緒合併結果並寫出 Excel。");
             MergeRunResults(result, runResults);
 
-            string workbookPath = settings.CreateOutputWorkbookPath();
+            string workbookPath = settings.CreateOutputWorkbookPath(executionDirectory);
             ExperimentWorkbookWriter.Write(workbookPath, result);
             settings.LastOutputWorkbookPath = workbookPath;
             if (persistSettings)
                 settings.SaveLast();
             result.WorkbookPath = workbookPath;
-            if (!settings.WriteTaskDetailCsv)
+            MissionDetailCsvWriter.WriteSummaryCsv(result.TaskDetailsDirectory, result);
+            if (!csvOutputOptions.HasAnyOutput())
             {
                 Report("Excel written: " + workbookPath);
+                Report("Summary CSV written: " + Path.Combine(result.TaskDetailsDirectory, "summary.csv"));
                 Report("Task detail CSV output is disabled.");
                 return result;
             }
+            Report("Task detail CSV files: " + csvOutputOptions.DescribeSelectedFiles());
             Report("Excel 已輸出：" + workbookPath);
             Report("任務明細 CSV 已輸出：" + result.TaskDetailsDirectory);
             return result;
@@ -1064,10 +1203,11 @@ namespace WindowsFormsApplication1
             ExperimentBatchResult result = new ExperimentBatchResult();
             result.Settings = baseSettings.Copy();
             result.Settings.Normalize();
-            result.TaskDetailsDirectory = baseSettings.WriteTaskDetailCsv
-                ? MissionDetailCsvWriter.PrepareTaskDetailsDirectory(baseSettings.OutputDirectory)
-                : "";
-            string taskDetailsDirectory = baseSettings.WriteTaskDetailCsv ? result.TaskDetailsDirectory : null;
+            string executionDirectory = baseSettings.CreateExecutionOutputDirectory();
+            result.OutputDirectory = executionDirectory;
+            MissionDetailCsvOutputOptions csvOutputOptions = baseSettings.CreateMissionDetailCsvOutputOptions();
+            result.TaskDetailsDirectory = MissionDetailCsvWriter.PrepareTaskDetailsDirectory(executionDirectory);
+            string taskDetailsDirectory = csvOutputOptions.HasAnyOutput() ? result.TaskDetailsDirectory : null;
 
             int artifactWork = steps.Count * baseSettings.RunCount;
             int totalWork = artifactWork * algorithms.Count;
@@ -1097,6 +1237,7 @@ namespace WindowsFormsApplication1
                 ParallelOptions producerOptions = new ParallelOptions();
                 producerOptions.MaxDegreeOfParallelism = producerCount;
                 ExperimentSimulationQueueRunner.Run(totalWork, maxParallelJobs, algorithms.Count, taskDetailsDirectory,
+                    csvOutputOptions,
                     delegate(BlockingCollection<ExperimentSimulationQueueWorkItem> queue)
                     {
                         Parallel.For(0, artifactWork, producerOptions, delegate(int artifactIndex)
@@ -1153,7 +1294,7 @@ namespace WindowsFormsApplication1
                 for (int algorithmIndex = 0; algorithmIndex < algorithms.Count; algorithmIndex++)
                 {
                     string algorithm = algorithms[algorithmIndex];
-                    ExperimentSimulation simulation = new ExperimentSimulation(step.Settings, artifact, algorithm, taskDetailsDirectory);
+                    ExperimentSimulation simulation = new ExperimentSimulation(step.Settings, artifact, algorithm, taskDetailsDirectory, csvOutputOptions);
                     ExperimentRunResult run = simulation.Run();
                     runBatch.AlgorithmResults[algorithmIndex] = run;
 
@@ -1180,18 +1321,21 @@ namespace WindowsFormsApplication1
 
             MergeSweepRunResults(result, runResults);
 
-            string workbookPath = baseSettings.CreateOutputWorkbookPath();
+            string workbookPath = baseSettings.CreateOutputWorkbookPath(executionDirectory);
             ExperimentWorkbookWriter.Write(workbookPath, result);
             baseSettings.LastOutputWorkbookPath = workbookPath;
             if (persistSettings)
                 baseSettings.SaveLast();
             result.WorkbookPath = workbookPath;
-            if (!baseSettings.WriteTaskDetailCsv)
+            MissionDetailCsvWriter.WriteSummaryCsv(result.TaskDetailsDirectory, result);
+            if (!csvOutputOptions.HasAnyOutput())
             {
                 Report("Excel written: " + workbookPath);
+                Report("Summary CSV written: " + Path.Combine(result.TaskDetailsDirectory, "summary.csv"));
                 Report("Task detail CSV output is disabled.");
                 return result;
             }
+            Report("Task detail CSV files: " + csvOutputOptions.DescribeSelectedFiles());
             Report("參數迭代 Excel 已輸出：" + workbookPath);
             Report("任務明細 CSV 已輸出：" + result.TaskDetailsDirectory);
             return result;
@@ -1309,6 +1453,7 @@ namespace WindowsFormsApplication1
         public List<ExperimentRunSummary> RunSummaries { get; private set; }
         public List<ExperimentDeathRecord> DeathRecords { get; private set; }
         public string WorkbookPath { get; set; }
+        public string OutputDirectory { get; set; }
         public string TaskDetailsDirectory { get; set; }
         public int TotalTaskRecordCount { get; set; }
 
@@ -1318,6 +1463,7 @@ namespace WindowsFormsApplication1
             RunSummaries = new List<ExperimentRunSummary>();
             DeathRecords = new List<ExperimentDeathRecord>();
             WorkbookPath = "";
+            OutputDirectory = "";
             TaskDetailsDirectory = "";
         }
     }
@@ -1904,6 +2050,11 @@ namespace WindowsFormsApplication1
         }
 
         public ExperimentSimulation(ExperimentSettings experimentSettings, ExperimentArtifact sharedArtifact, string schedulerName, string taskDetailsDirectory)
+            : this(experimentSettings, sharedArtifact, schedulerName, taskDetailsDirectory, MissionDetailCsvOutputOptions.All())
+        {
+        }
+
+        public ExperimentSimulation(ExperimentSettings experimentSettings, ExperimentArtifact sharedArtifact, string schedulerName, string taskDetailsDirectory, MissionDetailCsvOutputOptions csvOutputOptions)
         {
             settings = experimentSettings;
             artifact = sharedArtifact;
@@ -1913,9 +2064,10 @@ namespace WindowsFormsApplication1
             activeRequests = new List<ChargingRequest>();
             deaths = new List<ExperimentDeathRecord>();
             servedNodeIds = new HashSet<int>();
-            csvWriter = String.IsNullOrWhiteSpace(taskDetailsDirectory)
+            MissionDetailCsvOutputOptions effectiveCsvOptions = csvOutputOptions ?? MissionDetailCsvOutputOptions.All();
+            csvWriter = String.IsNullOrWhiteSpace(taskDetailsDirectory) || !effectiveCsvOptions.HasAnyOutput()
                 ? null
-                : new MissionDetailCsvWriter(taskDetailsDirectory, artifact, algorithm);
+                : new MissionDetailCsvWriter(taskDetailsDirectory, artifact, algorithm, effectiveCsvOptions);
             nextEventIndex = 0;
             nextRateChangeIndex = 0;
             nextRequestId = 1;
@@ -6043,6 +6195,7 @@ namespace WindowsFormsApplication1
                 AssertSelfTest(Array.IndexOf(ExperimentSettings.AllAlgorithms(), "NJF_YU_BPR") >= 0,
                     "AllAlgorithms should include NJF_YU_BPR.");
 
+                RunCsvOutputSelectionSelfTest(tempDirectory);
                 RunStandaloneDispatchSelfTest(tempDirectory, simulations);
                 RunActiveRequestProactiveSelfTest(tempDirectory, simulations);
                 RunProactiveCandidateFilterSelfTest(tempDirectory, simulations);
@@ -6292,7 +6445,7 @@ namespace WindowsFormsApplication1
                     "Mission should contain exactly one task record for the reserved node.");
 
                 string taskPath = Path.Combine(tempDirectory,
-                    "run001-NJF_ROUTE_ZHENG_BPR_LIMITED-task-records.csv");
+                    "run001-seed777-NJF_ROUTE_ZHENG_BPR_LIMITED-task-records.csv");
                 AssertSelfTest(File.Exists(taskPath), "Task-record CSV was not written by the self-test.");
                 string[] taskLines = File.ReadAllLines(taskPath, Encoding.UTF8);
                 AssertSelfTest(taskLines.Length == 2,
@@ -6301,16 +6454,13 @@ namespace WindowsFormsApplication1
                 string[] taskHeaders = taskLines[0].Split(',');
                 Dictionary<string, int> taskColumns = BuildCsvHeaderMap(taskHeaders);
                 string[] fields = taskLines[1].Split(',');
-                int missionColumn = taskColumns["MissionId"];
-                int nodeColumn = taskColumns["NodeId"];
-                int sourceColumn = taskColumns["TaskSource"];
-                int reasonColumn = taskColumns["ProactiveReason"];
-                AssertSelfTest(fields.Length > reasonColumn && fields[missionColumn] == "1" && fields[nodeColumn] == "1",
+                int missionColumn = taskColumns["任務編號"];
+                int nodeColumn = taskColumns["節點編號"];
+                int proactiveColumn = taskColumns["是否主動充電"];
+                AssertSelfTest(fields.Length > proactiveColumn && fields[missionColumn] == "1" && fields[nodeColumn] == "1",
                     "Task-record CSV row does not describe mission 1 / sensor 1.");
-                AssertSelfTest(String.Equals(fields[sourceColumn], "proactive", StringComparison.OrdinalIgnoreCase),
+                AssertSelfTest(String.Equals(fields[proactiveColumn], "True", StringComparison.OrdinalIgnoreCase),
                     "Reserved node should remain a proactive task, not be relabeled as natural.");
-                AssertSelfTest(fields.Length > reasonColumn && fields[reasonColumn] == ZhengBprWindowRemovalReason,
-                    "ZHENG route proactive task should use the ZHENG_BPR_WINDOW_REMOVAL reason.");
             }
             finally
             {
@@ -6328,6 +6478,280 @@ namespace WindowsFormsApplication1
                 {
                 }
             }
+        }
+
+        private static void RunCsvOutputSelectionSelfTest(string tempDirectory)
+        {
+            ExperimentSettings legacyDisabled = CreateBprSelfTestSettings(tempDirectory);
+            legacyDisabled.WriteTaskDetailCsv = false;
+            legacyDisabled.Normalize();
+            AssertSelfTest(!legacyDisabled.HasAnyTaskDetailCsvOutput(),
+                "Legacy disabled CSV setting should disable every detail CSV output.");
+
+            ExperimentSettings taskOnly = CreateBprSelfTestSettings(tempDirectory);
+            taskOnly.WriteMissionDetailsCsv = false;
+            taskOnly.WriteTaskRecordsCsv = true;
+            taskOnly.WriteRoutingLoadCsv = false;
+            taskOnly.WriteBprDebugCsv = false;
+            taskOnly.WriteYuBprDebugCsv = false;
+            taskOnly.WriteTaskDetailCsv = true;
+            taskOnly.Normalize();
+            AssertSelfTest(taskOnly.HasAnyTaskDetailCsvOutput(),
+                "A single selected detail CSV should keep CSV output enabled.");
+            AssertSelfTest(!taskOnly.WriteMissionDetailsCsv && taskOnly.WriteTaskRecordsCsv &&
+                !taskOnly.WriteRoutingLoadCsv && !taskOnly.WriteBprDebugCsv && !taskOnly.WriteYuBprDebugCsv,
+                "Normalize should preserve individual CSV selections when at least one output is enabled.");
+
+            string selectionDirectory = Path.Combine(tempDirectory, "csv-selection");
+            MissionDetailCsvOutputOptions options = new MissionDetailCsvOutputOptions();
+            options.WriteMissionDetails = false;
+            options.WriteTaskRecords = true;
+            options.WriteRoutingLoad = false;
+            options.WriteBprDebug = false;
+            options.WriteYuBprDebug = false;
+
+            ExperimentArtifact artifact = CreateBprSelfTestArtifact(new double[] { 80.0 });
+            using (MissionDetailCsvWriter writer = new MissionDetailCsvWriter(
+                selectionDirectory, artifact, "EDF", options))
+            {
+                MissionRecord mission = new MissionRecord();
+                mission.RunIndex = artifact.RunIndex;
+                mission.Seed = artifact.Seed;
+                mission.Algorithm = "EDF";
+                mission.MissionId = 1;
+                mission.RouteNodeIds = new List<int>();
+                writer.WriteMission(mission);
+
+                ExperimentTaskRecord task = new ExperimentTaskRecord();
+                task.RunIndex = artifact.RunIndex;
+                task.Seed = artifact.Seed;
+                task.Algorithm = "EDF";
+                task.ArtifactHash = artifact.ArtifactHash;
+                task.MissionId = 1;
+                task.NodeId = 1;
+                task.TaskSource = "request";
+                task.FailureReason = "";
+                writer.WriteTask(task);
+
+                writer.WriteRoutingLoad(artifact, null, null, null, null, null, null, null);
+                writer.WriteBprDebug(artifact.RunIndex, artifact.Seed, "EDF", 1, 0.0, 0,
+                    0.0, 0.0, 0, 0, -1, Double.NaN, Double.NaN, Double.NaN,
+                    Double.NaN, Double.NaN, "test", 0, 0, 1, false);
+                writer.WriteYuBprDebug(artifact.RunIndex, artifact.Seed, "EDF", 1, 0.0, 0,
+                    0.0, 0.0, 0, 0, 0, -1, Double.NaN, Double.NaN, Double.NaN,
+                    Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN,
+                    Double.NaN, "test", 0, 0, 1, false);
+            }
+
+            string taskOnlyPath = Path.Combine(selectionDirectory, "run001-seed777-EDF-task-records.csv");
+            AssertSelfTest(!File.Exists(Path.Combine(selectionDirectory, "run001-seed777-EDF-mission-details.csv")),
+                "Mission detail CSV should not be written when disabled.");
+            AssertSelfTest(File.Exists(taskOnlyPath),
+                "Task record CSV should be written when selected.");
+            AssertCsvHeaderEquals(taskOnlyPath, ExpectedTaskRecordHeader(),
+                "Task-record CSV should use the requested Chinese columns.");
+            AssertCsvDataColumnCounts(taskOnlyPath, ExpectedTaskRecordHeader().Length);
+            AssertSelfTest(!File.Exists(Path.Combine(selectionDirectory, "run001-seed777-EDF-routing-load.csv")),
+                "Routing load CSV should not be written when disabled.");
+            AssertSelfTest(!File.Exists(Path.Combine(selectionDirectory, "run001-seed777-EDF-bpr-debug.csv")),
+                "BP&R debug CSV should not be written when disabled.");
+            AssertSelfTest(!File.Exists(Path.Combine(selectionDirectory, "run001-seed777-EDF-yu-bpr-debug.csv")),
+                "YU BP&R debug CSV should not be written when disabled.");
+
+            RunCsvHeaderAndBprRuleSelfTest(tempDirectory);
+        }
+
+        private static void RunCsvHeaderAndBprRuleSelfTest(string tempDirectory)
+        {
+            MissionDetailCsvOutputOptions allOptions = MissionDetailCsvOutputOptions.All();
+            ExperimentArtifact artifact = CreateBprSelfTestArtifact(new double[] { 80.0, 70.0 });
+
+            string edfDirectory = Path.Combine(tempDirectory, "csv-edf");
+            using (MissionDetailCsvWriter writer = new MissionDetailCsvWriter(edfDirectory, artifact, "EDF", allOptions))
+            {
+                WriteSampleCsvRows(writer, artifact);
+                WriteSampleBprRows(writer, artifact, "EDF");
+            }
+            AssertCsvHeaderEquals(Path.Combine(edfDirectory, "run001-seed777-EDF-mission-details.csv"),
+                ExpectedMissionDetailHeader(), "Mission detail CSV should use the requested Chinese columns.");
+            AssertCsvDataColumnCounts(Path.Combine(edfDirectory, "run001-seed777-EDF-mission-details.csv"),
+                ExpectedMissionDetailHeader().Length);
+            AssertCsvHeaderEquals(Path.Combine(edfDirectory, "run001-seed777-EDF-task-records.csv"),
+                ExpectedTaskRecordHeader(), "Task record CSV should use the requested Chinese columns.");
+            AssertCsvDataColumnCounts(Path.Combine(edfDirectory, "run001-seed777-EDF-task-records.csv"),
+                ExpectedTaskRecordHeader().Length);
+            AssertCsvHeaderEquals(Path.Combine(edfDirectory, "run001-seed777-EDF-routing-load.csv"),
+                ExpectedRoutingLoadHeader(), "Routing load CSV should use the requested Chinese columns.");
+            AssertCsvDataColumnCounts(Path.Combine(edfDirectory, "run001-seed777-EDF-routing-load.csv"),
+                ExpectedRoutingLoadHeader().Length);
+            AssertSelfTest(!File.Exists(Path.Combine(edfDirectory, "run001-seed777-EDF-bpr-debug.csv")),
+                "Non-BP&R algorithms must not write bpr-debug CSV.");
+            AssertSelfTest(!File.Exists(Path.Combine(edfDirectory, "run001-seed777-EDF-yu-bpr-debug.csv")),
+                "Non-BP&R algorithms must not write yu-bpr-debug CSV.");
+
+            string zhengDirectory = Path.Combine(tempDirectory, "csv-zheng");
+            using (MissionDetailCsvWriter writer = new MissionDetailCsvWriter(
+                zhengDirectory, artifact, "NJF_ROUTE_ZHENG_BPR_LIMITED", allOptions))
+            {
+                WriteSampleBprRows(writer, artifact, "NJF_ROUTE_ZHENG_BPR_LIMITED");
+            }
+            string zhengBprPath = Path.Combine(zhengDirectory,
+                "run001-seed777-NJF_ROUTE_ZHENG_BPR_LIMITED-bpr-debug.csv");
+            AssertCsvHeaderEquals(zhengBprPath, ExpectedBprDebugHeader(),
+                "ZHENG BP&R debug CSV should use the requested Chinese columns.");
+            AssertCsvDataColumnCounts(zhengBprPath, ExpectedBprDebugHeader().Length);
+            AssertSelfTest(!File.Exists(Path.Combine(zhengDirectory,
+                "run001-seed777-NJF_ROUTE_ZHENG_BPR_LIMITED-yu-bpr-debug.csv")),
+                "ZHENG BP&R algorithms must not write yu-bpr-debug CSV.");
+
+            string yuDirectory = Path.Combine(tempDirectory, "csv-yu");
+            using (MissionDetailCsvWriter writer = new MissionDetailCsvWriter(
+                yuDirectory, artifact, "NJF_ROUTE_YU_BPR_LIMITED", allOptions))
+            {
+                WriteSampleBprRows(writer, artifact, "NJF_ROUTE_YU_BPR_LIMITED");
+            }
+            string yuBprPath = Path.Combine(yuDirectory,
+                "run001-seed777-NJF_ROUTE_YU_BPR_LIMITED-yu-bpr-debug.csv");
+            AssertCsvHeaderEquals(yuBprPath, ExpectedYuBprDebugHeader(),
+                "YU BP&R debug CSV should use the requested Chinese columns.");
+            AssertCsvDataColumnCounts(yuBprPath, ExpectedYuBprDebugHeader().Length);
+            AssertSelfTest(!File.Exists(Path.Combine(yuDirectory,
+                "run001-seed777-NJF_ROUTE_YU_BPR_LIMITED-bpr-debug.csv")),
+                "YU BP&R algorithms must not write bpr-debug CSV.");
+
+            string zhengNoRowsDirectory = Path.Combine(tempDirectory, "csv-zheng-no-rows");
+            using (MissionDetailCsvWriter writer = new MissionDetailCsvWriter(
+                zhengNoRowsDirectory, artifact, "NJF_ROUTE_ZHENG_BPR_LIMITED", allOptions))
+            {
+                WriteSampleCsvRows(writer, artifact);
+            }
+            AssertSelfTest(!File.Exists(Path.Combine(zhengNoRowsDirectory,
+                "run001-seed777-NJF_ROUTE_ZHENG_BPR_LIMITED-bpr-debug.csv")),
+                "BP&R debug CSV should not be created with only a header and no data rows.");
+        }
+
+        private static void WriteSampleCsvRows(MissionDetailCsvWriter writer, ExperimentArtifact artifact)
+        {
+            MissionRecord mission = new MissionRecord();
+            mission.SweepParameterName = "";
+            mission.RunIndex = artifact.RunIndex;
+            mission.Seed = artifact.Seed;
+            mission.Algorithm = "EDF";
+            mission.MissionId = 1;
+            mission.DispatchTimeSeconds = 1.0;
+            mission.ReturnTimeSeconds = 2.0;
+            mission.NodeCount = 1;
+            mission.RequestCount = 1;
+            mission.RouteNodeIds = new List<int>();
+            mission.RouteNodeIds.Add(1);
+            writer.WriteMission(mission);
+
+            ExperimentTaskRecord task = new ExperimentTaskRecord();
+            task.RunIndex = artifact.RunIndex;
+            task.Seed = artifact.Seed;
+            task.Algorithm = "EDF";
+            task.ArtifactHash = artifact.ArtifactHash;
+            task.MissionId = 1;
+            task.TaskOrder = 1;
+            task.NodeId = 1;
+            task.IsProactive = true;
+            task.RequestTimeSeconds = 1.0;
+            task.DeadlineSeconds = 5.0;
+            task.DispatchTimeSeconds = 1.0;
+            task.ArrivalTimeSeconds = 2.0;
+            task.WaitSeconds = 1.0;
+            task.ChargeStartSeconds = 2.0;
+            task.ChargeEndSeconds = 3.0;
+            task.EnergyBeforeJ = 10.0;
+            task.ConsumeRateJPerSecond = 0.1;
+            task.EffectiveConsumeRateJPerSecond = 0.2;
+            task.RoutingLoadJPerSecond = 0.1;
+            task.RoutingTxLoadJPerSecond = 0.04;
+            task.RoutingRxLoadJPerSecond = 0.06;
+            task.RoutingSubtreeSize = 2;
+            task.ExpectedRoutingForwardPacketsPerSecond = 0.5;
+            task.InternalRateNjPerTick = 1000.0;
+            task.DistanceFromPreviousMeters = 10.0;
+            task.Success = true;
+            task.FailureReason = "";
+            task.WcvEnergyAfterJ = 999.0;
+            writer.WriteTask(task);
+
+            writer.WriteRoutingLoad(artifact, null, null, null, null, null, null, null);
+        }
+
+        private static void WriteSampleBprRows(MissionDetailCsvWriter writer, ExperimentArtifact artifact, string algorithm)
+        {
+            writer.WriteBprDebug(artifact.RunIndex, artifact.Seed, algorithm, 1, 1.0, 1,
+                1.0, 2.0, 3, 1, 1, 1.0, 5.0, 4.0, 0.2, 10.0,
+                "test", 1, 2, 3, false);
+            writer.WriteYuBprDebug(artifact.RunIndex, artifact.Seed, algorithm, 1, 1.0, 1,
+                1.0, 2.0, 3, 4, 1, 1, 1.0, 1.5, 2.0, 4.0, 3.5,
+                2.5, 0.5, 0.2, 10.0, "test", 1, 2, 3, true);
+        }
+
+        private static void AssertCsvHeaderEquals(string path, string[] expected, string message)
+        {
+            AssertSelfTest(File.Exists(path), "Expected CSV was not written: " + path);
+            string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+            AssertSelfTest(lines.Length > 0, "CSV should contain a header: " + path);
+            string[] actual = lines[0].Split(',');
+            AssertSelfTest(actual.Length == expected.Length, message + " Header length mismatch.");
+            for (int i = 0; i < expected.Length; i++)
+                AssertSelfTest(actual[i] == expected[i], message + " Header mismatch at column " + i.ToString(CultureInfo.InvariantCulture) + ".");
+        }
+
+        private static void AssertCsvDataColumnCounts(string path, int expectedCount)
+        {
+            string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+            AssertSelfTest(lines.Length > 1, "CSV should contain at least one data row: " + path);
+            for (int i = 1; i < lines.Length; i++)
+            {
+                string[] fields = lines[i].Split(',');
+                AssertSelfTest(fields.Length == expectedCount,
+                    "CSV row column count does not match the header in " + path + " line " + (i + 1).ToString(CultureInfo.InvariantCulture) + ".");
+            }
+        }
+
+        private static string[] ExpectedMissionDetailHeader()
+        {
+            return new string[] { "掃描參數名稱", "任務編號", "出發時間秒", "返回時間秒", "節點數",
+                "被動請求數", "主動充電數", "成功充電數", "失敗數", "走的距離m", "封包送出數",
+                "封包收到數", "封包遺失數", "路由失敗封包遺失數", "平均等待時間秒", "路線節點序列", "去重任務數" };
+        }
+
+        private static string[] ExpectedTaskRecordHeader()
+        {
+            return new string[] { "任務編號", "任務順序", "節點編號", "是否主動充電", "請求時間秒",
+                "截止時間秒", "出發時間秒", "抵達時間秒", "等待時間秒", "開始充電時間秒",
+                "結束充電時間秒", "充電前能量J", "節點耗電率J每秒", "有效耗電率J每秒",
+                "路由總耗電率J每秒", "路由傳送耗電率J每秒", "路由接收耗電率J每秒", "路由子樹大小",
+                "預期轉送封包數每秒", "內部耗電率nJ每Tick", "與上一點距離m", "是否成功", "失敗原因", "WCV剩餘能量J" };
+        }
+
+        private static string[] ExpectedRoutingLoadHeader()
+        {
+            return new string[] { "節點編號", "父節點編號", "子樹大小", "預期傳送封包數每秒",
+                "預期接收封包數每秒", "預期轉送封包數每秒", "估計傳送耗電率J每秒",
+                "估計接收耗電率J每秒", "估計路由總耗電率J每秒" };
+        }
+
+        private static string[] ExpectedBprDebugHeader()
+        {
+            return new string[] { "任務編號", "目前時間秒", "迭代次數", "視窗開始時間秒", "視窗結束時間秒",
+                "瓶頸數量", "超出數量", "選中節點編號", "選中節點請求時間秒", "選中節點死亡時間秒",
+                "選中節點安全餘裕秒", "選中節點有效耗電率J每秒", "選中節點路線插入成本",
+                "加入前候選任務數", "加入後候選任務數", "單趟任務上限" };
+        }
+
+        private static string[] ExpectedYuBprDebugHeader()
+        {
+            return new string[] { "任務編號", "目前時間秒", "迭代次數", "視窗開始時間秒", "視窗結束時間秒",
+                "危險門檻", "危險數量", "需要移除數量", "選中節點編號", "選中區間開始時間秒",
+                "選中中心請求時間秒", "選中區間結束時間秒", "選中最早死亡時間秒",
+                "選中最晚安全服務時間秒", "選中安全餘裕秒", "選中不確定範圍秒",
+                "選中有效耗電率J每秒", "選中路線插入成本", "加入前候選任務數",
+                "加入後候選任務數", "單趟任務上限", "是否允許超出容量" };
         }
 
         private static ExperimentSettings CreateBprSelfTestSettings(string outputDirectory)
@@ -7319,49 +7743,81 @@ namespace WindowsFormsApplication1
 
     internal sealed class MissionDetailCsvWriter : IDisposable
     {
-        private readonly StreamWriter missionWriter;
-        private readonly StreamWriter taskWriter;
-        private readonly StreamWriter routingLoadWriter;
-        private readonly StreamWriter bprDebugWriter;
-        private readonly StreamWriter yuBprDebugWriter;
+        private StreamWriter missionWriter;
+        private StreamWriter taskWriter;
+        private StreamWriter routingLoadWriter;
+        private StreamWriter bprDebugWriter;
+        private StreamWriter yuBprDebugWriter;
+        private string bprDebugPath;
+        private string yuBprDebugPath;
+        private Encoding csvEncoding;
+        private string algorithmKey;
         private bool disposed;
 
         public MissionDetailCsvWriter(string directory, ExperimentArtifact artifact, string algorithm)
-            : this(directory, artifact == null ? 0 : artifact.RunIndex, algorithm, BuildSweepFilePrefix(artifact))
+            : this(directory, artifact, algorithm, MissionDetailCsvOutputOptions.All())
+        {
+        }
+
+        public MissionDetailCsvWriter(string directory, ExperimentArtifact artifact, string algorithm, MissionDetailCsvOutputOptions outputOptions)
+            : this(directory, artifact == null ? 0 : artifact.RunIndex, artifact == null ? 0 : artifact.Seed,
+                algorithm, BuildSweepFilePrefix(artifact), outputOptions)
         {
         }
 
         public MissionDetailCsvWriter(string directory, int runIndex, string algorithm)
-            : this(directory, runIndex, algorithm, "")
+            : this(directory, runIndex, algorithm, MissionDetailCsvOutputOptions.All())
         {
         }
 
-        private MissionDetailCsvWriter(string directory, int runIndex, string algorithm, string filePrefix)
+        public MissionDetailCsvWriter(string directory, int runIndex, string algorithm, MissionDetailCsvOutputOptions outputOptions)
+            : this(directory, runIndex, 0, algorithm, "", outputOptions)
         {
-            Directory.CreateDirectory(directory);
-            string safeAlgorithm = SanitizeFileName(algorithm);
-            string missionPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
-                "{0}run{1:D3}-{2}-mission-details.csv", filePrefix, runIndex, safeAlgorithm));
-            string taskPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
-                "{0}run{1:D3}-{2}-task-records.csv", filePrefix, runIndex, safeAlgorithm));
-            string routingLoadPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
-                "{0}run{1:D3}-{2}-routing-load.csv", filePrefix, runIndex, safeAlgorithm));
-            string bprDebugPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
-                "{0}run{1:D3}-{2}-bpr-debug.csv", filePrefix, runIndex, safeAlgorithm));
-            string yuBprDebugPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
-                "{0}run{1:D3}-{2}-yu-bpr-debug.csv", filePrefix, runIndex, safeAlgorithm));
+        }
 
-            Encoding utf8 = new UTF8Encoding(true);
-            missionWriter = new StreamWriter(missionPath, false, utf8);
-            taskWriter = new StreamWriter(taskPath, false, utf8);
-            routingLoadWriter = new StreamWriter(routingLoadPath, false, utf8);
-            bprDebugWriter = new StreamWriter(bprDebugPath, false, utf8);
-            yuBprDebugWriter = new StreamWriter(yuBprDebugPath, false, utf8);
-            WriteMissionHeader();
-            WriteTaskHeader();
-            WriteRoutingLoadHeader();
-            WriteBprDebugHeader();
-            WriteYuBprDebugHeader();
+        private MissionDetailCsvWriter(string directory, int runIndex, int seed, string algorithm, string filePrefix, MissionDetailCsvOutputOptions outputOptions)
+        {
+            MissionDetailCsvOutputOptions effectiveOptions = outputOptions ?? MissionDetailCsvOutputOptions.All();
+            if (!effectiveOptions.HasAnyOutput())
+                return;
+
+            Directory.CreateDirectory(directory);
+            algorithmKey = ExperimentSettings.CanonicalAlgorithmKey(algorithm);
+            string safeAlgorithm = SanitizeFileName(algorithm);
+            string runSeedPrefix = seed > 0
+                ? String.Format(CultureInfo.InvariantCulture, "run{0:D3}-seed{1}-", runIndex, seed)
+                : String.Format(CultureInfo.InvariantCulture, "run{0:D3}-", runIndex);
+            string missionPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
+                "{0}{1}{2}-mission-details.csv", filePrefix, runSeedPrefix, safeAlgorithm));
+            string taskPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
+                "{0}{1}{2}-task-records.csv", filePrefix, runSeedPrefix, safeAlgorithm));
+            string routingLoadPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
+                "{0}{1}{2}-routing-load.csv", filePrefix, runSeedPrefix, safeAlgorithm));
+            bprDebugPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
+                "{0}{1}{2}-bpr-debug.csv", filePrefix, runSeedPrefix, safeAlgorithm));
+            yuBprDebugPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
+                "{0}{1}{2}-yu-bpr-debug.csv", filePrefix, runSeedPrefix, safeAlgorithm));
+
+            csvEncoding = new UTF8Encoding(true);
+            if (effectiveOptions.WriteMissionDetails)
+            {
+                missionWriter = new StreamWriter(missionPath, false, csvEncoding);
+                WriteMissionHeader();
+            }
+            if (effectiveOptions.WriteTaskRecords)
+            {
+                taskWriter = new StreamWriter(taskPath, false, csvEncoding);
+                WriteTaskHeader();
+            }
+            if (effectiveOptions.WriteRoutingLoad)
+            {
+                routingLoadWriter = new StreamWriter(routingLoadPath, false, csvEncoding);
+                WriteRoutingLoadHeader();
+            }
+            if (!effectiveOptions.WriteBprDebug || !IsZhengBprAlgorithm(algorithmKey))
+                bprDebugPath = "";
+            if (!effectiveOptions.WriteYuBprDebug || !IsYuBprAlgorithm(algorithmKey))
+                yuBprDebugPath = "";
         }
 
         public static string PrepareTaskDetailsDirectory(string outputDirectory)
@@ -7374,19 +7830,52 @@ namespace WindowsFormsApplication1
             return directory;
         }
 
+        public static void WriteSummaryCsv(string directory, ExperimentBatchResult result)
+        {
+            if (String.IsNullOrWhiteSpace(directory) || result == null)
+                return;
+
+            Directory.CreateDirectory(directory);
+            string path = Path.Combine(directory, "summary.csv");
+            using (StreamWriter writer = new StreamWriter(path, false, new UTF8Encoding(true)))
+            {
+                writer.WriteLine(CsvRow("掃描參數名稱", "掃描值", "執行次序", "亂數種子", "演算法",
+                    "網路壽命秒", "成功充電數", "失敗或逾期數", "被動請求數", "主動充電數",
+                    "任務數", "走的距離m", "平均等待時間秒", "封包送出數", "封包收到數",
+                    "封包遺失數", "路由失敗封包遺失數", "資料雜湊"));
+                for (int i = 0; i < result.RunSummaries.Count; i++)
+                {
+                    ExperimentRunSummary s = result.RunSummaries[i];
+                    writer.WriteLine(CsvRow(
+                        s.SweepParameterName,
+                        s.SweepEnabled ? (object)s.SweepValue : "",
+                        s.RunIndex,
+                        s.Seed,
+                        s.Algorithm,
+                        s.NetworkLifetimeSeconds,
+                        s.SuccessfulCharges,
+                        s.FailedOrLateTasks,
+                        s.NaturalRequestCount,
+                        s.ProactiveTaskCount,
+                        s.MissionCount,
+                        s.MovementDistanceMeters,
+                        s.AverageWaitSeconds,
+                        s.PacketSent,
+                        s.PacketReceived,
+                        s.PacketLost,
+                        s.RoutingFailedPacketLost,
+                        s.ArtifactHash));
+                }
+            }
+        }
+
         public void WriteMission(MissionRecord record)
         {
-            if (disposed || record == null)
+            if (disposed || missionWriter == null || record == null)
                 return;
 
             missionWriter.WriteLine(CsvRow(
-                record.SweepEnabled ? record.SweepIndex : 0,
-                record.SweepParameterKey,
                 record.SweepParameterName,
-                record.SweepEnabled ? (object)record.SweepValue : "",
-                record.RunIndex,
-                record.Seed,
-                record.Algorithm,
                 record.MissionId,
                 record.DispatchTimeSeconds,
                 record.ReturnTimeSeconds,
@@ -7396,8 +7885,6 @@ namespace WindowsFormsApplication1
                 record.SuccessfulCharges,
                 record.FailedCount,
                 record.DistanceMeters,
-                record.MoveEnergyJ,
-                record.DeliveredEnergyJ,
                 record.PacketSent,
                 record.PacketReceived,
                 record.PacketLost,
@@ -7409,24 +7896,14 @@ namespace WindowsFormsApplication1
 
         public void WriteTask(ExperimentTaskRecord record)
         {
-            if (disposed || record == null)
+            if (disposed || taskWriter == null || record == null)
                 return;
 
             taskWriter.WriteLine(CsvRow(
-                record.SweepEnabled ? record.SweepIndex : 0,
-                record.SweepParameterKey,
-                record.SweepParameterName,
-                record.SweepEnabled ? (object)record.SweepValue : "",
-                record.RunIndex,
-                record.Seed,
-                record.Algorithm,
-                record.ArtifactHash,
                 record.MissionId,
                 record.TaskOrder,
                 record.NodeId,
-                record.TaskSource,
                 record.IsProactive,
-                record.ProactiveReason,
                 record.RequestTimeSeconds,
                 record.DeadlineSeconds,
                 record.DispatchTimeSeconds,
@@ -7435,11 +7912,7 @@ namespace WindowsFormsApplication1
                 record.ChargeStartSeconds,
                 record.ChargeEndSeconds,
                 record.EnergyBeforeJ,
-                record.EnergyAfterJ,
-                record.InternalEnergyBeforeNj,
-                record.InternalEnergyAfterNj,
                 record.ConsumeRateJPerSecond,
-                record.BaseConsumeRateJPerSecond,
                 record.EffectiveConsumeRateJPerSecond,
                 record.RoutingLoadJPerSecond,
                 record.RoutingTxLoadJPerSecond,
@@ -7447,7 +7920,6 @@ namespace WindowsFormsApplication1
                 record.RoutingSubtreeSize,
                 record.ExpectedRoutingForwardPacketsPerSecond,
                 record.InternalRateNjPerTick,
-                record.DeliveredEnergyJ,
                 record.DistanceFromPreviousMeters,
                 record.Success,
                 record.FailureReason,
@@ -7464,14 +7936,12 @@ namespace WindowsFormsApplication1
             double[] estimatedRxLoadJPerSecondByNodeId,
             double[] estimatedRoutingLoadJPerSecondByNodeId)
         {
-            if (disposed || artifact == null)
+            if (disposed || routingLoadWriter == null || artifact == null)
                 return;
 
             for (int id = 1; id < artifact.Sensors.Count; id++)
             {
                 routingLoadWriter.WriteLine(CsvRow(
-                    artifact.RunIndex,
-                    artifact.Seed,
                     id,
                     artifact.Sensors[id].ParentId,
                     SafeArrayValue(subtreeSizeByNodeId, id),
@@ -7508,13 +7978,12 @@ namespace WindowsFormsApplication1
             int maxTask,
             bool allowCapacityOverflow)
         {
-            if (disposed)
+            string effectiveAlgorithm = String.IsNullOrWhiteSpace(algorithm) ? algorithmKey : ExperimentSettings.CanonicalAlgorithmKey(algorithm);
+            if (disposed || !IsZhengBprAlgorithm(effectiveAlgorithm) || String.IsNullOrWhiteSpace(bprDebugPath))
                 return;
+            EnsureBprDebugWriter();
 
             bprDebugWriter.WriteLine(CsvRow(
-                runIndex,
-                seed,
-                algorithm,
                 missionId,
                 currentTimeSeconds,
                 iteration,
@@ -7528,11 +7997,9 @@ namespace WindowsFormsApplication1
                 selectedSlackSeconds,
                 selectedEffectiveRateJPerSecond,
                 selectedRouteInsertionCost,
-                selectionReason,
                 cplistCountBefore,
                 cplistCountAfter,
-                maxTask,
-                allowCapacityOverflow));
+                maxTask));
         }
 
         public void WriteYuBprDebug(
@@ -7563,13 +8030,12 @@ namespace WindowsFormsApplication1
             int maxTask,
             bool allowCapacityOverflow)
         {
-            if (disposed)
+            string effectiveAlgorithm = String.IsNullOrWhiteSpace(algorithm) ? algorithmKey : ExperimentSettings.CanonicalAlgorithmKey(algorithm);
+            if (disposed || !IsYuBprAlgorithm(effectiveAlgorithm) || String.IsNullOrWhiteSpace(yuBprDebugPath))
                 return;
+            EnsureYuBprDebugWriter();
 
             yuBprDebugWriter.WriteLine(CsvRow(
-                runIndex,
-                seed,
-                algorithm,
                 missionId,
                 currentTimeSeconds,
                 iteration,
@@ -7588,11 +8054,42 @@ namespace WindowsFormsApplication1
                 selectedUncertaintySeconds,
                 selectedEffectiveRateJPerSecond,
                 selectedRouteInsertionCost,
-                selectionReason,
                 cplistCountBefore,
                 cplistCountAfter,
                 maxTask,
                 allowCapacityOverflow));
+        }
+
+        private void EnsureBprDebugWriter()
+        {
+            if (bprDebugWriter != null)
+                return;
+            bprDebugWriter = new StreamWriter(bprDebugPath, false, csvEncoding ?? new UTF8Encoding(true));
+            WriteBprDebugHeader();
+        }
+
+        private void EnsureYuBprDebugWriter()
+        {
+            if (yuBprDebugWriter != null)
+                return;
+            yuBprDebugWriter = new StreamWriter(yuBprDebugPath, false, csvEncoding ?? new UTF8Encoding(true));
+            WriteYuBprDebugHeader();
+        }
+
+        internal static bool IsZhengBprAlgorithm(string algorithm)
+        {
+            string key = ExperimentSettings.CanonicalAlgorithmKey(algorithm);
+            return key == "NJF_ZHENG_BPR" ||
+                key == "NJF_ROUTE_ZHENG_BPR_LIMITED" ||
+                key == "NJF_ROUTE_ZHENG_BPR_EXTENDED";
+        }
+
+        internal static bool IsYuBprAlgorithm(string algorithm)
+        {
+            string key = ExperimentSettings.CanonicalAlgorithmKey(algorithm);
+            return key == "NJF_YU_BPR" ||
+                key == "NJF_ROUTE_YU_BPR_LIMITED" ||
+                key == "NJF_ROUTE_YU_BPR_EXTENDED";
         }
 
         public void Dispose()
@@ -7600,61 +8097,57 @@ namespace WindowsFormsApplication1
             if (disposed)
                 return;
             disposed = true;
-            missionWriter.Dispose();
-            taskWriter.Dispose();
-            routingLoadWriter.Dispose();
-            bprDebugWriter.Dispose();
-            yuBprDebugWriter.Dispose();
+            if (missionWriter != null)
+                missionWriter.Dispose();
+            if (taskWriter != null)
+                taskWriter.Dispose();
+            if (routingLoadWriter != null)
+                routingLoadWriter.Dispose();
+            if (bprDebugWriter != null)
+                bprDebugWriter.Dispose();
+            if (yuBprDebugWriter != null)
+                yuBprDebugWriter.Dispose();
         }
 
         private void WriteMissionHeader()
         {
-            missionWriter.WriteLine(CsvRow("SweepIndex", "SweepParameterKey", "SweepParameterName", "SweepValue",
-                "Run", "Seed", "Algorithm", "MissionId", "DispatchTime", "ReturnTime",
-                "節點數", "Request數", "Proactive數", "成功充電數", "失敗數", "走的距離(m)", "移動耗能(J)",
-                "充入能量(J)", "封包送出", "封包收到", "封包遺失", "RoutingFailed封包遺失", "平均等待時間",
-                "路線節點序列", "DeduplicatedTaskCount"));
+            missionWriter.WriteLine(CsvRow("掃描參數名稱", "任務編號", "出發時間秒", "返回時間秒", "節點數",
+                "被動請求數", "主動充電數", "成功充電數", "失敗數", "走的距離m", "封包送出數",
+                "封包收到數", "封包遺失數", "路由失敗封包遺失數", "平均等待時間秒", "路線節點序列", "去重任務數"));
         }
 
         private void WriteTaskHeader()
         {
-            taskWriter.WriteLine(CsvRow("SweepIndex", "SweepParameterKey", "SweepParameterName", "SweepValue",
-                "Run", "Seed", "Algorithm", "ArtifactHash", "MissionId", "TaskOrder",
-                "NodeId", "TaskSource", "IsProactive", "ProactiveReason", "RequestTimeSeconds", "DeadlineSeconds",
-                "DispatchTimeSeconds", "ArrivalTimeSeconds", "WaitSeconds", "ChargeStartSeconds", "ChargeEndSeconds",
-                "EnergyBeforeJ", "EnergyAfterJ", "InternalEnergyBeforeNj", "InternalEnergyAfterNj",
-                "ConsumeRateJPerSecond", "BaseConsumeRateJPerSecond", "EffectiveConsumeRateJPerSecond",
-                "RoutingLoadJPerSecond", "RoutingTxLoadJPerSecond", "RoutingRxLoadJPerSecond",
-                "RoutingSubtreeSize", "ExpectedRoutingForwardPacketsPerSecond",
-                "InternalRateNjPerTick", "DeliveredEnergyJ", "DistanceFromPreviousMeters",
-                "Success", "FailureReason", "WcvEnergyAfterJ"));
+            taskWriter.WriteLine(CsvRow("任務編號", "任務順序", "節點編號", "是否主動充電", "請求時間秒",
+                "截止時間秒", "出發時間秒", "抵達時間秒", "等待時間秒", "開始充電時間秒",
+                "結束充電時間秒", "充電前能量J", "節點耗電率J每秒", "有效耗電率J每秒",
+                "路由總耗電率J每秒", "路由傳送耗電率J每秒", "路由接收耗電率J每秒", "路由子樹大小",
+                "預期轉送封包數每秒", "內部耗電率nJ每Tick", "與上一點距離m", "是否成功", "失敗原因", "WCV剩餘能量J"));
         }
 
         private void WriteRoutingLoadHeader()
         {
-            routingLoadWriter.WriteLine(CsvRow("runIndex", "seed", "nodeId", "parentId", "subtreeSize",
-                "expectedTxPacketsPerSecond", "expectedRxPacketsPerSecond", "expectedForwardPacketsPerSecond",
-                "estimatedTxLoadJPerSecond", "estimatedRxLoadJPerSecond", "estimatedRoutingLoadJPerSecond"));
+            routingLoadWriter.WriteLine(CsvRow("節點編號", "父節點編號", "子樹大小", "預期傳送封包數每秒",
+                "預期接收封包數每秒", "預期轉送封包數每秒", "估計傳送耗電率J每秒",
+                "估計接收耗電率J每秒", "估計路由總耗電率J每秒"));
         }
 
         private void WriteBprDebugHeader()
         {
-            bprDebugWriter.WriteLine(CsvRow("RunIndex", "Seed", "Algorithm", "MissionId", "CurrentTimeSeconds",
-                "Iteration", "WindowStartSeconds", "WindowEndSeconds", "BottleneckCount", "OverflowCount",
-                "SelectedNodeId", "SelectedRequestTimeSeconds", "SelectedDeathTimeSeconds", "SelectedSlackSeconds",
-                "SelectedEffectiveRateJPerSecond", "SelectedRouteInsertionCost", "SelectionReason",
-                "CplistCountBefore", "CplistCountAfter", "MaxTask", "AllowCapacityOverflow"));
+            bprDebugWriter.WriteLine(CsvRow("任務編號", "目前時間秒", "迭代次數", "視窗開始時間秒", "視窗結束時間秒",
+                "瓶頸數量", "超出數量", "選中節點編號", "選中節點請求時間秒", "選中節點死亡時間秒",
+                "選中節點安全餘裕秒", "選中節點有效耗電率J每秒", "選中節點路線插入成本",
+                "加入前候選任務數", "加入後候選任務數", "單趟任務上限"));
         }
 
         private void WriteYuBprDebugHeader()
         {
-            yuBprDebugWriter.WriteLine(CsvRow("RunIndex", "Seed", "Algorithm", "MissionId", "CurrentTimeSeconds",
-                "Iteration", "WindowStartSeconds", "WindowEndSeconds", "KStar", "DangerCount", "RemovalNeededCount",
-                "SelectedNodeId", "SelectedIntervalStartSeconds", "SelectedCenterRequestTimeSeconds",
-                "SelectedIntervalEndSeconds", "SelectedEarliestDeathTimeSeconds", "SelectedLatestSafeServiceTimeSeconds",
-                "SelectedSlackSeconds", "SelectedUncertaintySeconds", "SelectedEffectiveRateJPerSecond",
-                "SelectedRouteInsertionCost", "SelectionReason", "CplistCountBefore", "CplistCountAfter",
-                "MaxTask", "AllowCapacityOverflow"));
+            yuBprDebugWriter.WriteLine(CsvRow("任務編號", "目前時間秒", "迭代次數", "視窗開始時間秒", "視窗結束時間秒",
+                "危險門檻", "危險數量", "需要移除數量", "選中節點編號", "選中區間開始時間秒",
+                "選中中心請求時間秒", "選中區間結束時間秒", "選中最早死亡時間秒",
+                "選中最晚安全服務時間秒", "選中安全餘裕秒", "選中不確定範圍秒",
+                "選中有效耗電率J每秒", "選中路線插入成本", "加入前候選任務數",
+                "加入後候選任務數", "單趟任務上限", "是否允許超出容量"));
         }
 
         private static object SafeArrayValue(int[] values, int index)
@@ -7797,6 +8290,11 @@ namespace WindowsFormsApplication1
             rows.Add(Row("SweepIterationCount", s.SweepEnabled ? (object)s.SweepIterationCount : "", "number of increments after the current UI value"));
             rows.Add(Row("SweepStepValue", s.SweepEnabled ? (object)s.SweepStepValue : "", "value added on each increment"));
             rows.Add(Row("WriteTaskDetailCsv", s.WriteTaskDetailCsv, "false = skip per-run debug CSV files to reduce IO and memory pressure"));
+            rows.Add(Row("WriteMissionDetailsCsv", s.WriteMissionDetailsCsv, "controls mission-details.csv output"));
+            rows.Add(Row("WriteTaskRecordsCsv", s.WriteTaskRecordsCsv, "controls task-records.csv output"));
+            rows.Add(Row("WriteRoutingLoadCsv", s.WriteRoutingLoadCsv, "controls routing-load.csv output"));
+            rows.Add(Row("WriteBprDebugCsv", s.WriteBprDebugCsv, "controls bpr-debug.csv output"));
+            rows.Add(Row("WriteYuBprDebugCsv", s.WriteYuBprDebugCsv, "controls yu-bpr-debug.csv output"));
             rows.Add(Row("UseFastSimulationScheduling", s.UseFastSimulationScheduling, "true = bounded artifact queue with simulation-level parallelism"));
             rows.Add(Row("感測器數量", s.SensorCount, ""));
             rows.Add(Row("地圖邊長(m)", s.MapWidthMeters, "地圖固定為 n x n 正方形"));

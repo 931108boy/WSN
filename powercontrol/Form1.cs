@@ -84,7 +84,11 @@ namespace WindowsFormsApplication1
         TextBox expNmaxTaskBox;
         TextBox expOutputDirectoryBox;
         ComboBox expThresholdModeBox;
-        CheckBox expWriteTaskDetailsBox;
+        CheckBox expWriteMissionDetailsBox;
+        CheckBox expWriteTaskRecordsBox;
+        CheckBox expWriteRoutingLoadBox;
+        CheckBox expWriteBprDebugBox;
+        CheckBox expWriteYuBprDebugBox;
         CheckBox expFastSchedulingBox;
         CheckedListBox expAlgorithmList;
         TextBox expLogBox;
@@ -260,7 +264,7 @@ namespace WindowsFormsApplication1
             };
             algoGroup.Controls.Add(clearAlgorithmButton);
 
-            GroupBox outputGroup = create_group_box("執行與輸出", 404, 398, 740, 275);
+            GroupBox outputGroup = create_group_box("執行與輸出", 404, 398, 740, 290);
             Label outputLabel = new Label();
             outputLabel.Text = "輸出資料夾";
             outputLabel.Location = new Point(18, 31);
@@ -300,29 +304,34 @@ namespace WindowsFormsApplication1
             openOutputButton.Click += openOutputButton_Click;
             outputGroup.Controls.Add(openOutputButton);
 
-            expWriteTaskDetailsBox = new CheckBox();
-            expWriteTaskDetailsBox.Text = "輸出任務明細 CSV";
-            expWriteTaskDetailsBox.Location = new Point(430, 70);
-            expWriteTaskDetailsBox.Size = new Size(180, 22);
-            expWriteTaskDetailsBox.Checked = true;
-            outputGroup.Controls.Add(expWriteTaskDetailsBox);
-
             expFastSchedulingBox = new CheckBox();
             expFastSchedulingBox.Text = "高速平行排程";
-            expFastSchedulingBox.Location = new Point(610, 70);
+            expFastSchedulingBox.Location = new Point(430, 70);
             expFastSchedulingBox.Size = new Size(120, 22);
             expFastSchedulingBox.Checked = true;
             outputGroup.Controls.Add(expFastSchedulingBox);
 
+            Label csvOutputLabel = new Label();
+            csvOutputLabel.Text = "明細 CSV";
+            csvOutputLabel.Location = new Point(18, 108);
+            csvOutputLabel.Size = new Size(90, 22);
+            outputGroup.Controls.Add(csvOutputLabel);
+
+            expWriteMissionDetailsBox = add_output_csv_checkbox(outputGroup, "mission-details", 110, 104, 130);
+            expWriteTaskRecordsBox = add_output_csv_checkbox(outputGroup, "task-records", 245, 104, 125);
+            expWriteRoutingLoadBox = add_output_csv_checkbox(outputGroup, "routing-load", 375, 104, 120);
+            expWriteBprDebugBox = add_output_csv_checkbox(outputGroup, "bpr-debug", 500, 104, 105);
+            expWriteYuBprDebugBox = add_output_csv_checkbox(outputGroup, "yu-bpr-debug", 610, 104, 118);
+
             expLastOutputLabel = new Label();
             expLastOutputLabel.Text = "";
-            expLastOutputLabel.Location = new Point(18, 106);
+            expLastOutputLabel.Location = new Point(18, 138);
             expLastOutputLabel.Size = new Size(700, 22);
             outputGroup.Controls.Add(expLastOutputLabel);
 
             expProgressLabel = new Label();
             expProgressLabel.Text = "進度：尚未執行";
-            expProgressLabel.Location = new Point(18, 128);
+            expProgressLabel.Location = new Point(18, 160);
             expProgressLabel.Size = new Size(700, 22);
             outputGroup.Controls.Add(expProgressLabel);
 
@@ -330,11 +339,11 @@ namespace WindowsFormsApplication1
             expLogBox.Multiline = true;
             expLogBox.ReadOnly = true;
             expLogBox.ScrollBars = ScrollBars.Vertical;
-            expLogBox.Location = new Point(18, 152);
-            expLogBox.Size = new Size(700, 101);
+            expLogBox.Location = new Point(18, 184);
+            expLogBox.Size = new Size(700, 86);
             outputGroup.Controls.Add(expLogBox);
 
-            GroupBox noteGroup = create_group_box("資料產生說明", 24, 690, 1120, 120);
+            GroupBox noteGroup = create_group_box("資料產生說明", 24, 704, 1120, 120);
             Label note = new Label();
             note.Text = "本系統不使用舊 MyWSN 的單一節點排程介面。資料由亂數種子產生共用地圖、事件、初始剩餘能量與耗能率變動時間表，所有演算法共用同一資料雜湊碼。MyWSN 僅作為封包能耗、資料格式與參數量級參考。";
             note.Location = new Point(18, 28);
@@ -382,6 +391,17 @@ namespace WindowsFormsApplication1
             return box;
         }
 
+        CheckBox add_output_csv_checkbox(Control parent, string text, int x, int y, int width)
+        {
+            CheckBox box = new CheckBox();
+            box.Text = text;
+            box.Location = new Point(x, y);
+            box.Size = new Size(width, 22);
+            box.Checked = true;
+            parent.Controls.Add(box);
+            return box;
+        }
+
         void populate_experiment_controls_from_settings()
         {
             experimentSettings.Normalize();
@@ -404,8 +424,16 @@ namespace WindowsFormsApplication1
             expWcvMoveCostBox.Text = experimentSettings.WcvMoveCostJPerMeter.ToString(System.Globalization.CultureInfo.InvariantCulture);
             expNmaxTaskBox.Text = experimentSettings.NmaxTask.ToString(System.Globalization.CultureInfo.InvariantCulture);
             expOutputDirectoryBox.Text = experimentSettings.OutputDirectory;
-            if (expWriteTaskDetailsBox != null)
-                expWriteTaskDetailsBox.Checked = experimentSettings.WriteTaskDetailCsv;
+            if (expWriteMissionDetailsBox != null)
+                expWriteMissionDetailsBox.Checked = experimentSettings.WriteMissionDetailsCsv;
+            if (expWriteTaskRecordsBox != null)
+                expWriteTaskRecordsBox.Checked = experimentSettings.WriteTaskRecordsCsv;
+            if (expWriteRoutingLoadBox != null)
+                expWriteRoutingLoadBox.Checked = experimentSettings.WriteRoutingLoadCsv;
+            if (expWriteBprDebugBox != null)
+                expWriteBprDebugBox.Checked = experimentSettings.WriteBprDebugCsv;
+            if (expWriteYuBprDebugBox != null)
+                expWriteYuBprDebugBox.Checked = experimentSettings.WriteYuBprDebugCsv;
             if (expFastSchedulingBox != null)
                 expFastSchedulingBox.Checked = experimentSettings.UseFastSimulationScheduling;
             if (ChengTreqCalculator.IsChengTreqMode(experimentSettings.ThresholdMode))
@@ -450,8 +478,17 @@ namespace WindowsFormsApplication1
             experimentSettings.WcvMoveCostJPerMeter = parse_double(expWcvMoveCostBox, experimentSettings.WcvMoveCostJPerMeter);
             experimentSettings.NmaxTask = parse_int(expNmaxTaskBox, experimentSettings.NmaxTask);
             experimentSettings.OutputDirectory = expOutputDirectoryBox.Text.Trim();
-            if (expWriteTaskDetailsBox != null)
-                experimentSettings.WriteTaskDetailCsv = expWriteTaskDetailsBox.Checked;
+            if (expWriteMissionDetailsBox != null)
+                experimentSettings.WriteMissionDetailsCsv = expWriteMissionDetailsBox.Checked;
+            if (expWriteTaskRecordsBox != null)
+                experimentSettings.WriteTaskRecordsCsv = expWriteTaskRecordsBox.Checked;
+            if (expWriteRoutingLoadBox != null)
+                experimentSettings.WriteRoutingLoadCsv = expWriteRoutingLoadBox.Checked;
+            if (expWriteBprDebugBox != null)
+                experimentSettings.WriteBprDebugCsv = expWriteBprDebugBox.Checked;
+            if (expWriteYuBprDebugBox != null)
+                experimentSettings.WriteYuBprDebugCsv = expWriteYuBprDebugBox.Checked;
+            experimentSettings.WriteTaskDetailCsv = experimentSettings.HasAnyTaskDetailCsvOutput();
             if (expFastSchedulingBox != null)
                 experimentSettings.UseFastSimulationScheduling = expFastSchedulingBox.Checked;
             if (expThresholdModeBox.SelectedIndex == 1)
@@ -487,6 +524,22 @@ namespace WindowsFormsApplication1
         {
             if (expThresholdModeBox != null && expThresholdModeBox.SelectedIndex == 1)
                 update_threshold_mode_ui();
+        }
+
+        void set_task_detail_csv_checkboxes_enabled(bool enabled)
+        {
+            CheckBox[] boxes = new CheckBox[] {
+                expWriteMissionDetailsBox,
+                expWriteTaskRecordsBox,
+                expWriteRoutingLoadBox,
+                expWriteBprDebugBox,
+                expWriteYuBprDebugBox
+            };
+            for (int i = 0; i < boxes.Length; i++)
+            {
+                if (boxes[i] != null)
+                    boxes[i].Enabled = enabled;
+            }
         }
 
         void update_threshold_mode_ui()
@@ -693,8 +746,7 @@ namespace WindowsFormsApplication1
             experimentRunButton.Enabled = false;
             experimentSaveButton.Enabled = false;
             experimentSweepButton.Enabled = false;
-            if (expWriteTaskDetailsBox != null)
-                expWriteTaskDetailsBox.Enabled = false;
+            set_task_detail_csv_checkboxes_enabled(false);
             if (expFastSchedulingBox != null)
                 expFastSchedulingBox.Enabled = false;
             expProgressLabel.Text = "進度：準備開始";
@@ -760,8 +812,7 @@ namespace WindowsFormsApplication1
                     experimentRunButton.Enabled = true;
                     experimentSaveButton.Enabled = true;
                     experimentSweepButton.Enabled = true;
-                    if (expWriteTaskDetailsBox != null)
-                        expWriteTaskDetailsBox.Enabled = true;
+                    set_task_detail_csv_checkboxes_enabled(true);
                     if (expFastSchedulingBox != null)
                         expFastSchedulingBox.Enabled = true;
                     if (error != null)

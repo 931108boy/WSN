@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <ExperimentSettings xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <ProjectRoot>C:\Users\931108boy\Desktop\WSN</ProjectRoot>
+  <ProjectRoot>C:\Users\MB16\Desktop\WSN</ProjectRoot>
   <BaseSeed>42</BaseSeed>
-  <RunCount>10</RunCount>
+  <RunCount>5</RunCount>
   <SensorCount>1000</SensorCount>
   <MapWidthMeters>1000</MapWidthMeters>
   <MapHeightMeters>1000</MapHeightMeters>
@@ -35,8 +35,19 @@
   <YuIntervalUncertaintySeconds>0</YuIntervalUncertaintySeconds>
   <PrateChange>0.2</PrateChange>
   <RateChangeVariationPercent>12.5</RateChangeVariationPercent>
-  <SelectedAlgorithmsCsv>EDF,NJF,TADP_LIN,RCSS,NJF_ZHENG_BPR,NJF_YU_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_YU_BPR_LIMITED,FUZZY</SelectedAlgorithmsCsv>
-  <OutputDirectory>C:\Users\931108boy\Desktop\WSN\outputs</OutputDirectory>
-  <LastOutputWorkbookPath>C:\Users\931108boy\Desktop\WSN\outputs\20260519-231843-001-wsn-comparison-seed42-runs10.xlsx</LastOutputWorkbookPath>
-  <MaxParallelJobs>28</MaxParallelJobs>
+  <SelectedAlgorithmsCsv>EDF,NJF,TADP_LIN,RCSS,NJF_ZHENG_BPR,NJF_YU_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_ZHENG_BPR_EXTENDED,NJF_ROUTE_YU_BPR_LIMITED,NJF_ROUTE_YU_BPR_EXTENDED,FUZZY,GENE,PSO,Cuckoo</SelectedAlgorithmsCsv>
+  <OutputDirectory>C:\Users\MB16\Desktop\WSN\outputs</OutputDirectory>
+  <LastOutputWorkbookPath>C:\Users\MB16\Desktop\WSN\outputs\20260522-043636-sweep2-SensorCount-start1000-step100-seed42-runs5\comparison-seed42-runs5.xlsx</LastOutputWorkbookPath>
+  <WriteTaskDetailCsv>true</WriteTaskDetailCsv>
+  <WriteMissionDetailsCsv>true</WriteMissionDetailsCsv>
+  <WriteTaskRecordsCsv>true</WriteTaskRecordsCsv>
+  <WriteRoutingLoadCsv>true</WriteRoutingLoadCsv>
+  <WriteBprDebugCsv>true</WriteBprDebugCsv>
+  <WriteYuBprDebugCsv>true</WriteYuBprDebugCsv>
+  <UseFastSimulationScheduling>true</UseFastSimulationScheduling>
+  <MaxParallelJobs>0</MaxParallelJobs>
+  <SweepEnabled>true</SweepEnabled>
+  <SweepParameterKey>SensorCount</SweepParameterKey>
+  <SweepIterationCount>1</SweepIterationCount>
+  <SweepStepValue>100</SweepStepValue>
 </ExperimentSettings>
