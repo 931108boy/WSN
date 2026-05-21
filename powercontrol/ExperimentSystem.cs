@@ -54,6 +54,16 @@ namespace WindowsFormsApplication1
         public string OutputDirectory { get; set; }
         public string LastOutputWorkbookPath { get; set; }
         public int MaxParallelJobs { get; set; }
+        public bool SweepEnabled { get; set; }
+        public string SweepParameterKey { get; set; }
+        public int SweepIterationCount { get; set; }
+        public double SweepStepValue { get; set; }
+
+        [XmlIgnore]
+        public int CurrentSweepIndex { get; set; }
+
+        [XmlIgnore]
+        public double CurrentSweepValue { get; set; }
 
         public ExperimentSettings()
         {
@@ -96,6 +106,12 @@ namespace WindowsFormsApplication1
             OutputDirectory = Path.Combine(ProjectRoot, "outputs");
             LastOutputWorkbookPath = "";
             MaxParallelJobs = 0;
+            SweepEnabled = false;
+            SweepParameterKey = "SensorCount";
+            SweepIterationCount = 1;
+            SweepStepValue = 100.0;
+            CurrentSweepIndex = 0;
+            CurrentSweepValue = 0.0;
         }
 
         public static string[] AllAlgorithms()
@@ -168,6 +184,11 @@ namespace WindowsFormsApplication1
             settings.OutputDirectory = Path.Combine(settings.ProjectRoot, "outputs");
             settings.Normalize();
             return settings;
+        }
+
+        public ExperimentSettings Copy()
+        {
+            return (ExperimentSettings)MemberwiseClone();
         }
 
         public static string ResolveProjectRoot()
@@ -282,6 +303,14 @@ namespace WindowsFormsApplication1
             PrateChange = Clamp(PrateChange, 0.0, 1.0);
             RateChangeVariationPercent = Clamp(RateChangeVariationPercent, 0.0, 99.0);
             MaxParallelJobs = Math.Max(0, MaxParallelJobs);
+            if (String.IsNullOrWhiteSpace(SweepParameterKey) || ExperimentSweepParameterCatalog.Find(SweepParameterKey) == null)
+                SweepParameterKey = "SensorCount";
+            SweepIterationCount = Math.Max(0, SweepIterationCount);
+            if (SweepStepValue == 0.0)
+                SweepStepValue = ExperimentSweepParameterCatalog.Find(SweepParameterKey).IntegerOnly ? 1.0 : 0.1;
+            if (ExperimentSweepParameterCatalog.Find(SweepParameterKey).IntegerOnly)
+                SweepStepValue = Math.Round(SweepStepValue);
+            CurrentSweepIndex = Math.Max(0, CurrentSweepIndex);
             List<string> selectedAlgorithms = GetSelectedAlgorithms();
             if (selectedAlgorithms.Count == 0)
                 SelectedAlgorithmsCsv = DefaultAlgorithmSelectionCsv();
@@ -404,6 +433,13 @@ namespace WindowsFormsApplication1
             Normalize();
             Directory.CreateDirectory(OutputDirectory);
             string timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
+            if (SweepEnabled)
+            {
+                string safeSweepKey = MissionDetailCsvWriter.SanitizeFileNameForPath(SweepParameterKey);
+                int sweepValueCount = SweepIterationCount + 1;
+                return Path.Combine(OutputDirectory, String.Format(CultureInfo.InvariantCulture,
+                    "{0}-wsn-sweep-{1}-values{2}-seed{3}-runs{4}.xlsx", timestamp, safeSweepKey, sweepValueCount, BaseSeed, RunCount));
+            }
             return Path.Combine(OutputDirectory, String.Format(CultureInfo.InvariantCulture,
                 "{0}-wsn-comparison-seed{1}-runs{2}.xlsx", timestamp, BaseSeed, RunCount));
         }
@@ -415,6 +451,182 @@ namespace WindowsFormsApplication1
             if (value > max)
                 return max;
             return value;
+        }
+    }
+
+    internal sealed class ExperimentSweepParameterDefinition
+    {
+        public readonly string Key;
+        public readonly string DisplayName;
+        public readonly bool IntegerOnly;
+        private readonly Func<ExperimentSettings, double> getter;
+        private readonly Action<ExperimentSettings, double> setter;
+
+        public ExperimentSweepParameterDefinition(string key, string displayName, bool integerOnly,
+            Func<ExperimentSettings, double> valueGetter, Action<ExperimentSettings, double> valueSetter)
+        {
+            Key = key;
+            DisplayName = displayName;
+            IntegerOnly = integerOnly;
+            getter = valueGetter;
+            setter = valueSetter;
+        }
+
+        public double GetValue(ExperimentSettings settings)
+        {
+            return getter(settings);
+        }
+
+        public void SetValue(ExperimentSettings settings, double value)
+        {
+            if (IntegerOnly)
+                value = Math.Round(value);
+            setter(settings, value);
+        }
+
+        public string FormatValue(double value)
+        {
+            if (IntegerOnly)
+                return ((int)Math.Round(value)).ToString(CultureInfo.InvariantCulture);
+            return value.ToString("0.########", CultureInfo.InvariantCulture);
+        }
+    }
+
+    internal static class ExperimentSweepParameterCatalog
+    {
+        private static readonly ExperimentSweepParameterDefinition[] definitions = new ExperimentSweepParameterDefinition[]
+        {
+            new ExperimentSweepParameterDefinition("SensorCount", "感測器數量", true,
+                delegate(ExperimentSettings s) { return s.SensorCount; },
+                delegate(ExperimentSettings s, double v) { s.SensorCount = (int)Math.Round(v); }),
+            new ExperimentSweepParameterDefinition("MapSizeMeters", "地圖邊長(m)", false,
+                delegate(ExperimentSettings s) { return s.MapWidthMeters; },
+                delegate(ExperimentSettings s, double v) { s.MapWidthMeters = v; s.MapHeightMeters = v; }),
+            new ExperimentSweepParameterDefinition("SimulationTimeSeconds", "模擬時間(s)", false,
+                delegate(ExperimentSettings s) { return s.SimulationTimeSeconds; },
+                delegate(ExperimentSettings s, double v) { s.SimulationTimeSeconds = v; }),
+            new ExperimentSweepParameterDefinition("InitialEnergyJ", "初始能量(J)", false,
+                delegate(ExperimentSettings s) { return s.InitialEnergyJ; },
+                delegate(ExperimentSettings s, double v) { s.InitialEnergyJ = v; }),
+            new ExperimentSweepParameterDefinition("SensorBackgroundLifetimeSeconds", "背景壽命(s)", false,
+                delegate(ExperimentSettings s) { return s.SensorBackgroundLifetimeSeconds; },
+                delegate(ExperimentSettings s, double v) { s.SensorBackgroundLifetimeSeconds = v; }),
+            new ExperimentSweepParameterDefinition("EventRatePerSecond", "事件率(封包/s)", false,
+                delegate(ExperimentSettings s) { return s.EventRatePerSecond; },
+                delegate(ExperimentSettings s, double v) { s.EventRatePerSecond = v; }),
+            new ExperimentSweepParameterDefinition("PrateChange", "耗能變動機率", false,
+                delegate(ExperimentSettings s) { return s.PrateChange; },
+                delegate(ExperimentSettings s, double v) { s.PrateChange = v; }),
+            new ExperimentSweepParameterDefinition("RateChangeVariationPercent", "變動幅度(%)", false,
+                delegate(ExperimentSettings s) { return s.RateChangeVariationPercent; },
+                delegate(ExperimentSettings s, double v) { s.RateChangeVariationPercent = v; }),
+            new ExperimentSweepParameterDefinition("RequestThresholdPercent", "需求門檻(%)", false,
+                delegate(ExperimentSettings s) { return s.RequestThresholdPercent; },
+                delegate(ExperimentSettings s, double v) { s.RequestThresholdPercent = v; }),
+            new ExperimentSweepParameterDefinition("TreqSeconds", "Treq 秒數", false,
+                delegate(ExperimentSettings s) { return s.TreqSeconds; },
+                delegate(ExperimentSettings s, double v) { s.TreqSeconds = v; }),
+            new ExperimentSweepParameterDefinition("WcvSpeedMetersPerSecond", "WCV 速度(m/s)", false,
+                delegate(ExperimentSettings s) { return s.WcvSpeedMetersPerSecond; },
+                delegate(ExperimentSettings s, double v) { s.WcvSpeedMetersPerSecond = v; }),
+            new ExperimentSweepParameterDefinition("WcvChargeRateJPerSecond", "充電速率(J/s)", false,
+                delegate(ExperimentSettings s) { return s.WcvChargeRateJPerSecond; },
+                delegate(ExperimentSettings s, double v) { s.WcvChargeRateJPerSecond = v; }),
+            new ExperimentSweepParameterDefinition("WcvCapacityJ", "WCV 容量(J)", false,
+                delegate(ExperimentSettings s) { return s.WcvCapacityJ; },
+                delegate(ExperimentSettings s, double v) { s.WcvCapacityJ = v; }),
+            new ExperimentSweepParameterDefinition("WcvMoveCostJPerMeter", "移動耗能(J/m)", false,
+                delegate(ExperimentSettings s) { return s.WcvMoveCostJPerMeter; },
+                delegate(ExperimentSettings s, double v) { s.WcvMoveCostJPerMeter = v; }),
+            new ExperimentSweepParameterDefinition("NmaxTask", "任務上限", true,
+                delegate(ExperimentSettings s) { return s.NmaxTask; },
+                delegate(ExperimentSettings s, double v) { s.NmaxTask = (int)Math.Round(v); })
+        };
+
+        public static ExperimentSweepParameterDefinition[] All()
+        {
+            return definitions;
+        }
+
+        public static ExperimentSweepParameterDefinition Find(string key)
+        {
+            if (String.IsNullOrWhiteSpace(key))
+                return null;
+            for (int i = 0; i < definitions.Length; i++)
+            {
+                if (String.Equals(definitions[i].Key, key, StringComparison.OrdinalIgnoreCase))
+                    return definitions[i];
+            }
+            return null;
+        }
+
+        public static string DisplayName(string key)
+        {
+            ExperimentSweepParameterDefinition definition = Find(key);
+            return definition == null ? "" : definition.DisplayName;
+        }
+    }
+
+    internal sealed class ExperimentSweepStep
+    {
+        public int Index;
+        public string ParameterKey;
+        public string ParameterName;
+        public double Value;
+        public ExperimentSettings Settings;
+    }
+
+    internal static class ExperimentParallel
+    {
+        public static void For(int fromInclusive, int toExclusive, int maxDegreeOfParallelism, Action<int> body)
+        {
+            int count = toExclusive - fromInclusive;
+            if (count <= 0)
+                return;
+
+            int workerCount = Math.Max(1, Math.Min(Math.Max(1, maxDegreeOfParallelism), count));
+            int nextOffset = -1;
+            int stopFlag = 0;
+            object exceptionLock = new object();
+            Exception firstException = null;
+            Thread[] workers = new Thread[workerCount];
+
+            for (int i = 0; i < workerCount; i++)
+            {
+                workers[i] = new Thread(delegate()
+                {
+                    while (Interlocked.CompareExchange(ref stopFlag, 0, 0) == 0)
+                    {
+                        int offset = Interlocked.Increment(ref nextOffset);
+                        if (offset >= count)
+                            break;
+
+                        try
+                        {
+                            body(fromInclusive + offset);
+                        }
+                        catch (Exception ex)
+                        {
+                            lock (exceptionLock)
+                            {
+                                if (firstException == null)
+                                    firstException = ex;
+                            }
+                            Interlocked.Exchange(ref stopFlag, 1);
+                            break;
+                        }
+                    }
+                });
+                workers[i].IsBackground = true;
+                workers[i].Name = String.Format(CultureInfo.InvariantCulture, "WSNExperimentWorker{0}", i + 1);
+                workers[i].Start();
+            }
+
+            for (int i = 0; i < workers.Length; i++)
+                workers[i].Join();
+
+            if (firstException != null)
+                throw new AggregateException(firstException);
         }
     }
 
@@ -563,30 +775,23 @@ namespace WindowsFormsApplication1
                 chengMetrics.TjobSeconds,
                 chengMetrics.LmaxStepMeters));
 
-            ParallelOptions options = new ParallelOptions();
-            options.MaxDegreeOfParallelism = maxParallelJobs;
-            Parallel.For(1, settings.RunCount + 1, options, delegate (int runIndex)
+            ExperimentParallel.For(1, settings.RunCount + 1, maxParallelJobs, delegate (int runIndex)
             {
                 int seed = settings.BaseSeed + runIndex - 1;
-                ReportProgress(completedWork, totalWork,
-                    String.Format(CultureInfo.InvariantCulture, "產生共用資料 run {0}/{1}, seed={2}", runIndex, settings.RunCount, seed));
-
                 ExperimentRunBatchResult runBatch = new ExperimentRunBatchResult(algorithms.Count);
                 ExperimentArtifact artifact = ExperimentArtifact.Generate(settings, runIndex, seed);
                 runBatch.Artifact = artifact;
                 runResults[runIndex - 1] = runBatch;
             });
+            Report(String.Format(CultureInfo.InvariantCulture,
+                "共用資料產生完成：runs={0}, worker threads={1}", settings.RunCount, maxParallelJobs));
 
-            Parallel.For(0, totalWork, options, delegate (int workIndex)
+            ExperimentParallel.For(0, totalWork, maxParallelJobs, delegate (int workIndex)
             {
                 int runIndex = workIndex / algorithms.Count + 1;
                 int algorithmIndex = workIndex % algorithms.Count;
                 string algorithm = algorithms[algorithmIndex];
                 ExperimentRunBatchResult runBatch = runResults[runIndex - 1];
-
-                ReportProgress(completedWork, totalWork,
-                    String.Format(CultureInfo.InvariantCulture, "run {0}/{1} 執行 {2} ({3}/{4})",
-                        runIndex, settings.RunCount, algorithm, algorithmIndex + 1, algorithms.Count));
 
                 ExperimentSimulation simulation = new ExperimentSimulation(settings, runBatch.Artifact, algorithm, result.TaskDetailsDirectory);
                 ExperimentRunResult run = simulation.Run();
@@ -677,6 +882,212 @@ namespace WindowsFormsApplication1
         }
     }
 
+    public class ExperimentSweepBatchRunner
+    {
+        private readonly Action<string> progress;
+        private readonly bool persistSettings;
+        private readonly object progressLock;
+
+        public ExperimentSweepBatchRunner(Action<string> progressCallback, bool saveSettingsAfterRun)
+        {
+            progress = progressCallback;
+            persistSettings = saveSettingsAfterRun;
+            progressLock = new object();
+        }
+
+        public ExperimentBatchResult Run(ExperimentSettings baseSettings)
+        {
+            baseSettings.Normalize();
+            List<string> algorithms = baseSettings.GetSelectedAlgorithms();
+            if (algorithms.Count == 0)
+                throw new InvalidOperationException("請至少勾選一個排程演算法。");
+
+            List<ExperimentSweepStep> steps = BuildSweepSteps(baseSettings);
+            if (steps.Count == 0)
+                throw new InvalidOperationException("請先設定參數迭代。");
+
+            ExperimentBatchResult result = new ExperimentBatchResult();
+            result.Settings = baseSettings.Copy();
+            result.Settings.Normalize();
+            result.TaskDetailsDirectory = MissionDetailCsvWriter.PrepareTaskDetailsDirectory(baseSettings.OutputDirectory);
+
+            int artifactWork = steps.Count * baseSettings.RunCount;
+            int totalWork = artifactWork * algorithms.Count;
+            int completedWork = 0;
+            int maxParallelJobs = ResolveMaxParallelJobs(baseSettings, totalWork);
+            RaiseThreadPoolMinimum(maxParallelJobs);
+
+            SweepRunBatchResult[] runResults = new SweepRunBatchResult[artifactWork];
+            Report(String.Format(CultureInfo.InvariantCulture,
+                "參數迭代開始：parameter={0}, values={1}, runsPerValue={2}, algorithms={3}, total simulations={4}, max parallel jobs={5}{6}",
+                steps[0].ParameterName,
+                steps.Count,
+                baseSettings.RunCount,
+                algorithms.Count,
+                totalWork,
+                maxParallelJobs,
+                baseSettings.MaxParallelJobs > 0 ? " (manual)" : " (auto)"));
+
+            ExperimentParallel.For(0, artifactWork, maxParallelJobs, delegate(int artifactIndex)
+            {
+                int stepIndex = artifactIndex / baseSettings.RunCount;
+                int runIndex = artifactIndex % baseSettings.RunCount + 1;
+                ExperimentSweepStep step = steps[stepIndex];
+                int seed = baseSettings.BaseSeed + runIndex - 1;
+
+                SweepRunBatchResult runBatch = new SweepRunBatchResult(algorithms.Count);
+                runBatch.Artifact = ExperimentArtifact.Generate(step.Settings, runIndex, seed);
+                runResults[artifactIndex] = runBatch;
+            });
+            Report(String.Format(CultureInfo.InvariantCulture,
+                "共用資料產生完成：values={0}, runsPerValue={1}, worker threads={2}",
+                steps.Count, baseSettings.RunCount, maxParallelJobs));
+
+            ExperimentParallel.For(0, totalWork, maxParallelJobs, delegate(int workIndex)
+            {
+                int artifactIndex = workIndex / algorithms.Count;
+                int algorithmIndex = workIndex % algorithms.Count;
+                int stepIndex = artifactIndex / baseSettings.RunCount;
+                int runIndex = artifactIndex % baseSettings.RunCount + 1;
+                ExperimentSweepStep step = steps[stepIndex];
+                string algorithm = algorithms[algorithmIndex];
+                SweepRunBatchResult runBatch = runResults[artifactIndex];
+
+                ExperimentSimulation simulation = new ExperimentSimulation(step.Settings, runBatch.Artifact, algorithm, result.TaskDetailsDirectory);
+                ExperimentRunResult run = simulation.Run();
+                runBatch.AlgorithmResults[algorithmIndex] = run;
+
+                int done = Interlocked.Increment(ref completedWork);
+                ReportProgress(done, totalWork,
+                    String.Format(CultureInfo.InvariantCulture, "完成 value {0}/{1} {2}={3}, run {4}/{5}, algorithm {6} ({7}/{8})",
+                        stepIndex + 1,
+                        steps.Count,
+                        step.ParameterName,
+                        FormatSweepValue(step),
+                        runIndex,
+                        baseSettings.RunCount,
+                        algorithm,
+                        done,
+                        totalWork));
+            });
+
+            MergeSweepRunResults(result, runResults);
+
+            string workbookPath = baseSettings.CreateOutputWorkbookPath();
+            ExperimentWorkbookWriter.Write(workbookPath, result);
+            baseSettings.LastOutputWorkbookPath = workbookPath;
+            if (persistSettings)
+                baseSettings.SaveLast();
+            result.WorkbookPath = workbookPath;
+            Report("參數迭代 Excel 已輸出：" + workbookPath);
+            Report("任務明細 CSV 已輸出：" + result.TaskDetailsDirectory);
+            return result;
+        }
+
+        private static List<ExperimentSweepStep> BuildSweepSteps(ExperimentSettings baseSettings)
+        {
+            ExperimentSweepParameterDefinition definition = ExperimentSweepParameterCatalog.Find(baseSettings.SweepParameterKey);
+            if (definition == null)
+                throw new InvalidOperationException("找不到可迭代參數：" + baseSettings.SweepParameterKey);
+
+            List<ExperimentSweepStep> steps = new List<ExperimentSweepStep>();
+            double startValue = definition.GetValue(baseSettings);
+            int maxIndex = Math.Max(0, baseSettings.SweepIterationCount);
+            for (int i = 0; i <= maxIndex; i++)
+            {
+                double value = startValue + baseSettings.SweepStepValue * i;
+                ExperimentSettings settings = baseSettings.Copy();
+                settings.CurrentSweepIndex = i;
+                settings.SweepEnabled = true;
+                settings.SweepParameterKey = definition.Key;
+                settings.CurrentSweepValue = value;
+                definition.SetValue(settings, value);
+                settings.Normalize();
+                steps.Add(new ExperimentSweepStep
+                {
+                    Index = i,
+                    ParameterKey = definition.Key,
+                    ParameterName = definition.DisplayName,
+                    Value = definition.GetValue(settings),
+                    Settings = settings
+                });
+            }
+            return steps;
+        }
+
+        private static string FormatSweepValue(ExperimentSweepStep step)
+        {
+            ExperimentSweepParameterDefinition definition = ExperimentSweepParameterCatalog.Find(step.ParameterKey);
+            if (definition == null)
+                return step.Value.ToString(CultureInfo.InvariantCulture);
+            return definition.FormatValue(step.Value);
+        }
+
+        private void Report(string message)
+        {
+            if (progress != null)
+            {
+                lock (progressLock)
+                {
+                    progress(message);
+                }
+            }
+        }
+
+        private void ReportProgress(int completedWork, int totalWork, string detail)
+        {
+            double percent = totalWork <= 0 ? 100.0 : (double)completedWork * 100.0 / (double)totalWork;
+            Report(String.Format(CultureInfo.InvariantCulture, "進度 {0:0.0}%：{1}", percent, detail));
+        }
+
+        private static void MergeSweepRunResults(ExperimentBatchResult result, SweepRunBatchResult[] runResults)
+        {
+            for (int i = 0; i < runResults.Length; i++)
+            {
+                SweepRunBatchResult runBatch = runResults[i];
+                if (runBatch == null)
+                    continue;
+
+                result.Artifacts.Add(runBatch.Artifact);
+                for (int j = 0; j < runBatch.AlgorithmResults.Length; j++)
+                {
+                    ExperimentRunResult run = runBatch.AlgorithmResults[j];
+                    if (run == null)
+                        continue;
+                    result.RunSummaries.Add(run.Summary);
+                    result.TotalTaskRecordCount += run.TotalTaskRecordCount;
+                    result.DeathRecords.AddRange(run.Deaths);
+                }
+            }
+        }
+
+        private static int ResolveMaxParallelJobs(ExperimentSettings settings, int totalWork)
+        {
+            int requested = settings.MaxParallelJobs > 0 ? settings.MaxParallelJobs : Environment.ProcessorCount;
+            return Math.Max(1, Math.Min(Math.Max(1, totalWork), requested));
+        }
+
+        private static void RaiseThreadPoolMinimum(int maxParallelJobs)
+        {
+            int workerThreads;
+            int completionPortThreads;
+            ThreadPool.GetMinThreads(out workerThreads, out completionPortThreads);
+            if (workerThreads < maxParallelJobs)
+                ThreadPool.SetMinThreads(maxParallelJobs, completionPortThreads);
+        }
+
+        private class SweepRunBatchResult
+        {
+            public ExperimentArtifact Artifact;
+            public ExperimentRunResult[] AlgorithmResults;
+
+            public SweepRunBatchResult(int algorithmCount)
+            {
+                AlgorithmResults = new ExperimentRunResult[Math.Max(0, algorithmCount)];
+            }
+        }
+    }
+
     public class ExperimentBatchResult
     {
         public ExperimentSettings Settings { get; set; }
@@ -709,6 +1120,11 @@ namespace WindowsFormsApplication1
         public Dictionary<int, List<RateChangeTemplate>> RateChangesByNodeId;
         public double BaseX;
         public double BaseY;
+        public bool SweepEnabled;
+        public int SweepIndex;
+        public string SweepParameterKey;
+        public string SweepParameterName;
+        public double SweepValue;
         private int rateChangeIndexSourceCount;
 
         public ExperimentArtifact()
@@ -719,6 +1135,8 @@ namespace WindowsFormsApplication1
             RateChangesByNodeId = new Dictionary<int, List<RateChangeTemplate>>();
             rateChangeIndexSourceCount = -1;
             ArtifactHash = "";
+            SweepParameterKey = "";
+            SweepParameterName = "";
         }
 
         public static ExperimentArtifact Generate(ExperimentSettings settings, int runIndex, int seed)
@@ -729,6 +1147,14 @@ namespace WindowsFormsApplication1
             artifact.Seed = seed;
             artifact.BaseX = 0.0;
             artifact.BaseY = 0.0;
+            ExperimentSweepParameterDefinition sweepDefinition = settings.SweepEnabled
+                ? ExperimentSweepParameterCatalog.Find(settings.SweepParameterKey)
+                : null;
+            artifact.SweepEnabled = sweepDefinition != null;
+            artifact.SweepIndex = artifact.SweepEnabled ? settings.CurrentSweepIndex : 0;
+            artifact.SweepParameterKey = artifact.SweepEnabled ? sweepDefinition.Key : "";
+            artifact.SweepParameterName = artifact.SweepEnabled ? sweepDefinition.DisplayName : "";
+            artifact.SweepValue = artifact.SweepEnabled ? sweepDefinition.GetValue(settings) : 0.0;
 
             bool connected = false;
             for (int attempt = 1; attempt <= 1000; attempt++)
@@ -1243,7 +1669,7 @@ namespace WindowsFormsApplication1
             servedNodeIds = new HashSet<int>();
             csvWriter = String.IsNullOrWhiteSpace(taskDetailsDirectory)
                 ? null
-                : new MissionDetailCsvWriter(taskDetailsDirectory, artifact.RunIndex, algorithm);
+                : new MissionDetailCsvWriter(taskDetailsDirectory, artifact, algorithm);
             nextEventIndex = 0;
             nextRateChangeIndex = 0;
             nextRequestId = 1;
@@ -1273,12 +1699,19 @@ namespace WindowsFormsApplication1
             InitializeBprSTable();
 
             summary = new ExperimentRunSummary();
+            CopySweepFieldsTo(summary);
             summary.RunIndex = artifact.RunIndex;
             summary.Seed = artifact.Seed;
             summary.Algorithm = algorithm;
             summary.ArtifactHash = artifact.ArtifactHash;
             summary.PrateChange = settings.PrateChange;
             summary.RateChangeVariationPercent = settings.RateChangeVariationPercent;
+            summary.ThresholdMode = settings.ThresholdMode;
+            summary.RequestThresholdPercent = settings.RequestThresholdPercent;
+            summary.EffectiveTreqSeconds = ChengTreqCalculator.GetEffectiveTreqSeconds(settings, settings.NmaxTask);
+            summary.TreqSource = ChengTreqCalculator.IsChengTreqMode(settings.ThresholdMode)
+                ? "Auto"
+                : (String.Equals(settings.ThresholdMode, "TreqSeconds", StringComparison.OrdinalIgnoreCase) ? "Manual" : "NotUsed");
             summary.RateChangeScheduleCount = artifact.RateChanges.Count;
             summary.NetworkLifetimeSeconds = settings.SimulationTimeSeconds;
             summary.FirstDeadNodeId = -1;
@@ -1291,6 +1724,50 @@ namespace WindowsFormsApplication1
             summary.FirstDeadSchedulingCauseZh = "";
             summary.RoutingParentMissingNodeCount = artifact.CountMissingRoutingParents();
             summary.RoutingDisconnectedNodeRatio = artifact.MissingRoutingParentRatio();
+        }
+
+        private void CopySweepFieldsTo(ExperimentRunSummary record)
+        {
+            if (record == null)
+                return;
+            record.SweepEnabled = artifact.SweepEnabled;
+            record.SweepIndex = artifact.SweepIndex;
+            record.SweepParameterKey = artifact.SweepParameterKey;
+            record.SweepParameterName = artifact.SweepParameterName;
+            record.SweepValue = artifact.SweepValue;
+        }
+
+        private void CopySweepFieldsTo(ExperimentTaskRecord record)
+        {
+            if (record == null)
+                return;
+            record.SweepEnabled = artifact.SweepEnabled;
+            record.SweepIndex = artifact.SweepIndex;
+            record.SweepParameterKey = artifact.SweepParameterKey;
+            record.SweepParameterName = artifact.SweepParameterName;
+            record.SweepValue = artifact.SweepValue;
+        }
+
+        private void CopySweepFieldsTo(MissionRecord record)
+        {
+            if (record == null)
+                return;
+            record.SweepEnabled = artifact.SweepEnabled;
+            record.SweepIndex = artifact.SweepIndex;
+            record.SweepParameterKey = artifact.SweepParameterKey;
+            record.SweepParameterName = artifact.SweepParameterName;
+            record.SweepValue = artifact.SweepValue;
+        }
+
+        private void CopySweepFieldsTo(ExperimentDeathRecord record)
+        {
+            if (record == null)
+                return;
+            record.SweepEnabled = artifact.SweepEnabled;
+            record.SweepIndex = artifact.SweepIndex;
+            record.SweepParameterKey = artifact.SweepParameterKey;
+            record.SweepParameterName = artifact.SweepParameterName;
+            record.SweepValue = artifact.SweepValue;
         }
 
         public ExperimentRunResult Run()
@@ -1847,6 +2324,7 @@ namespace WindowsFormsApplication1
             AccumulatePlannedProactiveTasks(route);
 
             MissionRecord mission = new MissionRecord();
+            CopySweepFieldsTo(mission);
             mission.RunIndex = artifact.RunIndex;
             mission.Seed = artifact.Seed;
             mission.Algorithm = algorithm;
@@ -1979,6 +2457,7 @@ namespace WindowsFormsApplication1
                 }
 
                 ExperimentTaskRecord record = new ExperimentTaskRecord();
+                CopySweepFieldsTo(record);
                 record.RunIndex = artifact.RunIndex;
                 record.Seed = artifact.Seed;
                 record.Algorithm = algorithm;
@@ -2097,6 +2576,7 @@ namespace WindowsFormsApplication1
         private ExperimentTaskRecord RecordSkippedTask(ChargingRequest request, double dispatchTime, double time, string reason)
         {
             ExperimentTaskRecord record = new ExperimentTaskRecord();
+            CopySweepFieldsTo(record);
             record.RunIndex = artifact.RunIndex;
             record.Seed = artifact.Seed;
             record.Algorithm = algorithm;
@@ -5203,6 +5683,7 @@ namespace WindowsFormsApplication1
             sensor.EnergyJ = 0.0;
 
             ExperimentDeathRecord death = new ExperimentDeathRecord();
+            CopySweepFieldsTo(death);
             death.RunIndex = artifact.RunIndex;
             death.Seed = artifact.Seed;
             death.Algorithm = algorithm;
@@ -5571,12 +6052,18 @@ namespace WindowsFormsApplication1
                 AssertSelfTest(taskLines.Length == 2,
                     "Task-record CSV should contain one data row for the mission.");
 
+                string[] taskHeaders = taskLines[0].Split(',');
+                Dictionary<string, int> taskColumns = BuildCsvHeaderMap(taskHeaders);
                 string[] fields = taskLines[1].Split(',');
-                AssertSelfTest(fields.Length > 8 && fields[4] == "1" && fields[6] == "1",
+                int missionColumn = taskColumns["MissionId"];
+                int nodeColumn = taskColumns["NodeId"];
+                int sourceColumn = taskColumns["TaskSource"];
+                int reasonColumn = taskColumns["ProactiveReason"];
+                AssertSelfTest(fields.Length > reasonColumn && fields[missionColumn] == "1" && fields[nodeColumn] == "1",
                     "Task-record CSV row does not describe mission 1 / sensor 1.");
-                AssertSelfTest(String.Equals(fields[7], "proactive", StringComparison.OrdinalIgnoreCase),
+                AssertSelfTest(String.Equals(fields[sourceColumn], "proactive", StringComparison.OrdinalIgnoreCase),
                     "Reserved node should remain a proactive task, not be relabeled as natural.");
-                AssertSelfTest(fields.Length > 9 && fields[9] == ZhengBprWindowRemovalReason,
+                AssertSelfTest(fields.Length > reasonColumn && fields[reasonColumn] == ZhengBprWindowRemovalReason,
                     "ZHENG route proactive task should use the ZHENG_BPR_WINDOW_REMOVAL reason.");
             }
             finally
@@ -6290,6 +6777,18 @@ namespace WindowsFormsApplication1
                 throw new InvalidOperationException(message);
         }
 
+        private static Dictionary<string, int> BuildCsvHeaderMap(string[] headers)
+        {
+            Dictionary<string, int> map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < headers.Length; i++)
+            {
+                string header = headers[i] == null ? "" : headers[i].Trim();
+                if (!map.ContainsKey(header))
+                    map[header] = i;
+            }
+            return map;
+        }
+
         private static void AssertNear(double actual, double expected, double tolerance, string message)
         {
             if (Math.Abs(actual - expected) > tolerance)
@@ -6405,12 +6904,21 @@ namespace WindowsFormsApplication1
 
     public class ExperimentRunSummary
     {
+        public bool SweepEnabled;
+        public int SweepIndex;
+        public string SweepParameterKey;
+        public string SweepParameterName;
+        public double SweepValue;
         public int RunIndex;
         public int Seed;
         public string Algorithm;
         public string ArtifactHash;
         public double PrateChange;
         public double RateChangeVariationPercent;
+        public string ThresholdMode;
+        public double RequestThresholdPercent;
+        public double EffectiveTreqSeconds;
+        public string TreqSource;
         public int RateChangeScheduleCount;
         public int AppliedRateChangeCount;
         public double NetworkLifetimeSeconds;
@@ -6453,6 +6961,11 @@ namespace WindowsFormsApplication1
 
     public class ExperimentTaskRecord
     {
+        public bool SweepEnabled;
+        public int SweepIndex;
+        public string SweepParameterKey;
+        public string SweepParameterName;
+        public double SweepValue;
         public int RunIndex;
         public int Seed;
         public string Algorithm;
@@ -6492,6 +7005,11 @@ namespace WindowsFormsApplication1
 
     public class MissionRecord
     {
+        public bool SweepEnabled;
+        public int SweepIndex;
+        public string SweepParameterKey;
+        public string SweepParameterName;
+        public double SweepValue;
         public int RunIndex;
         public int Seed;
         public string Algorithm;
@@ -6518,6 +7036,11 @@ namespace WindowsFormsApplication1
 
     public class ExperimentDeathRecord
     {
+        public bool SweepEnabled;
+        public int SweepIndex;
+        public string SweepParameterKey;
+        public string SweepParameterName;
+        public double SweepValue;
         public int RunIndex;
         public int Seed;
         public string Algorithm;
@@ -6557,20 +7080,30 @@ namespace WindowsFormsApplication1
         private readonly StreamWriter yuBprDebugWriter;
         private bool disposed;
 
+        public MissionDetailCsvWriter(string directory, ExperimentArtifact artifact, string algorithm)
+            : this(directory, artifact == null ? 0 : artifact.RunIndex, algorithm, BuildSweepFilePrefix(artifact))
+        {
+        }
+
         public MissionDetailCsvWriter(string directory, int runIndex, string algorithm)
+            : this(directory, runIndex, algorithm, "")
+        {
+        }
+
+        private MissionDetailCsvWriter(string directory, int runIndex, string algorithm, string filePrefix)
         {
             Directory.CreateDirectory(directory);
             string safeAlgorithm = SanitizeFileName(algorithm);
             string missionPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
-                "run{0:D3}-{1}-mission-details.csv", runIndex, safeAlgorithm));
+                "{0}run{1:D3}-{2}-mission-details.csv", filePrefix, runIndex, safeAlgorithm));
             string taskPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
-                "run{0:D3}-{1}-task-records.csv", runIndex, safeAlgorithm));
+                "{0}run{1:D3}-{2}-task-records.csv", filePrefix, runIndex, safeAlgorithm));
             string routingLoadPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
-                "run{0:D3}-{1}-routing-load.csv", runIndex, safeAlgorithm));
+                "{0}run{1:D3}-{2}-routing-load.csv", filePrefix, runIndex, safeAlgorithm));
             string bprDebugPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
-                "run{0:D3}-{1}-bpr-debug.csv", runIndex, safeAlgorithm));
+                "{0}run{1:D3}-{2}-bpr-debug.csv", filePrefix, runIndex, safeAlgorithm));
             string yuBprDebugPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
-                "run{0:D3}-{1}-yu-bpr-debug.csv", runIndex, safeAlgorithm));
+                "{0}run{1:D3}-{2}-yu-bpr-debug.csv", filePrefix, runIndex, safeAlgorithm));
 
             Encoding utf8 = new UTF8Encoding(true);
             missionWriter = new StreamWriter(missionPath, false, utf8);
@@ -6601,6 +7134,10 @@ namespace WindowsFormsApplication1
                 return;
 
             missionWriter.WriteLine(CsvRow(
+                record.SweepEnabled ? record.SweepIndex : 0,
+                record.SweepParameterKey,
+                record.SweepParameterName,
+                record.SweepEnabled ? (object)record.SweepValue : "",
                 record.RunIndex,
                 record.Seed,
                 record.Algorithm,
@@ -6630,6 +7167,10 @@ namespace WindowsFormsApplication1
                 return;
 
             taskWriter.WriteLine(CsvRow(
+                record.SweepEnabled ? record.SweepIndex : 0,
+                record.SweepParameterKey,
+                record.SweepParameterName,
+                record.SweepEnabled ? (object)record.SweepValue : "",
                 record.RunIndex,
                 record.Seed,
                 record.Algorithm,
@@ -6822,7 +7363,8 @@ namespace WindowsFormsApplication1
 
         private void WriteMissionHeader()
         {
-            missionWriter.WriteLine(CsvRow("Run", "Seed", "Algorithm", "MissionId", "DispatchTime", "ReturnTime",
+            missionWriter.WriteLine(CsvRow("SweepIndex", "SweepParameterKey", "SweepParameterName", "SweepValue",
+                "Run", "Seed", "Algorithm", "MissionId", "DispatchTime", "ReturnTime",
                 "節點數", "Request數", "Proactive數", "成功充電數", "失敗數", "走的距離(m)", "移動耗能(J)",
                 "充入能量(J)", "封包送出", "封包收到", "封包遺失", "RoutingFailed封包遺失", "平均等待時間",
                 "路線節點序列", "DeduplicatedTaskCount"));
@@ -6830,7 +7372,8 @@ namespace WindowsFormsApplication1
 
         private void WriteTaskHeader()
         {
-            taskWriter.WriteLine(CsvRow("Run", "Seed", "Algorithm", "ArtifactHash", "MissionId", "TaskOrder",
+            taskWriter.WriteLine(CsvRow("SweepIndex", "SweepParameterKey", "SweepParameterName", "SweepValue",
+                "Run", "Seed", "Algorithm", "ArtifactHash", "MissionId", "TaskOrder",
                 "NodeId", "TaskSource", "IsProactive", "ProactiveReason", "RequestTimeSeconds", "DeadlineSeconds",
                 "DispatchTimeSeconds", "ArrivalTimeSeconds", "WaitSeconds", "ChargeStartSeconds", "ChargeEndSeconds",
                 "EnergyBeforeJ", "EnergyAfterJ", "InternalEnergyBeforeNj", "InternalEnergyAfterNj",
@@ -6928,6 +7471,23 @@ namespace WindowsFormsApplication1
             return text;
         }
 
+        private static string BuildSweepFilePrefix(ExperimentArtifact artifact)
+        {
+            if (artifact == null || !artifact.SweepEnabled)
+                return "";
+
+            string valueText = artifact.SweepValue.ToString("0.########", CultureInfo.InvariantCulture);
+            return String.Format(CultureInfo.InvariantCulture, "sweep{0:D3}-{1}-{2}-",
+                artifact.SweepIndex,
+                SanitizeFileName(artifact.SweepParameterKey),
+                SanitizeFileName(valueText));
+        }
+
+        internal static string SanitizeFileNameForPath(string value)
+        {
+            return SanitizeFileName(value);
+        }
+
         private static string SanitizeFileName(string value)
         {
             string text = String.IsNullOrWhiteSpace(value) ? "algorithm" : value.Trim();
@@ -6986,6 +7546,10 @@ namespace WindowsFormsApplication1
             rows.Add(Row("基礎亂數種子", s.BaseSeed, "第 i 個 run 使用 seed+i-1"));
             rows.Add(Row("Run 次數", s.RunCount, ""));
             rows.Add(Row("最大平行工作數", s.MaxParallelJobs == 0 ? "自動" : s.MaxParallelJobs.ToString(CultureInfo.InvariantCulture), "0=自動使用 CPU 邏輯核心數；可手動調高或降低"));
+            rows.Add(Row("SweepEnabled", s.SweepEnabled, "true = run selected algorithms across iterated parameter values"));
+            rows.Add(Row("SweepParameterKey", s.SweepEnabled ? s.SweepParameterKey : "", s.SweepEnabled ? ExperimentSweepParameterCatalog.DisplayName(s.SweepParameterKey) : ""));
+            rows.Add(Row("SweepIterationCount", s.SweepEnabled ? (object)s.SweepIterationCount : "", "number of increments after the current UI value"));
+            rows.Add(Row("SweepStepValue", s.SweepEnabled ? (object)s.SweepStepValue : "", "value added on each increment"));
             rows.Add(Row("感測器數量", s.SensorCount, ""));
             rows.Add(Row("地圖邊長(m)", s.MapWidthMeters, "地圖固定為 n x n 正方形"));
             rows.Add(Row("模擬時間(s)", s.SimulationTimeSeconds, ""));
@@ -7058,6 +7622,7 @@ namespace WindowsFormsApplication1
                 "封包送出", "封包收到", "封包遺失", "routing failed 遺失", "ParentId=-1 節點數",
                 "不連通節點比例", "平均等待(s)", "充電效率"));
 
+            PrependSweepHeaders(rows[0]);
             AppendRunAntiInflationHeaders(rows[0]);
             AppendRunDeathDiagnosisHeaders(rows[0]);
 
@@ -7071,11 +7636,44 @@ namespace WindowsFormsApplication1
                     s.PacketSent, s.PacketReceived, s.PacketLost, s.RoutingFailedPacketLost,
                     s.RoutingParentMissingNodeCount, s.RoutingDisconnectedNodeRatio,
                     s.AverageWaitSeconds, s.ChargeEfficiency));
+                PrependSweepValues(rows[rows.Count - 1], s);
                 AddRunAntiInflationValues(rows[rows.Count - 1], s);
                 AddRunDeathDiagnosisValues(rows[rows.Count - 1], s);
             }
 
             return rows;
+        }
+
+        private static void PrependSweepHeaders(List<object> row)
+        {
+            row.Insert(0, "SweepValue");
+            row.Insert(0, "SweepParameterName");
+            row.Insert(0, "SweepParameterKey");
+            row.Insert(0, "SweepIndex");
+        }
+
+        private static void PrependSweepValues(List<object> row, ExperimentRunSummary s)
+        {
+            row.Insert(0, s.SweepEnabled ? (object)s.SweepValue : "");
+            row.Insert(0, s.SweepParameterName ?? "");
+            row.Insert(0, s.SweepParameterKey ?? "");
+            row.Insert(0, s.SweepEnabled ? (object)s.SweepIndex : "");
+        }
+
+        private static void PrependSweepValues(List<object> row, ExperimentDeathRecord d)
+        {
+            row.Insert(0, d.SweepEnabled ? (object)d.SweepValue : "");
+            row.Insert(0, d.SweepParameterName ?? "");
+            row.Insert(0, d.SweepParameterKey ?? "");
+            row.Insert(0, d.SweepEnabled ? (object)d.SweepIndex : "");
+        }
+
+        private static void PrependBlankSweepValues(List<object> row)
+        {
+            row.Insert(0, "");
+            row.Insert(0, "");
+            row.Insert(0, "");
+            row.Insert(0, "");
         }
 
         private static void AppendRunAntiInflationHeaders(List<object> row)
@@ -7120,6 +7718,19 @@ namespace WindowsFormsApplication1
             row.Add(s.FirstDeadSchedulingCauseZh);
         }
 
+        private static string SummaryGroupKey(ExperimentRunSummary summary)
+        {
+            if (summary == null)
+                return "";
+            if (!summary.SweepEnabled)
+                return summary.Algorithm ?? "";
+            return String.Format(CultureInfo.InvariantCulture, "{0}|{1}|{2}|{3}",
+                summary.SweepIndex,
+                summary.SweepParameterKey,
+                summary.SweepValue,
+                summary.Algorithm);
+        }
+
         private static List<List<object>> BuildSummaryRows(ExperimentBatchResult result)
         {
             List<List<object>> rows = new List<List<object>>();
@@ -7127,6 +7738,7 @@ namespace WindowsFormsApplication1
                 "平均成功充電", "平均失敗/逾期", "平均request", "平均移動距離(m)", "平均等待(s)",
                 "平均封包遺失", "平均routing failed遺失", "平均ParentId=-1節點數", "平均不連通比例", "平均充電效率"));
 
+            PrependSweepHeaders(rows[0]);
             rows[0].Add("ThresholdMode");
             rows[0].Add("RequestThresholdPercent");
             rows[0].Add("TreqSeconds");
@@ -7137,16 +7749,17 @@ namespace WindowsFormsApplication1
             Dictionary<string, List<ExperimentRunSummary>> groups = new Dictionary<string, List<ExperimentRunSummary>>();
             for (int i = 0; i < result.RunSummaries.Count; i++)
             {
-                string algorithm = result.RunSummaries[i].Algorithm;
-                if (!groups.ContainsKey(algorithm))
-                    groups[algorithm] = new List<ExperimentRunSummary>();
-                groups[algorithm].Add(result.RunSummaries[i]);
+                string groupKey = SummaryGroupKey(result.RunSummaries[i]);
+                if (!groups.ContainsKey(groupKey))
+                    groups[groupKey] = new List<ExperimentRunSummary>();
+                groups[groupKey].Add(result.RunSummaries[i]);
             }
 
             foreach (KeyValuePair<string, List<ExperimentRunSummary>> pair in groups)
             {
                 List<ExperimentRunSummary> list = pair.Value;
-                rows.Add(Row(AlgorithmDisplayName(pair.Key), list.Count,
+                ExperimentRunSummary first = list[0];
+                rows.Add(Row(AlgorithmDisplayName(first.Algorithm), list.Count,
                     Average(list, delegate (ExperimentRunSummary s) { return s.NetworkLifetimeSeconds; }),
                     Min(list, delegate (ExperimentRunSummary s) { return s.NetworkLifetimeSeconds; }),
                     Max(list, delegate (ExperimentRunSummary s) { return s.NetworkLifetimeSeconds; }),
@@ -7160,10 +7773,11 @@ namespace WindowsFormsApplication1
                     Average(list, delegate (ExperimentRunSummary s) { return s.RoutingParentMissingNodeCount; }),
                     Average(list, delegate (ExperimentRunSummary s) { return s.RoutingDisconnectedNodeRatio; }),
                     Average(list, delegate (ExperimentRunSummary s) { return s.ChargeEfficiency; })));
-                rows[rows.Count - 1].Add(result.Settings.ThresholdMode);
-                rows[rows.Count - 1].Add(result.Settings.RequestThresholdPercent);
-                rows[rows.Count - 1].Add(ChengTreqCalculator.GetEffectiveTreqSeconds(result.Settings, result.Settings.NmaxTask));
-                rows[rows.Count - 1].Add(ResolveTreqSource(result.Settings));
+                PrependSweepValues(rows[rows.Count - 1], first);
+                rows[rows.Count - 1].Add(first.ThresholdMode);
+                rows[rows.Count - 1].Add(first.RequestThresholdPercent);
+                rows[rows.Count - 1].Add(first.EffectiveTreqSeconds);
+                rows[rows.Count - 1].Add(first.TreqSource);
                 AddSummaryAntiInflationValues(rows[rows.Count - 1], list);
             }
 
@@ -7235,10 +7849,12 @@ namespace WindowsFormsApplication1
                 "RoutingLoadJPerSecondAtDeath", "RoutingTxLoadJPerSecondAtDeath", "RoutingRxLoadJPerSecondAtDeath",
                 "RoutingSubtreeSize", "ExpectedRoutingForwardPacketsPerSecond",
                 "EnergyJ", "RequestTimeSeconds", "WaitSeconds"));
+            PrependSweepHeaders(rows[0]);
 
             if (result.DeathRecords.Count == 0)
             {
                 rows.Add(Row("NO_DEATH", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""));
+                PrependBlankSweepValues(rows[rows.Count - 1]);
                 return rows;
             }
 
@@ -7254,6 +7870,7 @@ namespace WindowsFormsApplication1
                     d.RoutingLoadJPerSecondAtDeath, d.RoutingTxLoadJPerSecondAtDeath, d.RoutingRxLoadJPerSecondAtDeath,
                     d.RoutingSubtreeSize, d.ExpectedRoutingForwardPacketsPerSecond,
                     d.EnergyJ, d.RequestTimeSeconds, d.WaitSeconds));
+                PrependSweepValues(rows[rows.Count - 1], d);
             }
 
             return rows;
@@ -7511,6 +8128,252 @@ namespace WindowsFormsApplication1
         {
             public string Name;
             public List<List<object>> Rows;
+        }
+    }
+
+    public class ExperimentSweepSettingsDialog : Form
+    {
+        private readonly ExperimentSettings settings;
+        private readonly CheckedListBox parameterList;
+        private readonly CheckBox enableSweepBox;
+        private readonly TextBox iterationCountBox;
+        private readonly TextBox stepValueBox;
+        private readonly Label previewLabel;
+        private bool updatingChecks;
+
+        public ExperimentSweepSettingsDialog(ExperimentSettings currentSettings)
+        {
+            settings = currentSettings;
+            settings.Normalize();
+            parameterList = new CheckedListBox();
+            enableSweepBox = new CheckBox();
+            iterationCountBox = new TextBox();
+            stepValueBox = new TextBox();
+            previewLabel = new Label();
+            InitializeDialog();
+            LoadSettingsToControls();
+        }
+
+        private void InitializeDialog()
+        {
+            Text = "參數迭代設定";
+            Width = 560;
+            Height = 520;
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+
+            Panel panel = new Panel();
+            panel.Dock = DockStyle.Fill;
+            panel.Padding = new Padding(16);
+            Controls.Add(panel);
+
+            enableSweepBox.Text = "啟用參數迭代";
+            enableSweepBox.Location = new System.Drawing.Point(18, 18);
+            enableSweepBox.Size = new System.Drawing.Size(180, 24);
+            enableSweepBox.CheckedChanged += delegate { UpdateEnabledState(); UpdatePreview(); };
+            panel.Controls.Add(enableSweepBox);
+
+            Label parameterLabel = new Label();
+            parameterLabel.Text = "選擇要迭代的參數（一次一個）";
+            parameterLabel.Location = new System.Drawing.Point(18, 54);
+            parameterLabel.Size = new System.Drawing.Size(300, 22);
+            panel.Controls.Add(parameterLabel);
+
+            parameterList.CheckOnClick = true;
+            parameterList.Location = new System.Drawing.Point(18, 80);
+            parameterList.Size = new System.Drawing.Size(500, 210);
+            parameterList.ItemCheck += parameterList_ItemCheck;
+            panel.Controls.Add(parameterList);
+
+            Label iterationLabel = new Label();
+            iterationLabel.Text = "迭代次數（不含目前值）";
+            iterationLabel.Location = new System.Drawing.Point(18, 308);
+            iterationLabel.Size = new System.Drawing.Size(180, 22);
+            panel.Controls.Add(iterationLabel);
+
+            iterationCountBox.Location = new System.Drawing.Point(210, 305);
+            iterationCountBox.Size = new System.Drawing.Size(110, 22);
+            iterationCountBox.TextChanged += delegate { UpdatePreview(); };
+            panel.Controls.Add(iterationCountBox);
+
+            Label stepLabel = new Label();
+            stepLabel.Text = "每次增加量";
+            stepLabel.Location = new System.Drawing.Point(18, 340);
+            stepLabel.Size = new System.Drawing.Size(180, 22);
+            panel.Controls.Add(stepLabel);
+
+            stepValueBox.Location = new System.Drawing.Point(210, 337);
+            stepValueBox.Size = new System.Drawing.Size(110, 22);
+            stepValueBox.TextChanged += delegate { UpdatePreview(); };
+            panel.Controls.Add(stepValueBox);
+
+            previewLabel.Location = new System.Drawing.Point(18, 376);
+            previewLabel.Size = new System.Drawing.Size(500, 44);
+            panel.Controls.Add(previewLabel);
+
+            Button okButton = new Button();
+            okButton.Text = "確定";
+            okButton.Location = new System.Drawing.Point(330, 432);
+            okButton.Size = new System.Drawing.Size(85, 28);
+            okButton.Click += okButton_Click;
+            panel.Controls.Add(okButton);
+
+            Button cancelButton = new Button();
+            cancelButton.Text = "取消";
+            cancelButton.Location = new System.Drawing.Point(430, 432);
+            cancelButton.Size = new System.Drawing.Size(85, 28);
+            cancelButton.Click += delegate
+            {
+                DialogResult = DialogResult.Cancel;
+                Close();
+            };
+            panel.Controls.Add(cancelButton);
+        }
+
+        private void LoadSettingsToControls()
+        {
+            ExperimentSweepParameterDefinition[] definitions = ExperimentSweepParameterCatalog.All();
+            parameterList.Items.Clear();
+            updatingChecks = true;
+            for (int i = 0; i < definitions.Length; i++)
+            {
+                parameterList.Items.Add(definitions[i].DisplayName + " [" + definitions[i].Key + "]",
+                    String.Equals(definitions[i].Key, settings.SweepParameterKey, StringComparison.OrdinalIgnoreCase));
+            }
+            updatingChecks = false;
+
+            enableSweepBox.Checked = settings.SweepEnabled;
+            iterationCountBox.Text = settings.SweepIterationCount.ToString(CultureInfo.InvariantCulture);
+            stepValueBox.Text = settings.SweepStepValue.ToString(CultureInfo.InvariantCulture);
+            UpdateEnabledState();
+            UpdatePreview();
+        }
+
+        private void parameterList_ItemCheck(object sender, ItemCheckEventArgs e)
+        {
+            if (updatingChecks || e.NewValue != CheckState.Checked)
+                return;
+            if (!IsHandleCreated)
+                return;
+
+            updatingChecks = true;
+            BeginInvoke(new Action(delegate
+            {
+                for (int i = 0; i < parameterList.Items.Count; i++)
+                {
+                    if (i != e.Index)
+                        parameterList.SetItemChecked(i, false);
+                }
+                updatingChecks = false;
+                UpdatePreview();
+            }));
+        }
+
+        private void UpdateEnabledState()
+        {
+            bool enabled = enableSweepBox.Checked;
+            parameterList.Enabled = enabled;
+            iterationCountBox.Enabled = enabled;
+            stepValueBox.Enabled = enabled;
+        }
+
+        private void UpdatePreview()
+        {
+            if (!enableSweepBox.Checked)
+            {
+                previewLabel.Text = "停用時會照目前主畫面設定只跑一組參數。";
+                return;
+            }
+
+            ExperimentSweepParameterDefinition definition = SelectedDefinition();
+            if (definition == null)
+            {
+                previewLabel.Text = "請勾選一個要迭代的參數。";
+                return;
+            }
+
+            int iterations;
+            double step;
+            if (!Int32.TryParse(iterationCountBox.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out iterations))
+            {
+                previewLabel.Text = "迭代次數必須是整數。";
+                return;
+            }
+            if (!Double.TryParse(stepValueBox.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out step))
+            {
+                previewLabel.Text = "每次增加量必須是數字。";
+                return;
+            }
+
+            double start = definition.GetValue(settings);
+            double end = start + iterations * step;
+            previewLabel.Text = String.Format(CultureInfo.InvariantCulture,
+                "將執行目前值加上 {0} 次遞增，共 {1} 組：{2} {3} -> {4}",
+                Math.Max(0, iterations),
+                Math.Max(0, iterations) + 1,
+                definition.DisplayName,
+                definition.FormatValue(start),
+                definition.FormatValue(end));
+        }
+
+        private ExperimentSweepParameterDefinition SelectedDefinition()
+        {
+            ExperimentSweepParameterDefinition[] definitions = ExperimentSweepParameterCatalog.All();
+            for (int i = 0; i < parameterList.Items.Count && i < definitions.Length; i++)
+            {
+                if (parameterList.GetItemChecked(i))
+                    return definitions[i];
+            }
+            return null;
+        }
+
+        private void okButton_Click(object sender, EventArgs e)
+        {
+            if (!enableSweepBox.Checked)
+            {
+                settings.SweepEnabled = false;
+                settings.Normalize();
+                DialogResult = DialogResult.OK;
+                Close();
+                return;
+            }
+
+            ExperimentSweepParameterDefinition definition = SelectedDefinition();
+            if (definition == null)
+            {
+                MessageBox.Show(this, "請勾選一個要迭代的參數。", "參數迭代設定", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            int iterations;
+            if (!Int32.TryParse(iterationCountBox.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out iterations) || iterations < 1)
+            {
+                MessageBox.Show(this, "迭代次數必須是 1 以上的整數。", "參數迭代設定", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            double step;
+            if (!Double.TryParse(stepValueBox.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out step) || step == 0.0)
+            {
+                MessageBox.Show(this, "每次增加量必須是不等於 0 的數字。", "參數迭代設定", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (definition.IntegerOnly && Math.Abs(step - Math.Round(step)) > 0.000001)
+            {
+                MessageBox.Show(this, "這個參數是整數，增加量也必須是整數。", "參數迭代設定", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            settings.SweepEnabled = true;
+            settings.SweepParameterKey = definition.Key;
+            settings.SweepIterationCount = iterations;
+            settings.SweepStepValue = step;
+            settings.Normalize();
+            DialogResult = DialogResult.OK;
+            Close();
         }
     }
 

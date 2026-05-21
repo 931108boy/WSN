@@ -57,7 +57,7 @@ namespace WindowsFormsApplication1
                     return;
                 }
 
-                ExperimentBatchRunner runner = new ExperimentBatchRunner(delegate (string message)
+                Action<string> progressCallback = delegate (string message)
                 {
                     try
                     {
@@ -66,8 +66,19 @@ namespace WindowsFormsApplication1
                     catch
                     {
                     }
-                }, persistSettings);
-                ExperimentBatchResult result = runner.Run(settings);
+                };
+
+                ExperimentBatchResult result;
+                if (settings.SweepEnabled)
+                {
+                    ExperimentSweepBatchRunner runner = new ExperimentSweepBatchRunner(progressCallback, persistSettings);
+                    result = runner.Run(settings);
+                }
+                else
+                {
+                    ExperimentBatchRunner runner = new ExperimentBatchRunner(progressCallback, persistSettings);
+                    result = runner.Run(settings);
+                }
                 try
                 {
                     Console.WriteLine("WORKBOOK=" + result.WorkbookPath);

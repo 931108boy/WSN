@@ -61,6 +61,7 @@ namespace WindowsFormsApplication1
         const string DEFAULT_OUTPUT_DIRECTORY = DEFAULT_STORAGE_DIRECTORY;
         Button experimentSaveButton;
         Button experimentRunButton;
+        Button experimentSweepButton;
         ExperimentSettings experimentSettings;
         Panel experimentWorkspace;
         TextBox expSeedBox;
@@ -87,6 +88,7 @@ namespace WindowsFormsApplication1
         TextBox expLogBox;
         Label expLastOutputLabel;
         Label expProgressLabel;
+        Label expSweepSummaryLabel;
         
         public Form1()
         {
@@ -162,6 +164,19 @@ namespace WindowsFormsApplication1
             expMapSizeBox = add_labeled_textbox(dataGroup, "地圖邊長(m)", "正方形 n x n", 18, 132, "");
             expSimulationTimeBox = add_labeled_textbox(dataGroup, "模擬時間(s)", "每個演算法跑到此時間或首次死亡", 18, 166, "");
             expMaxParallelJobsBox = add_labeled_textbox(dataGroup, "平行工作數", "0=自動；可手動加速/降載", 18, 200, "MaxParallelJobs");
+
+            experimentSweepButton = new Button();
+            experimentSweepButton.Text = "參數迭代設定";
+            experimentSweepButton.Location = new Point(130, 233);
+            experimentSweepButton.Size = new Size(130, 28);
+            experimentSweepButton.Click += experimentSweepButton_Click;
+            dataGroup.Controls.Add(experimentSweepButton);
+
+            expSweepSummaryLabel = new Label();
+            expSweepSummaryLabel.Text = "";
+            expSweepSummaryLabel.Location = new Point(18, 264);
+            expSweepSummaryLabel.Size = new Size(320, 20);
+            dataGroup.Controls.Add(expSweepSummaryLabel);
 
             GroupBox energyGroup = create_group_box("能量、封包與動態耗能", 404, 92, 360, 290);
             expInitialEnergyBox = add_labeled_textbox(energyGroup, "初始能量(J)", "感測器滿電容量", 18, 30, "");
@@ -390,6 +405,7 @@ namespace WindowsFormsApplication1
             }
 
             update_threshold_mode_ui();
+            update_sweep_summary_label();
             update_last_output_label();
         }
 
@@ -566,6 +582,34 @@ namespace WindowsFormsApplication1
                 expLastOutputLabel.Text = "最後輸出：" + experimentSettings.LastOutputWorkbookPath;
         }
 
+        void update_sweep_summary_label()
+        {
+            if (expSweepSummaryLabel == null || experimentSettings == null)
+                return;
+
+            if (!experimentSettings.SweepEnabled)
+            {
+                expSweepSummaryLabel.Text = "參數迭代：停用";
+                return;
+            }
+
+            ExperimentSweepParameterDefinition definition = ExperimentSweepParameterCatalog.Find(experimentSettings.SweepParameterKey);
+            if (definition == null)
+            {
+                expSweepSummaryLabel.Text = "參數迭代：設定錯誤";
+                return;
+            }
+
+            double startValue = definition.GetValue(experimentSettings);
+            double endValue = startValue + experimentSettings.SweepStepValue * experimentSettings.SweepIterationCount;
+            expSweepSummaryLabel.Text = String.Format(System.Globalization.CultureInfo.InvariantCulture,
+                "參數迭代：{0} {1} -> {2}，共 {3} 組",
+                definition.DisplayName,
+                definition.FormatValue(startValue),
+                definition.FormatValue(endValue),
+                experimentSettings.SweepIterationCount + 1);
+        }
+
         void log_experiment_message(string message)
         {
             if (expLogBox == null)
@@ -585,6 +629,19 @@ namespace WindowsFormsApplication1
                 dialog.SelectedPath = expOutputDirectoryBox.Text;
                 if (dialog.ShowDialog(this) == DialogResult.OK)
                     expOutputDirectoryBox.Text = dialog.SelectedPath;
+            }
+        }
+
+        void experimentSweepButton_Click(object sender, EventArgs e)
+        {
+            apply_experiment_controls_to_settings();
+            using (ExperimentSweepSettingsDialog dialog = new ExperimentSweepSettingsDialog(experimentSettings))
+            {
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    update_sweep_summary_label();
+                    log_experiment_message(experimentSettings.SweepEnabled ? "參數迭代已啟用。" : "參數迭代已停用。");
+                }
             }
         }
 
@@ -611,19 +668,30 @@ namespace WindowsFormsApplication1
             experimentSettings.SaveLast();
             experimentRunButton.Enabled = false;
             experimentSaveButton.Enabled = false;
+            experimentSweepButton.Enabled = false;
             expProgressLabel.Text = "進度：準備開始";
             log_experiment_message("批次比較執行中...");
 
-            ExperimentSettings settingsToRun = experimentSettings;
+            ExperimentSettings settingsToRun = experimentSettings.Copy();
             Thread worker = new Thread(delegate()
             {
                 try
                 {
-                    ExperimentBatchRunner runner = new ExperimentBatchRunner(delegate(string message)
+                    Action<string> progressCallback = delegate(string message)
                     {
                         begin_update_experiment_status(message);
-                    });
-                    ExperimentBatchResult result = runner.Run(settingsToRun);
+                    };
+                    ExperimentBatchResult result;
+                    if (settingsToRun.SweepEnabled)
+                    {
+                        ExperimentSweepBatchRunner runner = new ExperimentSweepBatchRunner(progressCallback, true);
+                        result = runner.Run(settingsToRun);
+                    }
+                    else
+                    {
+                        ExperimentBatchRunner runner = new ExperimentBatchRunner(progressCallback);
+                        result = runner.Run(settingsToRun);
+                    }
                     begin_experiment_completed(result.WorkbookPath, null);
                 }
                 catch (Exception ex)
@@ -663,6 +731,7 @@ namespace WindowsFormsApplication1
                 {
                     experimentRunButton.Enabled = true;
                     experimentSaveButton.Enabled = true;
+                    experimentSweepButton.Enabled = true;
                     if (error != null)
                     {
                         if (expProgressLabel != null)
