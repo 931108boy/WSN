@@ -1485,6 +1485,7 @@ namespace WindowsFormsApplication1
 
     public class ExperimentArtifact
     {
+        private const int PacketEventSourceBlockSize = 1000;
         private static readonly List<RateChangeTemplate> EmptyRateChanges = new List<RateChangeTemplate>();
         public int RunIndex;
         public int Seed;
@@ -1549,7 +1550,7 @@ namespace WindowsFormsApplication1
                     "無法產生 connected topology：RadioRangeMeters 太小或 SensorCount 太低，無法在 1000 次重試內讓所有 sensor 連到 BS。");
             }
 
-            GenerateNestedPerSensorPacketEvents(settings, artifact, seed);
+            GenerateNestedPacketEvents(settings, artifact, seed);
 
             for (double time = 10000.0; time <= settings.SimulationTimeSeconds + 1e-9; time += 10000.0)
             {
@@ -1572,7 +1573,7 @@ namespace WindowsFormsApplication1
             return artifact;
         }
 
-        private static void GenerateNestedPerSensorPacketEvents(
+        private static void GenerateNestedPacketEvents(
             ExperimentSettings settings,
             ExperimentArtifact artifact,
             int seed)
@@ -1580,22 +1581,28 @@ namespace WindowsFormsApplication1
             artifact.PacketEvents.Clear();
 
             double rate = Math.Max(0.0, settings.EventRatePerSecond);
-            int eventCountForSensor = Math.Max(0, (int)Math.Round(
+            int baseEventCount = Math.Max(0, (int)Math.Round(
                 rate * settings.SimulationTimeSeconds));
 
-            if (eventCountForSensor <= 0)
+            if (baseEventCount <= 0)
                 return;
 
-            for (int sourceId = 1; sourceId <= settings.SensorCount; sourceId++)
+            for (int blockStart = 1; blockStart <= settings.SensorCount; blockStart += PacketEventSourceBlockSize)
             {
-                int sensorSeed = StablePacketSeed(seed, sourceId);
-                Random packetRandom = new Random(sensorSeed);
+                int blockEnd = Math.Min(settings.SensorCount, blockStart + PacketEventSourceBlockSize - 1);
+                int sourceCount = blockEnd - blockStart + 1;
+                int blockEventCount = GetPacketEventCountForSourceBlock(baseEventCount, blockStart, sourceCount);
+                if (blockEventCount <= 0)
+                    continue;
 
-                for (int i = 0; i < eventCountForSensor; i++)
+                int streamSeed = StablePacketSeed(seed, blockStart);
+                Random packetRandom = new Random(streamSeed);
+
+                for (int i = 0; i < blockEventCount; i++)
                 {
                     PacketEventTemplate packetEvent = new PacketEventTemplate();
                     packetEvent.TimeSeconds = packetRandom.NextDouble() * settings.SimulationTimeSeconds;
-                    packetEvent.SourceId = sourceId;
+                    packetEvent.SourceId = blockStart + packetRandom.Next(sourceCount);
                     packetEvent.PacketBits = settings.PacketBits;
                     artifact.PacketEvents.Add(packetEvent);
                 }
@@ -1613,14 +1620,23 @@ namespace WindowsFormsApplication1
             });
         }
 
-        private static int StablePacketSeed(int runSeed, int sourceId)
+        private static int GetPacketEventCountForSourceBlock(int baseEventCount, int blockStart, int sourceCount)
+        {
+            if (blockStart == 1)
+                return baseEventCount;
+
+            double blockRatio = (double)sourceCount / (double)PacketEventSourceBlockSize;
+            return Math.Max(1, (int)Math.Round(baseEventCount * blockRatio));
+        }
+
+        private static int StablePacketSeed(int runSeed, int streamStartSourceId)
         {
             unchecked
             {
                 int hash = 17;
                 hash = hash * 31 + runSeed;
                 hash = hash * 31 + 1000003;
-                hash = hash * 31 + sourceId;
+                hash = hash * 31 + streamStartSourceId;
                 return hash & 0x7fffffff;
             }
         }
@@ -6828,50 +6844,54 @@ namespace WindowsFormsApplication1
 
         private static void RunNestedPacketEventGenerationSelfTest(string tempDirectory)
         {
-            ExperimentSettings threeSensorSettings = CreateBprSelfTestSettings(tempDirectory);
-            threeSensorSettings.SensorCount = 3;
-            threeSensorSettings.SimulationTimeSeconds = 10.0;
-            threeSensorSettings.EventRatePerSecond = 0.2;
-            threeSensorSettings.Normalize();
+            ExperimentSettings thousandSensorSettings = CreateBprSelfTestSettings(tempDirectory);
+            thousandSensorSettings.SensorCount = 1000;
+            thousandSensorSettings.MapWidthMeters = 100.0;
+            thousandSensorSettings.MapHeightMeters = 100.0;
+            thousandSensorSettings.RadioRangeMeters = 1000.0;
+            thousandSensorSettings.SimulationTimeSeconds = 10.0;
+            thousandSensorSettings.EventRatePerSecond = 0.2;
+            thousandSensorSettings.Normalize();
 
-            ExperimentSettings fiveSensorSettings = CreateBprSelfTestSettings(tempDirectory);
-            fiveSensorSettings.SensorCount = 5;
-            fiveSensorSettings.SimulationTimeSeconds = threeSensorSettings.SimulationTimeSeconds;
-            fiveSensorSettings.EventRatePerSecond = threeSensorSettings.EventRatePerSecond;
-            fiveSensorSettings.Normalize();
+            ExperimentSettings twoThousandSensorSettings = CreateBprSelfTestSettings(tempDirectory);
+            twoThousandSensorSettings.SensorCount = 2000;
+            twoThousandSensorSettings.MapWidthMeters = thousandSensorSettings.MapWidthMeters;
+            twoThousandSensorSettings.MapHeightMeters = thousandSensorSettings.MapHeightMeters;
+            twoThousandSensorSettings.RadioRangeMeters = thousandSensorSettings.RadioRangeMeters;
+            twoThousandSensorSettings.SimulationTimeSeconds = thousandSensorSettings.SimulationTimeSeconds;
+            twoThousandSensorSettings.EventRatePerSecond = thousandSensorSettings.EventRatePerSecond;
+            twoThousandSensorSettings.Normalize();
 
             int seed = 42;
-            int expectedEventsPerSensor = (int)Math.Round(
-                threeSensorSettings.EventRatePerSecond * threeSensorSettings.SimulationTimeSeconds);
-            ExperimentArtifact threeSensorArtifact = ExperimentArtifact.Generate(threeSensorSettings, 1, seed);
-            ExperimentArtifact fiveSensorArtifact = ExperimentArtifact.Generate(fiveSensorSettings, 1, seed);
+            int baseEventCount = (int)Math.Round(
+                thousandSensorSettings.EventRatePerSecond * thousandSensorSettings.SimulationTimeSeconds);
+            ExperimentArtifact thousandSensorArtifact = ExperimentArtifact.Generate(thousandSensorSettings, 1, seed);
+            ExperimentArtifact twoThousandSensorArtifact = ExperimentArtifact.Generate(twoThousandSensorSettings, 1, seed);
 
-            AssertSelfTest(threeSensorArtifact.PacketEvents.Count ==
-                threeSensorSettings.SensorCount * expectedEventsPerSensor,
-                "Packet events should be generated per sensor for the smaller SensorCount.");
-            AssertSelfTest(fiveSensorArtifact.PacketEvents.Count ==
-                fiveSensorSettings.SensorCount * expectedEventsPerSensor,
-                "Packet events should be generated per sensor for the larger SensorCount.");
+            AssertSelfTest(thousandSensorArtifact.PacketEvents.Count == baseEventCount,
+                "1000-node packet stream should keep the old global event count.");
+            AssertSelfTest(twoThousandSensorArtifact.PacketEvents.Count == baseEventCount * 2,
+                "2000-node packet stream should add one extra source block, not one stream per sensor.");
 
-            for (int sourceId = 1; sourceId <= threeSensorSettings.SensorCount; sourceId++)
+            List<PacketEventTemplate> smallerBaseEvents = thousandSensorArtifact.PacketEvents.FindAll(
+                delegate (PacketEventTemplate packetEvent) { return packetEvent.SourceId <= 1000; });
+            List<PacketEventTemplate> largerBaseEvents = twoThousandSensorArtifact.PacketEvents.FindAll(
+                delegate (PacketEventTemplate packetEvent) { return packetEvent.SourceId <= 1000; });
+            AssertSelfTest(smallerBaseEvents.Count == largerBaseEvents.Count,
+                "Existing source block should keep the same packet count after SensorCount increases.");
+
+            for (int i = 0; i < smallerBaseEvents.Count; i++)
             {
-                List<PacketEventTemplate> smallerEvents = threeSensorArtifact.PacketEvents.FindAll(
-                    delegate (PacketEventTemplate packetEvent) { return packetEvent.SourceId == sourceId; });
-                List<PacketEventTemplate> largerEvents = fiveSensorArtifact.PacketEvents.FindAll(
-                    delegate (PacketEventTemplate packetEvent) { return packetEvent.SourceId == sourceId; });
-
-                AssertSelfTest(smallerEvents.Count == expectedEventsPerSensor,
-                    "Each smaller-artifact sensor should get the expected packet count.");
-                AssertSelfTest(largerEvents.Count == expectedEventsPerSensor,
-                    "Existing sensors should keep the expected packet count after SensorCount increases.");
-
-                for (int i = 0; i < smallerEvents.Count; i++)
-                {
-                    AssertSelfTest(smallerEvents[i].TimeSeconds == largerEvents[i].TimeSeconds &&
-                        smallerEvents[i].PacketBits == largerEvents[i].PacketBits,
-                        "Packet stream for an existing sensor should stay stable when SensorCount increases.");
-                }
+                AssertSelfTest(smallerBaseEvents[i].TimeSeconds == largerBaseEvents[i].TimeSeconds &&
+                    smallerBaseEvents[i].SourceId == largerBaseEvents[i].SourceId &&
+                    smallerBaseEvents[i].PacketBits == largerBaseEvents[i].PacketBits,
+                    "Packet stream for sourceId <= 1000 should stay stable when SensorCount increases.");
             }
+
+            List<PacketEventTemplate> addedBlockEvents = twoThousandSensorArtifact.PacketEvents.FindAll(
+                delegate (PacketEventTemplate packetEvent) { return packetEvent.SourceId >= 1001; });
+            AssertSelfTest(addedBlockEvents.Count == baseEventCount,
+                "Nodes 1001-2000 should contribute one additional global packet stream.");
         }
 
         private static ExperimentArtifact CreateBprSelfTestArtifact(double[] sensorEnergies)
