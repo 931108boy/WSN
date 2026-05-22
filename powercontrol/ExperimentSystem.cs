@@ -1549,22 +1549,7 @@ namespace WindowsFormsApplication1
                     "無法產生 connected topology：RadioRangeMeters 太小或 SensorCount 太低，無法在 1000 次重試內讓所有 sensor 連到 BS。");
             }
 
-            int eventCount = Math.Max(0, (int)Math.Round(settings.EventRatePerSecond * settings.SimulationTimeSeconds));
-            for (int i = 0; i < eventCount; i++)
-            {
-                PacketEventTemplate packetEvent = new PacketEventTemplate();
-                packetEvent.TimeSeconds = random.NextDouble() * settings.SimulationTimeSeconds;
-                packetEvent.SourceId = 1 + random.Next(settings.SensorCount);
-                packetEvent.PacketBits = settings.PacketBits;
-                artifact.PacketEvents.Add(packetEvent);
-            }
-            artifact.PacketEvents.Sort(delegate (PacketEventTemplate a, PacketEventTemplate b)
-            {
-                int compare = a.TimeSeconds.CompareTo(b.TimeSeconds);
-                if (compare != 0)
-                    return compare;
-                return a.SourceId.CompareTo(b.SourceId);
-            });
+            GenerateNestedPerSensorPacketEvents(settings, artifact, seed);
 
             for (double time = 10000.0; time <= settings.SimulationTimeSeconds + 1e-9; time += 10000.0)
             {
@@ -1585,6 +1570,59 @@ namespace WindowsFormsApplication1
             artifact.BuildRateChangesByNodeId();
             artifact.ArtifactHash = artifact.ComputeHash(settings);
             return artifact;
+        }
+
+        private static void GenerateNestedPerSensorPacketEvents(
+            ExperimentSettings settings,
+            ExperimentArtifact artifact,
+            int seed)
+        {
+            artifact.PacketEvents.Clear();
+
+            double rate = Math.Max(0.0, settings.EventRatePerSecond);
+            int eventCountForSensor = Math.Max(0, (int)Math.Round(
+                rate * settings.SimulationTimeSeconds));
+
+            if (eventCountForSensor <= 0)
+                return;
+
+            for (int sourceId = 1; sourceId <= settings.SensorCount; sourceId++)
+            {
+                int sensorSeed = StablePacketSeed(seed, sourceId);
+                Random packetRandom = new Random(sensorSeed);
+
+                for (int i = 0; i < eventCountForSensor; i++)
+                {
+                    PacketEventTemplate packetEvent = new PacketEventTemplate();
+                    packetEvent.TimeSeconds = packetRandom.NextDouble() * settings.SimulationTimeSeconds;
+                    packetEvent.SourceId = sourceId;
+                    packetEvent.PacketBits = settings.PacketBits;
+                    artifact.PacketEvents.Add(packetEvent);
+                }
+            }
+
+            artifact.PacketEvents.Sort(delegate (PacketEventTemplate a, PacketEventTemplate b)
+            {
+                int compare = a.TimeSeconds.CompareTo(b.TimeSeconds);
+                if (compare != 0)
+                    return compare;
+                compare = a.SourceId.CompareTo(b.SourceId);
+                if (compare != 0)
+                    return compare;
+                return a.PacketBits.CompareTo(b.PacketBits);
+            });
+        }
+
+        private static int StablePacketSeed(int runSeed, int sourceId)
+        {
+            unchecked
+            {
+                int hash = 17;
+                hash = hash * 31 + runSeed;
+                hash = hash * 31 + 1000003;
+                hash = hash * 31 + sourceId;
+                return hash & 0x7fffffff;
+            }
         }
 
         public void BuildRateChangesByNodeId()
@@ -6195,6 +6233,7 @@ namespace WindowsFormsApplication1
                 AssertSelfTest(Array.IndexOf(ExperimentSettings.AllAlgorithms(), "NJF_YU_BPR") >= 0,
                     "AllAlgorithms should include NJF_YU_BPR.");
 
+                RunNestedPacketEventGenerationSelfTest(tempDirectory);
                 RunCsvOutputSelectionSelfTest(tempDirectory);
                 RunStandaloneDispatchSelfTest(tempDirectory, simulations);
                 RunActiveRequestProactiveSelfTest(tempDirectory, simulations);
@@ -6785,6 +6824,54 @@ namespace WindowsFormsApplication1
             settings.OutputDirectory = outputDirectory;
             settings.Normalize();
             return settings;
+        }
+
+        private static void RunNestedPacketEventGenerationSelfTest(string tempDirectory)
+        {
+            ExperimentSettings threeSensorSettings = CreateBprSelfTestSettings(tempDirectory);
+            threeSensorSettings.SensorCount = 3;
+            threeSensorSettings.SimulationTimeSeconds = 10.0;
+            threeSensorSettings.EventRatePerSecond = 0.2;
+            threeSensorSettings.Normalize();
+
+            ExperimentSettings fiveSensorSettings = CreateBprSelfTestSettings(tempDirectory);
+            fiveSensorSettings.SensorCount = 5;
+            fiveSensorSettings.SimulationTimeSeconds = threeSensorSettings.SimulationTimeSeconds;
+            fiveSensorSettings.EventRatePerSecond = threeSensorSettings.EventRatePerSecond;
+            fiveSensorSettings.Normalize();
+
+            int seed = 42;
+            int expectedEventsPerSensor = (int)Math.Round(
+                threeSensorSettings.EventRatePerSecond * threeSensorSettings.SimulationTimeSeconds);
+            ExperimentArtifact threeSensorArtifact = ExperimentArtifact.Generate(threeSensorSettings, 1, seed);
+            ExperimentArtifact fiveSensorArtifact = ExperimentArtifact.Generate(fiveSensorSettings, 1, seed);
+
+            AssertSelfTest(threeSensorArtifact.PacketEvents.Count ==
+                threeSensorSettings.SensorCount * expectedEventsPerSensor,
+                "Packet events should be generated per sensor for the smaller SensorCount.");
+            AssertSelfTest(fiveSensorArtifact.PacketEvents.Count ==
+                fiveSensorSettings.SensorCount * expectedEventsPerSensor,
+                "Packet events should be generated per sensor for the larger SensorCount.");
+
+            for (int sourceId = 1; sourceId <= threeSensorSettings.SensorCount; sourceId++)
+            {
+                List<PacketEventTemplate> smallerEvents = threeSensorArtifact.PacketEvents.FindAll(
+                    delegate (PacketEventTemplate packetEvent) { return packetEvent.SourceId == sourceId; });
+                List<PacketEventTemplate> largerEvents = fiveSensorArtifact.PacketEvents.FindAll(
+                    delegate (PacketEventTemplate packetEvent) { return packetEvent.SourceId == sourceId; });
+
+                AssertSelfTest(smallerEvents.Count == expectedEventsPerSensor,
+                    "Each smaller-artifact sensor should get the expected packet count.");
+                AssertSelfTest(largerEvents.Count == expectedEventsPerSensor,
+                    "Existing sensors should keep the expected packet count after SensorCount increases.");
+
+                for (int i = 0; i < smallerEvents.Count; i++)
+                {
+                    AssertSelfTest(smallerEvents[i].TimeSeconds == largerEvents[i].TimeSeconds &&
+                        smallerEvents[i].PacketBits == largerEvents[i].PacketBits,
+                        "Packet stream for an existing sensor should stay stable when SensorCount increases.");
+                }
+            }
         }
 
         private static ExperimentArtifact CreateBprSelfTestArtifact(double[] sensorEnergies)
