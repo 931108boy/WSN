@@ -1,16 +1,16 @@
 <?xml version="1.0"?>
 <ExperimentSettings xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <ProjectRoot>C:\Users\MB16\Desktop\WSN</ProjectRoot>
+  <ProjectRoot>C:\Users\MB16\Desktop\WSN-main (9)\WSN-main</ProjectRoot>
   <BaseSeed>42</BaseSeed>
-  <RunCount>5</RunCount>
-  <SensorCount>1000</SensorCount>
-  <MapWidthMeters>1000</MapWidthMeters>
-  <MapHeightMeters>1000</MapHeightMeters>
+  <RunCount>30</RunCount>
+  <SensorCount>2000</SensorCount>
+  <MapWidthMeters>500</MapWidthMeters>
+  <MapHeightMeters>500</MapHeightMeters>
   <SimulationTimeSeconds>5000000</SimulationTimeSeconds>
-  <InitialEnergyJ>5</InitialEnergyJ>
+  <InitialEnergyJ>50</InitialEnergyJ>
   <SensorBackgroundLifetimeSeconds>100000</SensorBackgroundLifetimeSeconds>
   <InitialResidualJitterPercent>0</InitialResidualJitterPercent>
-  <EventRatePerSecond>0.05</EventRatePerSecond>
+  <EventRatePerSecond>0</EventRatePerSecond>
   <PacketBits>81920</PacketBits>
   <RadioRangeMeters>60</RadioRangeMeters>
   <ReceiverEnergyNjPerBit>50</ReceiverEnergyNjPerBit>
@@ -22,9 +22,9 @@
   <WcvMoveCostJPerMeter>10</WcvMoveCostJPerMeter>
   <NmaxTask>30</NmaxTask>
   <DynamicNmaxTask>false</DynamicNmaxTask>
-  <ThresholdMode>TreqSeconds</ThresholdMode>
+  <ThresholdMode>ChengTreq</ThresholdMode>
   <RequestThresholdPercent>10</RequestThresholdPercent>
-  <TreqSeconds>4620</TreqSeconds>
+  <TreqSeconds>2309.7091837222606</TreqSeconds>
   <BprDeadlineThresholdSeconds>4620</BprDeadlineThresholdSeconds>
   <AllowStandaloneProactiveDispatch>false</AllowStandaloneProactiveDispatch>
   <ProactivePredictionHorizonSeconds>0</ProactivePredictionHorizonSeconds>
@@ -35,9 +35,9 @@
   <YuIntervalUncertaintySeconds>0</YuIntervalUncertaintySeconds>
   <PrateChange>0.2</PrateChange>
   <RateChangeVariationPercent>12.5</RateChangeVariationPercent>
-  <SelectedAlgorithmsCsv>EDF,NJF,TADP_LIN,RCSS,NJF_ZHENG_BPR,NJF_YU_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_ZHENG_BPR_EXTENDED,NJF_ROUTE_YU_BPR_LIMITED,NJF_ROUTE_YU_BPR_EXTENDED,FUZZY,GENE,PSO,Cuckoo</SelectedAlgorithmsCsv>
-  <OutputDirectory>C:\Users\MB16\Desktop\WSN\outputs</OutputDirectory>
-  <LastOutputWorkbookPath>C:\Users\MB16\Desktop\WSN\outputs\20260522-043636-sweep2-SensorCount-start1000-step100-seed42-runs5\comparison-seed42-runs5.xlsx</LastOutputWorkbookPath>
+  <SelectedAlgorithmsCsv>EDF,NJF,TADP_LIN,NJF_ZHENG_BPR,NJF_YU_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_ZHENG_BPR_EXTENDED,NJF_ROUTE_YU_BPR_LIMITED,NJF_ROUTE_YU_BPR_EXTENDED,FUZZY</SelectedAlgorithmsCsv>
+  <OutputDirectory>C:\Users\MB16\Desktop\WSN-main (9)\WSN-main\outputs</OutputDirectory>
+  <LastOutputWorkbookPath>C:\Users\MB16\Desktop\WSN-main (9)\WSN-main\outputs\20260523-174320-sweep6-EventRatePerSecond-start0-step0.02-seed42-runs30\comparison-seed42-runs30.xlsx</LastOutputWorkbookPath>
   <WriteTaskDetailCsv>true</WriteTaskDetailCsv>
   <WriteMissionDetailsCsv>true</WriteMissionDetailsCsv>
   <WriteTaskRecordsCsv>true</WriteTaskRecordsCsv>
@@ -47,7 +47,7 @@
   <UseFastSimulationScheduling>true</UseFastSimulationScheduling>
   <MaxParallelJobs>0</MaxParallelJobs>
   <SweepEnabled>true</SweepEnabled>
-  <SweepParameterKey>SensorCount</SweepParameterKey>
-  <SweepIterationCount>1</SweepIterationCount>
-  <SweepStepValue>100</SweepStepValue>
+  <SweepParameterKey>EventRatePerSecond</SweepParameterKey>
+  <SweepIterationCount>5</SweepIterationCount>
+  <SweepStepValue>0.02</SweepStepValue>
 </ExperimentSettings>

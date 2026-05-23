@@ -2553,6 +2553,7 @@ namespace WindowsFormsApplication1
                 return;
             request.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
             request.BaseConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
+            request.RequestNodeConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
             request.RoutingTxLoadJPerSecond = GetRoutingTxLoadJPerSecond(sensor);
             request.RoutingRxLoadJPerSecond = GetRoutingRxLoadJPerSecond(sensor);
             request.RoutingLoadJPerSecond = request.RoutingTxLoadJPerSecond + request.RoutingRxLoadJPerSecond;
@@ -2841,6 +2842,7 @@ namespace WindowsFormsApplication1
                 double arrivalTime = currentTime;
                 double chargeStartTime = currentTime;
                 double beforeEnergy = sensor.EnergyJ;
+                double serviceNodeConsumeRateSnapshot = sensor.ConsumeRateJPerSecond;
                 string failReason = "";
                 bool deadlineOk = arrivalTime <= request.DeadlineSeconds + Epsilon;
                 bool success = sensor.Alive && deadlineOk;
@@ -2933,6 +2935,7 @@ namespace WindowsFormsApplication1
                 record.InternalEnergyAfterNj = afterEnergy * 1000000000.0;
                 record.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
                 PopulateTaskRecordRoutingFields(record, request.NodeId, request);
+                PopulateNodeConsumeRateSnapshotFields(record, request, serviceNodeConsumeRateSnapshot, true);
                 record.InternalRateNjPerTick = sensor.ConsumeRateJPerSecond * 1000000000.0 * 0.01;
                 record.DeliveredEnergyJ = context.DeliveredEnergyJ;
                 record.DistanceFromPreviousMeters = distance;
@@ -3052,6 +3055,7 @@ namespace WindowsFormsApplication1
             record.InternalEnergyAfterNj = record.EnergyAfterJ * 1000000000.0;
             record.ConsumeRateJPerSecond = sensors[request.NodeId].ConsumeRateJPerSecond;
             PopulateTaskRecordRoutingFields(record, request.NodeId, request);
+            PopulateNodeConsumeRateSnapshotFields(record, request, 0.0, false);
             record.InternalRateNjPerTick = record.ConsumeRateJPerSecond * 1000000000.0 * 0.01;
             record.DeliveredEnergyJ = 0.0;
             record.DistanceFromPreviousMeters = 0.0;
@@ -3098,6 +3102,39 @@ namespace WindowsFormsApplication1
             record.EffectiveConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond + record.RoutingLoadJPerSecond;
             record.RoutingSubtreeSize = GetRoutingSubtreeSize(nodeId);
             record.ExpectedRoutingForwardPacketsPerSecond = GetExpectedRoutingForwardPacketsPerSecond(nodeId);
+        }
+
+        private static void PopulateNodeConsumeRateSnapshotFields(
+            ExperimentTaskRecord record,
+            ChargingRequest request,
+            double serviceNodeConsumeRateJPerSecond,
+            bool hasServiceSnapshot)
+        {
+            if (record == null)
+                return;
+
+            if (request == null || !hasServiceSnapshot)
+            {
+                record.RequestNodeConsumeRateJPerSecond = 0.0;
+                record.ServiceNodeConsumeRateJPerSecond = 0.0;
+                record.NodeConsumeRatePredictionErrorJPerSecond = 0.0;
+                return;
+            }
+
+            record.RequestNodeConsumeRateJPerSecond = ResolveRequestNodeConsumeRateSnapshot(request);
+            record.ServiceNodeConsumeRateJPerSecond = Math.Max(0.0, serviceNodeConsumeRateJPerSecond);
+            record.NodeConsumeRatePredictionErrorJPerSecond =
+                record.ServiceNodeConsumeRateJPerSecond -
+                record.RequestNodeConsumeRateJPerSecond;
+        }
+
+        private static double ResolveRequestNodeConsumeRateSnapshot(ChargingRequest request)
+        {
+            if (request == null)
+                return 0.0;
+            if (request.RequestNodeConsumeRateJPerSecond > 0.0)
+                return request.RequestNodeConsumeRateJPerSecond;
+            return Math.Max(0.0, request.ConsumeRateJPerSecond);
         }
 
         private void AccumulateRunTaskStats(ExperimentTaskRecord record)
@@ -4531,6 +4568,7 @@ namespace WindowsFormsApplication1
             proactive.RequestEnergyJ = interval.EnergyJ;
             proactive.ConsumeRateJPerSecond = interval.ConsumeRateJPerSecond;
             proactive.BaseConsumeRateJPerSecond = interval.BaseConsumeRateJPerSecond;
+            proactive.RequestNodeConsumeRateJPerSecond = interval.ConsumeRateJPerSecond;
             proactive.EffectiveConsumeRateJPerSecond = interval.EffectiveConsumeRateJPerSecond;
             proactive.RoutingLoadJPerSecond = interval.RoutingLoadJPerSecond;
             proactive.RoutingTxLoadJPerSecond = 0.0;
@@ -4715,6 +4753,7 @@ namespace WindowsFormsApplication1
             proactive.RequestEnergyJ = entry.EnergyJ;
             proactive.ConsumeRateJPerSecond = entry.ConsumeRateJPerSecond;
             proactive.BaseConsumeRateJPerSecond = entry.BaseConsumeRateJPerSecond;
+            proactive.RequestNodeConsumeRateJPerSecond = entry.ConsumeRateJPerSecond;
             proactive.EffectiveConsumeRateJPerSecond = entry.EffectiveConsumeRateJPerSecond;
             proactive.RoutingLoadJPerSecond = entry.RoutingLoadJPerSecond;
             proactive.RoutingTxLoadJPerSecond = entry.RoutingTxLoadJPerSecond;
@@ -6780,6 +6819,7 @@ namespace WindowsFormsApplication1
             return new string[] { "任務編號", "任務順序", "節點編號", "是否主動充電", "請求時間秒",
                 "截止時間秒", "出發時間秒", "抵達時間秒", "等待時間秒", "開始充電時間秒",
                 "結束充電時間秒", "充電前能量J", "節點耗電率J每秒", "有效耗電率J每秒",
+                "請求時節點耗電率J每秒", "服務時節點耗電率J每秒", "耗電率預測誤差J每秒",
                 "路由總耗電率J每秒", "路由傳送耗電率J每秒", "路由接收耗電率J每秒", "路由子樹大小",
                 "預期轉送封包數每秒", "內部耗電率nJ每Tick", "與上一點距離m", "是否成功", "失敗原因", "WCV剩餘能量J" };
         }
@@ -7639,6 +7679,7 @@ namespace WindowsFormsApplication1
         public double RequestEnergyJ;
         public double ConsumeRateJPerSecond;
         public double BaseConsumeRateJPerSecond;
+        public double RequestNodeConsumeRateJPerSecond;
         public double EffectiveConsumeRateJPerSecond;
         public double RoutingLoadJPerSecond;
         public double RoutingTxLoadJPerSecond;
@@ -7659,6 +7700,7 @@ namespace WindowsFormsApplication1
             clone.RequestEnergyJ = RequestEnergyJ;
             clone.ConsumeRateJPerSecond = ConsumeRateJPerSecond;
             clone.BaseConsumeRateJPerSecond = BaseConsumeRateJPerSecond;
+            clone.RequestNodeConsumeRateJPerSecond = RequestNodeConsumeRateJPerSecond;
             clone.EffectiveConsumeRateJPerSecond = EffectiveConsumeRateJPerSecond;
             clone.RoutingLoadJPerSecond = RoutingLoadJPerSecond;
             clone.RoutingTxLoadJPerSecond = RoutingTxLoadJPerSecond;
@@ -7767,6 +7809,9 @@ namespace WindowsFormsApplication1
         public double ConsumeRateJPerSecond;
         public double BaseConsumeRateJPerSecond;
         public double EffectiveConsumeRateJPerSecond;
+        public double RequestNodeConsumeRateJPerSecond;
+        public double ServiceNodeConsumeRateJPerSecond;
+        public double NodeConsumeRatePredictionErrorJPerSecond;
         public double RoutingLoadJPerSecond;
         public double RoutingTxLoadJPerSecond;
         public double RoutingRxLoadJPerSecond;
@@ -8006,6 +8051,8 @@ namespace WindowsFormsApplication1
             if (disposed || taskWriter == null || record == null)
                 return;
 
+            ValidateNodeConsumeRateSnapshot(record);
+
             taskWriter.WriteLine(CsvRow(
                 record.MissionId,
                 record.TaskOrder,
@@ -8021,6 +8068,9 @@ namespace WindowsFormsApplication1
                 record.EnergyBeforeJ,
                 record.ConsumeRateJPerSecond,
                 record.EffectiveConsumeRateJPerSecond,
+                record.RequestNodeConsumeRateJPerSecond,
+                record.ServiceNodeConsumeRateJPerSecond,
+                record.NodeConsumeRatePredictionErrorJPerSecond,
                 record.RoutingLoadJPerSecond,
                 record.RoutingTxLoadJPerSecond,
                 record.RoutingRxLoadJPerSecond,
@@ -8031,6 +8081,48 @@ namespace WindowsFormsApplication1
                 record.Success,
                 record.FailureReason,
                 record.WcvEnergyAfterJ));
+        }
+
+        private static bool IsFinite(double value)
+        {
+            return !Double.IsNaN(value) && !Double.IsInfinity(value);
+        }
+
+        private static void ValidateNodeConsumeRateSnapshot(ExperimentTaskRecord record)
+        {
+            const double eps = 1e-12;
+
+            if (!IsFinite(record.RequestNodeConsumeRateJPerSecond) ||
+                !IsFinite(record.ServiceNodeConsumeRateJPerSecond) ||
+                !IsFinite(record.NodeConsumeRatePredictionErrorJPerSecond))
+            {
+                throw new InvalidOperationException(
+                    "Invalid node consume rate snapshot: NaN or Infinity. NodeId=" +
+                    record.NodeId.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (record.RequestNodeConsumeRateJPerSecond < -eps ||
+                record.ServiceNodeConsumeRateJPerSecond < -eps)
+            {
+                throw new InvalidOperationException(
+                    "Invalid node consume rate snapshot: negative rate. NodeId=" +
+                    record.NodeId.ToString(CultureInfo.InvariantCulture));
+            }
+
+            double expectedError =
+                record.ServiceNodeConsumeRateJPerSecond -
+                record.RequestNodeConsumeRateJPerSecond;
+            double scale = Math.Max(1.0, Math.Max(
+                Math.Abs(record.ServiceNodeConsumeRateJPerSecond),
+                Math.Abs(record.RequestNodeConsumeRateJPerSecond)));
+
+            if (Math.Abs(record.NodeConsumeRatePredictionErrorJPerSecond - expectedError) >
+                1e-8 * scale)
+            {
+                throw new InvalidOperationException(
+                    "Invalid node consume rate snapshot: prediction error mismatch. NodeId=" +
+                    record.NodeId.ToString(CultureInfo.InvariantCulture));
+            }
         }
 
         public void WriteRoutingLoad(
@@ -8228,6 +8320,7 @@ namespace WindowsFormsApplication1
             taskWriter.WriteLine(CsvRow("任務編號", "任務順序", "節點編號", "是否主動充電", "請求時間秒",
                 "截止時間秒", "出發時間秒", "抵達時間秒", "等待時間秒", "開始充電時間秒",
                 "結束充電時間秒", "充電前能量J", "節點耗電率J每秒", "有效耗電率J每秒",
+                "請求時節點耗電率J每秒", "服務時節點耗電率J每秒", "耗電率預測誤差J每秒",
                 "路由總耗電率J每秒", "路由傳送耗電率J每秒", "路由接收耗電率J每秒", "路由子樹大小",
                 "預期轉送封包數每秒", "內部耗電率nJ每Tick", "與上一點距離m", "是否成功", "失敗原因", "WCV剩餘能量J"));
         }
