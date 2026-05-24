@@ -184,10 +184,10 @@ namespace WindowsFormsApplication1
             expSweepSummaryLabel.Size = new Size(320, 20);
             dataGroup.Controls.Add(expSweepSummaryLabel);
 
-            GroupBox energyGroup = create_group_box("能量、封包與動態耗能", 404, 92, 360, 290);
+            GroupBox energyGroup = create_group_box("能量、需求與動態耗能", 404, 92, 360, 290);
             expInitialEnergyBox = add_labeled_textbox(energyGroup, "初始能量(J)", "感測器滿電容量", 18, 30, "");
             expBackgroundLifetimeBox = add_labeled_textbox(energyGroup, "背景壽命(s)", "只靠連續耗能時的滿電壽命", 18, 64, "");
-            expEventRateBox = add_labeled_textbox(energyGroup, "事件率(封包/s)", "由 seed 產生封包事件", 18, 98, "");
+            expEventRateBox = add_labeled_textbox(energyGroup, "需求頻率 p(次/s)", "CHENG 啟動/充電需求頻率", 18, 98, "");
             expPrateChangeBox = add_labeled_textbox(energyGroup, "耗能變動機率", "每 10000s 檢查", 18, 132, "Prate_change");
             expRateChangeVariationBox = add_labeled_textbox(energyGroup, "變動幅度(%)", "倍率 = 1 ± 此百分比", 18, 166, "預設 12.5");
             expRequestThresholdBox = add_labeled_textbox(energyGroup, "需求門檻(%)", "百分比門檻使用", 18, 200, "");
@@ -319,7 +319,9 @@ namespace WindowsFormsApplication1
 
             expWriteMissionDetailsBox = add_output_csv_checkbox(outputGroup, "mission-details", 110, 104, 130);
             expWriteTaskRecordsBox = add_output_csv_checkbox(outputGroup, "task-records", 245, 104, 125);
-            expWriteRoutingLoadBox = add_output_csv_checkbox(outputGroup, "routing-load", 375, 104, 120);
+            expWriteRoutingLoadBox = add_output_csv_checkbox(outputGroup, "routing-load(停用)", 375, 104, 120);
+            expWriteRoutingLoadBox.Checked = false;
+            expWriteRoutingLoadBox.Enabled = false;
             expWriteBprDebugBox = add_output_csv_checkbox(outputGroup, "bpr-debug", 500, 104, 105);
             expWriteYuBprDebugBox = add_output_csv_checkbox(outputGroup, "yu-bpr-debug", 610, 104, 118);
 
@@ -345,7 +347,7 @@ namespace WindowsFormsApplication1
 
             GroupBox noteGroup = create_group_box("資料產生說明", 24, 704, 1120, 120);
             Label note = new Label();
-            note.Text = "本系統不使用舊 MyWSN 的單一節點排程介面。資料由亂數種子產生共用地圖、事件、初始剩餘能量與耗能率變動時間表，所有演算法共用同一資料雜湊碼。MyWSN 僅作為封包能耗、資料格式與參數量級參考。";
+            note.Text = "本系統不使用舊 MyWSN 的單一節點排程介面。資料由亂數種子產生共用地圖、CHENG 啟動需求與耗能率變動時間表，所有演算法共用同一資料雜湊碼。封包與 routing-load 僅保留為相容欄位。";
             note.Location = new Point(18, 28);
             note.Size = new Size(1070, 50);
             noteGroup.Controls.Add(note);
@@ -429,7 +431,10 @@ namespace WindowsFormsApplication1
             if (expWriteTaskRecordsBox != null)
                 expWriteTaskRecordsBox.Checked = experimentSettings.WriteTaskRecordsCsv;
             if (expWriteRoutingLoadBox != null)
-                expWriteRoutingLoadBox.Checked = experimentSettings.WriteRoutingLoadCsv;
+            {
+                expWriteRoutingLoadBox.Checked = false;
+                expWriteRoutingLoadBox.Enabled = false;
+            }
             if (expWriteBprDebugBox != null)
                 expWriteBprDebugBox.Checked = experimentSettings.WriteBprDebugCsv;
             if (expWriteYuBprDebugBox != null)
@@ -482,8 +487,7 @@ namespace WindowsFormsApplication1
                 experimentSettings.WriteMissionDetailsCsv = expWriteMissionDetailsBox.Checked;
             if (expWriteTaskRecordsBox != null)
                 experimentSettings.WriteTaskRecordsCsv = expWriteTaskRecordsBox.Checked;
-            if (expWriteRoutingLoadBox != null)
-                experimentSettings.WriteRoutingLoadCsv = expWriteRoutingLoadBox.Checked;
+            experimentSettings.WriteRoutingLoadCsv = false;
             if (expWriteBprDebugBox != null)
                 experimentSettings.WriteBprDebugCsv = expWriteBprDebugBox.Checked;
             if (expWriteYuBprDebugBox != null)
@@ -494,7 +498,9 @@ namespace WindowsFormsApplication1
             if (expThresholdModeBox.SelectedIndex == 1)
             {
                 experimentSettings.ThresholdMode = "ChengTreq";
-                experimentSettings.TreqSeconds = experimentSettings.ComputeAutoTreqSeconds();
+                double treq = experimentSettings.ComputeAutoTreqSeconds();
+                experimentSettings.TreqSeconds = treq;
+                experimentSettings.BprDeadlineThresholdSeconds = treq;
             }
             else if (expThresholdModeBox.SelectedIndex == 2)
             {
@@ -538,7 +544,14 @@ namespace WindowsFormsApplication1
             for (int i = 0; i < boxes.Length; i++)
             {
                 if (boxes[i] != null)
+                {
                     boxes[i].Enabled = enabled;
+                    if (boxes[i] == expWriteRoutingLoadBox)
+                    {
+                        boxes[i].Checked = false;
+                        boxes[i].Enabled = false;
+                    }
+                }
             }
         }
 
@@ -553,7 +566,10 @@ namespace WindowsFormsApplication1
                 experimentSettings.ThresholdMode = "ChengTreq";
                 try
                 {
-                    expTreqBox.Text = experimentSettings.ComputeAutoTreqSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    double treq = experimentSettings.ComputeAutoTreqSeconds();
+                    experimentSettings.TreqSeconds = treq;
+                    experimentSettings.BprDeadlineThresholdSeconds = treq;
+                    expTreqBox.Text = treq.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -621,10 +637,18 @@ namespace WindowsFormsApplication1
             if (key == "NJF") return "NJF（最近工作優先）";
             if (key == "TADP_LIN") return "TADP/LIN（期限距離線性排序）";
             if (key == "RCSS") return "RCSS（風險與耗能排序）";
-            if (key == "NJF_BPR") return "NJF_BPR（ZHENG BP&R deterministic）";
+            if (key == "NJF_CHENG_BPR") return "NJF_CHENG_BPR（CHENG原文BP&R，seeded random）";
+            if (key == "TADP_CHENG_BPR") return "TADP_CHENG_BPR（CHENG原文BP&R，seeded random）";
+            if (key == "EDF_CHENG_BPR") return "EDF_CHENG_BPR（CHENG原文BP&R，seeded random）";
+            if (key == "NJF_ZHENG_BPR") return "NJF_ZHENG_BPR（ZHENG BP&R deterministic extension）";
+            if (key == "NJF_YU_BPR") return "NJF_YU_BPR（YU interval BP&R extension，非CHENG原文）";
+            if (key == "NJF_ROUTE_ZHENG_BPR_LIMITED") return "NJF_ROUTE_ZHENG_BPR_LIMITED（WCV route-aware extension，<=NmaxTask）";
+            if (key == "NJF_ROUTE_ZHENG_BPR_EXTENDED") return "NJF_ROUTE_ZHENG_BPR_EXTENDED（WCV route-aware extension，可超過NmaxTask）";
+            if (key == "NJF_ROUTE_YU_BPR_LIMITED") return "NJF_ROUTE_YU_BPR_LIMITED（WCV route-aware YU extension，<=NmaxTask）";
+            if (key == "NJF_ROUTE_YU_BPR_EXTENDED") return "NJF_ROUTE_YU_BPR_EXTENDED（WCV route-aware YU extension，可超過NmaxTask）";
             if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（ZHENG BP&R route-cost，<=NmaxTask）";
             if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（ZHENG BP&R route-cost，可超過NmaxTask）";
-            if (key == "FUZZY") return "FUZZY（模糊推論排程）";
+            if (key == "FUZZY") return "FUZZY（paper-flow欄位，額外比較）";
             if (key == "GENE") return "GENE（GA route optimization）";
             if (key == "PSO") return "PSO（random-key PSO route optimization）";
             if (key == "Cuckoo") return "Cuckoo（Cuckoo Search route optimization）";
