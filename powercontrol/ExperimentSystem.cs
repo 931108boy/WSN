@@ -4194,8 +4194,14 @@ namespace WindowsFormsApplication1
                 {
                     BprRemovalDecision decision = decisions[i];
                     int before = cplist.Count;
-                    cplist.Add(CreateZhengBprProactiveRequest(decision));
                     reservedNodeIds.Add(decision.NodeId);
+                    ChargingRequest proactive = CreateZhengBprProactiveRequest(decision);
+                    if (proactive == null)
+                    {
+                        WriteBprDebug(iteration, worstWindow, decision, "INVALID_ZHENG_PROACTIVE_DEADLINE", before, cplist.Count, maxTask, allowCapacityOverflow);
+                        continue;
+                    }
+                    cplist.Add(proactive);
                     WriteBprDebug(iteration, worstWindow, decision, decision.Reason, before, cplist.Count, maxTask, allowCapacityOverflow);
                 }
 
@@ -4329,8 +4335,11 @@ namespace WindowsFormsApplication1
                     picked,
                     routeInsertionCost,
                     "ZHENG_ROUTE_COST_WINDOW_REMOVAL");
+                ChargingRequest previewProactive = CreateZhengBprProactiveRequest(decision);
+                if (previewProactive == null)
+                    continue;
                 selected.Add(decision);
-                previewCplist.Add(CreateZhengBprProactiveRequest(decision));
+                previewCplist.Add(previewProactive);
             }
 
             return selected;
@@ -4372,22 +4381,46 @@ namespace WindowsFormsApplication1
 
         private ChargingRequest CreateZhengBprProactiveRequest(BprRemovalDecision decision)
         {
+            if (decision == null)
+                return null;
+
+            SensorState sensor = null;
+            if (decision.NodeId > 0 && decision.NodeId < sensors.Length)
+                sensor = sensors[decision.NodeId];
+
+            double deadline = decision.DeathTimeSeconds;
+            if (!IsFiniteTime(deadline) && sensor != null)
+                deadline = ComputeSensorDeathTimeSeconds(sensor);
+            if (!IsFiniteTime(deadline))
+            {
+                if (sensor == null || sensor.ConsumeRateJPerSecond <= 1e-12)
+                    return null;
+                deadline = currentTime + ResolveProactivePredictionHorizonSeconds(GetMissionTaskLimit());
+            }
+            if (!IsFiniteTime(deadline))
+                return null;
+
             ChargingRequest proactive = new ChargingRequest();
             proactive.RequestId = -decision.NodeId;
             proactive.NodeId = decision.NodeId;
             proactive.RequestTimeSeconds = currentTime;
-            proactive.DeadlineSeconds = decision.DeathTimeSeconds;
-            if (decision.NodeId > 0 && decision.NodeId < sensors.Length)
+            proactive.DeadlineSeconds = deadline;
+            if (sensor != null)
             {
-                SensorState sensor = sensors[decision.NodeId];
                 proactive.RequestEnergyJ = sensor.EnergyJ;
                 PopulateChargingRequestRoutingFields(proactive, sensor);
             }
-            proactive.EffectiveConsumeRateJPerSecond = decision.EffectiveConsumeRateJPerSecond;
+            if (decision.EffectiveConsumeRateJPerSecond > 0.0)
+                proactive.EffectiveConsumeRateJPerSecond = decision.EffectiveConsumeRateJPerSecond;
             proactive.CriticalDensity = 0.0;
             proactive.IsProactive = true;
             proactive.ProactiveReason = ZhengBprWindowRemovalReason;
             return proactive;
+        }
+
+        private static bool IsFiniteTime(double value)
+        {
+            return !Double.IsNaN(value) && !Double.IsInfinity(value);
         }
 
         private List<YuRemovalDecision> SelectYuRemovalNodes(
@@ -7650,6 +7683,35 @@ namespace WindowsFormsApplication1
             AssertNear(zhengProactive.DeadlineSeconds, bprDecisions[0].DeathTimeSeconds, 1e-9,
                 "ZHENG BP&R proactive deadline should use the predicted death time.");
 
+            BprRemovalDecision infiniteDeathDecision = CreateManualZhengRemovalDecision(1, 100.0, Double.PositiveInfinity, 1.0);
+            ChargingRequest fallbackProactive = windowSimulation.CreateZhengBprProactiveRequest(infiniteDeathDecision);
+            AssertSelfTest(fallbackProactive != null &&
+                !Double.IsNaN(fallbackProactive.DeadlineSeconds) &&
+                !Double.IsInfinity(fallbackProactive.DeadlineSeconds),
+                "ZHENG BP&R proactive deadline must fall back to a finite sensor death time when the prediction death time is infinite.");
+            AssertNear(fallbackProactive.DeadlineSeconds,
+                windowSimulation.ComputeSensorDeathTimeSeconds(windowSimulation.sensors[1]),
+                1e-9,
+                "ZHENG BP&R infinite-death fallback should use ComputeSensorDeathTimeSeconds when available.");
+
+            BprRemovalDecision nanDeathDecision = CreateManualZhengRemovalDecision(1, 100.0, Double.NaN, 1.0);
+            ChargingRequest nanFallbackProactive = windowSimulation.CreateZhengBprProactiveRequest(nanDeathDecision);
+            AssertSelfTest(nanFallbackProactive != null &&
+                !Double.IsNaN(nanFallbackProactive.DeadlineSeconds) &&
+                !Double.IsInfinity(nanFallbackProactive.DeadlineSeconds),
+                "ZHENG BP&R proactive deadline must fall back to a finite sensor death time when the prediction death time is NaN.");
+
+            ExperimentSimulation zeroRateZhengSimulation = new ExperimentSimulation(
+                windowSettings,
+                CreateBprSelfTestArtifact(new double[] { 80.0 }),
+                "NJF_ZHENG_BPR",
+                null);
+            simulations.Add(zeroRateZhengSimulation);
+            zeroRateZhengSimulation.sensors[1].ConsumeRateJPerSecond = 0.0;
+            ChargingRequest impossibleDeadlineProactive = zeroRateZhengSimulation.CreateZhengBprProactiveRequest(infiniteDeathDecision);
+            AssertSelfTest(impossibleDeadlineProactive == null,
+                "ZHENG BP&R must not create a proactive request when no finite deadline can be resolved.");
+
             List<YuPredictedInterval> manualIntervals = new List<YuPredictedInterval>();
             manualIntervals.Add(CreateManualYuPredictedInterval(1, 100.0, 100.0, 160.0, 150.0, 1.0, 30.0));
             manualIntervals.Add(CreateManualYuPredictedInterval(2, 110.0, 110.0, 170.0, 160.0, 1.0, 30.0));
@@ -7790,6 +7852,24 @@ namespace WindowsFormsApplication1
             request.SlackSeconds = deathTime - requestTime;
             request.RouteInsertionCost = 0.0;
             return request;
+        }
+
+        private static BprRemovalDecision CreateManualZhengRemovalDecision(
+            int nodeId,
+            double requestTime,
+            double deathTime,
+            double effectiveRate)
+        {
+            BprRemovalDecision decision = new BprRemovalDecision();
+            decision.NodeId = nodeId;
+            decision.RequestTimeSeconds = requestTime;
+            decision.DeathTimeSeconds = deathTime;
+            decision.EffectiveConsumeRateJPerSecond = effectiveRate;
+            decision.SlackSeconds = deathTime - requestTime;
+            decision.RouteInsertionCost = 0.0;
+            decision.Score = 0.0;
+            decision.Reason = ZhengBprWindowRemovalReason;
+            return decision;
         }
 
         private static ChargingRequest CreateManualChargingRequest(int nodeId, double deadlineSeconds)
