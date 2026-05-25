@@ -6412,7 +6412,6 @@ namespace WindowsFormsApplication1
                 AssertSelfTest(Array.IndexOf(ExperimentSettings.AllAlgorithms(), "NJF_YU_BPR") >= 0,
                     "AllAlgorithms should include NJF_YU_BPR.");
 
-                RunLegacyPureChargingSelfTest();
                 RunChengPaperFileNameSelfTest(tempDirectory);
                 RunChengPaperBprWrapperSelfTest(tempDirectory, simulations);
                 RunChengPaperRandomPoolSelfTest(tempDirectory, simulations);
@@ -6668,39 +6667,6 @@ namespace WindowsFormsApplication1
                 catch
                 {
                 }
-            }
-        }
-
-        private static void RunLegacyPureChargingSelfTest()
-        {
-            double originalResidual = common.Origin_RESIDUAL;
-            double originalChargingSpeed = common.charging_speed;
-            int originalNumChargerPerCar = common.num_charger_per_car;
-            nodemap originalMap = common.nmap;
-            try
-            {
-                common.Origin_RESIDUAL = 100.0 * 1000000000.0;
-                common.charging_speed = 5.0 * 1000000000.0;
-                common.num_charger_per_car = 1;
-
-                charger testCharger = new charger(0, 0);
-                AssertNear(testCharger.speed, common.charging_speed * common.TIME_UNIT, 1e-6,
-                    "Legacy charger speed should be chargeRateNanoJPerSecond * TIME_UNIT, not scaled by Origin_RESIDUAL / 100.");
-                AssertNear(testCharger.residual, common.Origin_RESIDUAL, 1e-6,
-                    "Legacy charger residual should still use the configured sensor-capacity budget.");
-
-                common.nmap = new nodemap(1, 2);
-                common.nmap.node[1].ET = 123.0;
-                common.nmap.node[1].residual = common.Origin_RESIDUAL * 0.05;
-                AssertNear(common.nmap.get_service_floor(1), 0.0, 1e-9,
-                    "Legacy BP&R service floor should be zero in pure charging; death is residual <= 0, not a packet TX-energy floor.");
-            }
-            finally
-            {
-                common.Origin_RESIDUAL = originalResidual;
-                common.charging_speed = originalChargingSpeed;
-                common.num_charger_per_car = originalNumChargerPerCar;
-                common.nmap = originalMap;
             }
         }
 

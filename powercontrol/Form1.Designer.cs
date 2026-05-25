@@ -194,7 +194,6 @@
             this.button14.TabIndex = 71;
             this.button14.Text = "產生餘電資料";
             this.button14.UseVisualStyleBackColor = true;
-            this.button14.Click += new System.EventHandler(this.button14_Click_1);
             // 
             // generate_data_btn
             // 
@@ -204,7 +203,6 @@
             this.generate_data_btn.TabIndex = 70;
             this.generate_data_btn.Text = "循序產生事件";
             this.generate_data_btn.UseVisualStyleBackColor = true;
-            this.generate_data_btn.Click += new System.EventHandler(this.button14_Click);
             // 
             // density_control
             // 
@@ -308,7 +306,6 @@
             this.button4.Text = "產生循序事件";
             this.button4.UseVisualStyleBackColor = true;
             this.button4.Visible = false;
-            this.button4.Click += new System.EventHandler(this.button4_Click);
             // 
             // button2
             // 
@@ -318,7 +315,6 @@
             this.button2.TabIndex = 20;
             this.button2.Text = "產生地圖";
             this.button2.UseVisualStyleBackColor = true;
-            this.button2.Click += new System.EventHandler(this.button2_Click);
             // 
             // button1
             // 
@@ -328,7 +324,6 @@
             this.button1.TabIndex = 19;
             this.button1.Text = "瀏覽";
             this.button1.UseVisualStyleBackColor = true;
-            this.button1.Click += new System.EventHandler(this.button1_Click);
             // 
             // SimTI
             // 
@@ -511,7 +506,6 @@
             // 
             // folderBrowserDialog1
             // 
-            this.folderBrowserDialog1.HelpRequest += new System.EventHandler(this.folderBrowserDialog1_HelpRequest);
             // 
             // button3
             // 
@@ -522,7 +516,6 @@
             this.button3.Tag = "0";
             this.button3.Text = "開啟資料產生器";
             this.button3.UseVisualStyleBackColor = true;
-            this.button3.Click += new System.EventHandler(this.button3_Click);
             // 
             // button6
             // 
@@ -532,7 +525,6 @@
             this.button6.TabIndex = 22;
             this.button6.Text = "瀏覽";
             this.button6.UseVisualStyleBackColor = true;
-            this.button6.Click += new System.EventHandler(this.button6_Click);
             // 
             // textBox1
             // 
@@ -559,7 +551,6 @@
             this.button7.TabIndex = 25;
             this.button7.Text = "瀏覽";
             this.button7.UseVisualStyleBackColor = true;
-            this.button7.Click += new System.EventHandler(this.button7_Click);
             // 
             // textBox2
             // 
@@ -620,7 +611,6 @@
             this.button8.TabIndex = 30;
             this.button8.Text = "載入";
             this.button8.UseVisualStyleBackColor = true;
-            this.button8.Click += new System.EventHandler(this.button8_Click);
             // 
             // button9
             // 
@@ -630,7 +620,6 @@
             this.button9.TabIndex = 31;
             this.button9.Text = "顯示節點";
             this.button9.UseVisualStyleBackColor = true;
-            this.button9.Click += new System.EventHandler(this.button9_Click);
             // 
             // button11
             // 
@@ -640,7 +629,6 @@
             this.button11.TabIndex = 37;
             this.button11.Text = "Go 0408";
             this.button11.UseVisualStyleBackColor = true;
-            this.button11.Click += new System.EventHandler(this.button11_Click);
             // 
             // label16
             // 
@@ -812,7 +800,6 @@
             this.button10.TabIndex = 57;
             this.button10.Text = "Show Tree";
             this.button10.UseVisualStyleBackColor = true;
-            this.button10.Click += new System.EventHandler(this.button10_Click);
             // 
             // label25
             // 
@@ -831,7 +818,6 @@
             this.button12.TabIndex = 60;
             this.button12.Text = "Node";
             this.button12.UseVisualStyleBackColor = true;
-            this.button12.Click += new System.EventHandler(this.button12_Click);
             // 
             // shownode
             // 
@@ -850,7 +836,6 @@
             this.button13.TabIndex = 62;
             this.button13.Text = "Show var";
             this.button13.UseVisualStyleBackColor = true;
-            this.button13.Click += new System.EventHandler(this.button13_Click);
             // 
             // button15
             // 
@@ -860,7 +845,6 @@
             this.button15.TabIndex = 64;
             this.button15.Text = "Routing_Tree";
             this.button15.UseVisualStyleBackColor = true;
-            this.button15.Click += new System.EventHandler(this.button15_Click);
             // 
             // label24
             // 
@@ -879,7 +863,6 @@
             this.button17.TabIndex = 68;
             this.button17.Text = "死亡節點";
             this.button17.UseVisualStyleBackColor = true;
-            this.button17.Click += new System.EventHandler(this.button17_Click);
             // 
             // button18
             // 
@@ -890,7 +873,6 @@
             this.button18.TabIndex = 70;
             this.button18.Text = "角度節點耗能統計";
             this.button18.UseVisualStyleBackColor = true;
-            this.button18.Click += new System.EventHandler(this.button18_Click);
             // 
             // groupBox1
             // 
@@ -1177,7 +1159,6 @@
             this.button16.TabIndex = 93;
             this.button16.Text = "瀏覽";
             this.button16.UseVisualStyleBackColor = true;
-            this.button16.Click += new System.EventHandler(this.button16_Click);
             // 
             // residualFile
             // 
@@ -1327,8 +1308,6 @@
             this.Controls.Add(this.panel2);
             this.Name = "Form1";
             this.Text = "WRSN v0.8 (2019/1/2)";
-            this.Activated += new System.EventHandler(this.Form1_Activated);
-            this.Load += new System.EventHandler(this.Form1_Load);
             this.panel1.ResumeLayout(false);
             this.panel1.PerformLayout();
             this.datatype.ResumeLayout(false);
