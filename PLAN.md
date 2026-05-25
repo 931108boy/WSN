@@ -1,14 +1,14 @@
 # WSN 實驗系統實作計畫
 
 ## Summary
-在 `C:\Users\931108boy\Desktop\WSN` 內建立實驗系統，使用提供的 MyWSN 程式作為基礎，進行參考 ZHENG single-WCV 架構的延伸實驗；BP&R 系列目前使用 ZHENG Algorithm 3 風格的 STable/deadline/TdeadlineThreshold/sliding-window/BottleList/cplist 偵測流程。
+在 `C:\Users\931108boy\Desktop\WSN` 內建立實驗系統，使用提供的 MyWSN 程式作為基礎，進行參考 CHENG single-WCV 架構的純充電延伸實驗；CHENG BP&R 系列使用 STable/deadline danger interval/BottleList/cplist 流程，並在 BottleList 內維持 paper-random 選點。
 
 ## Key Decisions
 - MyWSN 原始碼已搬入 `C:\Users\931108boy\Desktop\WSN\powercontrol`；原始壓縮檔只作為匯入來源，不直接修改。
 - BS 固定在 `(0,0)`，作為 MyWSN sink + 充電中心；WCV 固定單台，每趟 mission 完成後回 BS。
 - `Prate_change` 是單次測試固定值；同一 run 先產生固定 rate-change schedule，所有演算法共用，不自動跑 `0, 0.1, 0.2, 0.3`。
-- 每個 run 的 map、event、initial residual、routing parent、rate-change schedule 皆由 seed 決定，並以 artifact hash 記錄在 Excel。
-- 能耗模型採連續背景耗能 + MyWSN 封包 TX/RX/forward 耗能；每 `10000 s` 以 `Prate_change` 機率套用 `0.875~1.125` 倍耗能率變動。
+- 每個 run 的 map、activation event、initial residual、rate-change schedule 皆由 seed 決定，並以 artifact hash 記錄在 Excel。
+- 能耗模型採純充電連續背景耗能；packet TX/RX/forward 與 routing-load 不列入 ExperimentSystem 的能耗、deadline 或 death judgement。每 `10000 s` 以 `Prate_change` 機率套用 `0.875~1.125` 倍耗能率變動。
 - 所有演算法以完整 mission 流程服務多個需求，直到達到 `NmaxTask`、WCV 能量限制、沒有可服務需求或安全限制。
 - 批次實驗以 run 為單位平行化；同一 run 內不平行化 sensor 狀態更新，Excel 在所有 run 完成後由單一執行緒輸出。
 - 大型實驗的任務明細採 deterministic run/algorithm 配額保留，summary 使用完整結果，避免 Excel 寫出階段 OutOfMemory。
@@ -32,7 +32,7 @@
 - `任務明細`
 - `死亡原因`
 
-每個 run/演算法記錄 network lifetime、first dead node/time/reason、成功充電數、失敗/逾期數、request 數、移動距離、封包送收/遺失、routing failed 遺失、ParentId=-1 節點數、不連通比例、平均等待時間、充電效率。任務明細記錄 mission、節點順序、request time、deadline、抵達時間、充電前後能量、是否成功、是否 proactive、失敗原因，並同時保留 J、J/s、秒與 nJ/tick 等內部換算欄位。
+每個 run/演算法記錄 network lifetime、first dead node/time/reason、成功充電數、失敗/逾期數、request 數、proactive 數、移動距離、平均等待時間、充電效率；legacy packet/routing 欄位不作為純充電主比較指標。任務明細記錄 mission、節點順序、request time、deadline、抵達時間、充電前後能量、是否成功、是否 proactive、失敗原因，並同時保留 J、J/s、秒與 nJ/tick 等內部換算欄位。
 
 ## Test Plan
 - 建置 `C:\Users\931108boy\Desktop\WSN\powercontrol.sln`。

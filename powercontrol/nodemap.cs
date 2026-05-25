@@ -370,7 +370,7 @@ namespace WindowsFormsApplication1
         {
             if (node_id < 0 || node_id >= max_node)
                 return 0;
-            return Math.Max(0.0, node[node_id].tx_energy(common.default_pkt_leng) * 2.0);
+            return 0.0;
         }
         double get_bpr_deadline_threshold()
         {
@@ -689,8 +689,7 @@ namespace WindowsFormsApplication1
                     availableChargeEnergy = Math.Max(availableChargeEnergy, common.num_charger_per_car * common.Origin_RESIDUAL);
             }
 
-            double energyPerTask = Math.Max(node[0].tx_energy(common.default_pkt_leng),
-                (common.target_ratio - common.request_threshold) * common.Origin_RESIDUAL);
+            double energyPerTask = Math.Max((common.target_ratio - common.request_threshold) * common.Origin_RESIDUAL, 1e-6);
             int energyBound = Math.Max(1, (int)Math.Floor(availableChargeEnergy / Math.Max(energyPerTask, 1e-6)));
             double requestSlackWindow = estimate_bpr_request_slack_window();
             int maxTask = 1;

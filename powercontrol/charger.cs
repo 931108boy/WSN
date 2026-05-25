@@ -12,17 +12,20 @@ namespace WindowsFormsApplication1
         public double speed; // charging speed
         public int status; //0: normal  1:stop charging
         public int q_target;
+        public bool target_dead_on_arrival;
         public charger(int sx, int sy)
         {
             x = sx; y = sy;
             recharge();
-            speed = (common.Origin_RESIDUAL*common.charging_speed/100 * common.TIME_UNIT);
+            speed = common.charging_speed * common.TIME_UNIT;
             q_target = 0;
+            target_dead_on_arrival = false;
             status = 0;
         }
         public void recharge()
         {
             residual = common.num_charger_per_car * common.Origin_RESIDUAL;
+            target_dead_on_arrival = false;
         }
         public void Do_process()
         {
@@ -57,6 +60,9 @@ namespace WindowsFormsApplication1
                     common.nmap.node[q_target].pre_residual = common.nmap.node[q_target].residual;
                     common.nmap.refresh_bpr_state(q_target, true);
                     common.saveNum++;
+                    if (!target_dead_on_arrival)
+                        common.done_task++;
+                    target_dead_on_arrival = false;
                     if (residual < (common.target_ratio - common.request_threshold) * common.Origin_RESIDUAL)
                         status = 2; //可能不足完成下一个充电需求，准备回基地台
                     else

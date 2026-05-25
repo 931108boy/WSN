@@ -56,16 +56,9 @@ namespace WindowsFormsApplication1
                         common.ofs.WriteLine("node:{0} arrive: {1} status:{2}", target_node, common.current_time, status);
                     //移除本车中的request记录
                     remove_from_car_charging_list(moving_seq.First().event_id);
-                    if (target_node > 0)
-                        if (common.nmap.node[target_node].residual < common.nmap.node[target_node].tx_energy(common.default_pkt_leng))
-                        {
-                            common.missed_task++;
-                        }
-                        else
-                        {
-                            common.done_task++;
-                            //common.ofs.WriteLine("Target:{0}-{1}", target_node, common.nmap.node[target_node].residual);
-                        }    
+                    bool targetDeadOnArrival = target_node > 0 && common.nmap.node[target_node].residual <= 0;
+                    if (targetDeadOnArrival)
+                        common.missed_task++;
 
 
                     //if (common.wait_for_charging && target_node != 0)
@@ -77,6 +70,7 @@ namespace WindowsFormsApplication1
                             Math.Max(common.nmap.node[target_node].charging_visual_until_time,
                             common.current_time + common.CHARGING_VISUAL_HOLD_TICKS);
                         mycharger[0].q_target = target_node;
+                        mycharger[0].target_dead_on_arrival = targetDeadOnArrival;
                         mycharger[0].status = 1;
                     }
                     else if (target_node == 0)

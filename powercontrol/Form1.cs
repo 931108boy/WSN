@@ -2733,9 +2733,10 @@ namespace WindowsFormsApplication1
             }// end of for each
             common.nmap.node[nid].event_list.RemoveAll(delegate(event_entry e) { return e.T_time == common.current_time; });
 
-            if (first_dead_time == -1 && common.nmap.node[nid].residual < common.nmap.node[nid].tx_energy(common.default_pkt_leng))
+            if (first_dead_time == -1 && common.nmap.node[nid].residual <= 0)
             {
                 first_dead_time = common.current_time;
+                common.first_dead_time = common.current_time;
             }
         }
         private void init_values()
@@ -2876,6 +2877,7 @@ namespace WindowsFormsApplication1
                 // initialize variables
                 data_sent = data_loss = data_recv = 0;
                 first_dead_time = -1;
+                common.first_dead_time = -1;
 
          //因不同方法设定部分参数
                 common.car_no_return = true; //充电车完成任务后不返回基站

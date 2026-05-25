@@ -274,7 +274,7 @@ namespace WindowsFormsApplication1
             string current = AppDomain.CurrentDomain.BaseDirectory;
             for (int i = 0; i < 8 && !String.IsNullOrEmpty(current); i++)
             {
-                if (File.Exists(Path.Combine(current, "powercontrol.sln")) || File.Exists(Path.Combine(current, "ZHENG.pdf")))
+                if (File.Exists(Path.Combine(current, "powercontrol.sln")) || File.Exists(Path.Combine(current, "CHENG.pdf")))
                     return current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
                 DirectoryInfo parent = Directory.GetParent(current);
@@ -465,12 +465,12 @@ namespace WindowsFormsApplication1
             SelectedAlgorithmsCsv = String.Join(",", selected.ToArray());
         }
 
-        private static bool IsProjectRootValid(string projectRoot)
+        internal static bool IsProjectRootValid(string projectRoot)
         {
             if (String.IsNullOrWhiteSpace(projectRoot) || !Directory.Exists(projectRoot))
                 return false;
             return File.Exists(Path.Combine(projectRoot, "powercontrol.sln")) ||
-                File.Exists(Path.Combine(projectRoot, "ZHENG.pdf"));
+                File.Exists(Path.Combine(projectRoot, "CHENG.pdf"));
         }
 
         private static bool IsDefaultOutputDirectory(string outputDirectory, string projectRoot)
@@ -6412,6 +6412,8 @@ namespace WindowsFormsApplication1
                 AssertSelfTest(Array.IndexOf(ExperimentSettings.AllAlgorithms(), "NJF_YU_BPR") >= 0,
                     "AllAlgorithms should include NJF_YU_BPR.");
 
+                RunLegacyPureChargingSelfTest();
+                RunChengPaperFileNameSelfTest(tempDirectory);
                 RunChengPaperBprWrapperSelfTest(tempDirectory, simulations);
                 RunChengPaperRandomPoolSelfTest(tempDirectory, simulations);
                 RunChengActivationGenerationSelfTest(tempDirectory);
@@ -6669,6 +6671,54 @@ namespace WindowsFormsApplication1
             }
         }
 
+        private static void RunLegacyPureChargingSelfTest()
+        {
+            double originalResidual = common.Origin_RESIDUAL;
+            double originalChargingSpeed = common.charging_speed;
+            int originalNumChargerPerCar = common.num_charger_per_car;
+            nodemap originalMap = common.nmap;
+            try
+            {
+                common.Origin_RESIDUAL = 100.0 * 1000000000.0;
+                common.charging_speed = 5.0 * 1000000000.0;
+                common.num_charger_per_car = 1;
+
+                charger testCharger = new charger(0, 0);
+                AssertNear(testCharger.speed, common.charging_speed * common.TIME_UNIT, 1e-6,
+                    "Legacy charger speed should be chargeRateNanoJPerSecond * TIME_UNIT, not scaled by Origin_RESIDUAL / 100.");
+                AssertNear(testCharger.residual, common.Origin_RESIDUAL, 1e-6,
+                    "Legacy charger residual should still use the configured sensor-capacity budget.");
+
+                common.nmap = new nodemap(1, 2);
+                common.nmap.node[1].ET = 123.0;
+                common.nmap.node[1].residual = common.Origin_RESIDUAL * 0.05;
+                AssertNear(common.nmap.get_service_floor(1), 0.0, 1e-9,
+                    "Legacy BP&R service floor should be zero in pure charging; death is residual <= 0, not a packet TX-energy floor.");
+            }
+            finally
+            {
+                common.Origin_RESIDUAL = originalResidual;
+                common.charging_speed = originalChargingSpeed;
+                common.num_charger_per_car = originalNumChargerPerCar;
+                common.nmap = originalMap;
+            }
+        }
+
+        private static void RunChengPaperFileNameSelfTest(string tempDirectory)
+        {
+            string chengRoot = Path.Combine(tempDirectory, "cheng-paper-root");
+            string zhengRoot = Path.Combine(tempDirectory, "zheng-paper-root");
+            Directory.CreateDirectory(chengRoot);
+            Directory.CreateDirectory(zhengRoot);
+            File.WriteAllText(Path.Combine(chengRoot, "CHENG.pdf"), "placeholder");
+            File.WriteAllText(Path.Combine(zhengRoot, "ZHENG.pdf"), "placeholder");
+
+            AssertSelfTest(ExperimentSettings.IsProjectRootValid(chengRoot),
+                "Project root detection should accept CHENG.pdf as the paper reference file.");
+            AssertSelfTest(!ExperimentSettings.IsProjectRootValid(zhengRoot),
+                "Project root detection must not treat ZHENG.pdf as the formal CHENG paper reference.");
+        }
+
         private static void RunCsvOutputSelectionSelfTest(string tempDirectory)
         {
             ExperimentSettings legacyDisabled = CreateBprSelfTestSettings(tempDirectory);
@@ -6903,8 +6953,8 @@ namespace WindowsFormsApplication1
         private static string[] ExpectedMissionDetailHeader()
         {
             return new string[] { "掃描參數名稱", "任務編號", "出發時間秒", "返回時間秒", "節點數",
-                "被動請求數", "主動充電數", "成功充電數", "失敗數", "走的距離m", "封包送出數",
-                "封包收到數", "封包遺失數", "路由失敗封包遺失數", "平均等待時間秒", "路線節點序列", "去重任務數" };
+                "被動請求數", "主動充電數", "成功充電數", "失敗數", "走的距離m", "legacy封包送出數(停用)",
+                "legacy封包收到數(停用)", "legacy封包遺失數(停用)", "legacy路由失敗封包遺失數(停用)", "平均等待時間秒", "路線節點序列", "去重任務數" };
         }
 
         private static string[] ExpectedTaskRecordHeader()
@@ -6913,15 +6963,15 @@ namespace WindowsFormsApplication1
                 "截止時間秒", "出發時間秒", "抵達時間秒", "等待時間秒", "開始充電時間秒",
                 "結束充電時間秒", "充電前能量J", "節點耗電率J每秒", "有效耗電率J每秒",
                 "請求時節點耗電率J每秒", "服務時節點耗電率J每秒", "耗電率預測誤差J每秒",
-                "路由總耗電率J每秒", "路由傳送耗電率J每秒", "路由接收耗電率J每秒", "路由子樹大小",
-                "預期轉送封包數每秒", "內部耗電率nJ每Tick", "與上一點距離m", "是否成功", "失敗原因", "WCV剩餘能量J" };
+                "legacy路由總耗電率J每秒(停用)", "legacy路由傳送耗電率J每秒(停用)", "legacy路由接收耗電率J每秒(停用)", "legacy路由子樹大小(停用)",
+                "legacy預期轉送封包數每秒(停用)", "內部耗電率nJ每Tick", "與上一點距離m", "是否成功", "失敗原因", "WCV剩餘能量J" };
         }
 
         private static string[] ExpectedRoutingLoadHeader()
         {
-            return new string[] { "節點編號", "父節點編號", "子樹大小", "預期傳送封包數每秒",
-                "預期接收封包數每秒", "預期轉送封包數每秒", "估計傳送耗電率J每秒",
-                "估計接收耗電率J每秒", "估計路由總耗電率J每秒" };
+            return new string[] { "節點編號", "legacy父節點編號(停用)", "legacy子樹大小(停用)", "legacy預期傳送封包數每秒(停用)",
+                "legacy預期接收封包數每秒(停用)", "legacy預期轉送封包數每秒(停用)", "legacy估計傳送耗電率J每秒(停用)",
+                "legacy估計接收耗電率J每秒(停用)", "legacy估計路由總耗電率J每秒(停用)" };
         }
 
         private static string[] ExpectedBprDebugHeader()
@@ -8504,8 +8554,8 @@ namespace WindowsFormsApplication1
             {
                 writer.WriteLine(CsvRow("掃描參數名稱", "掃描值", "執行次序", "亂數種子", "演算法",
                     "網路壽命秒", "成功充電數", "失敗或逾期數", "被動請求數", "主動充電數",
-                    "任務數", "走的距離m", "平均等待時間秒", "封包送出數", "封包收到數",
-                    "封包遺失數", "路由失敗封包遺失數", "資料雜湊"));
+                    "任務數", "走的距離m", "平均等待時間秒", "legacy封包送出數(停用)", "legacy封包收到數(停用)",
+                    "legacy封包遺失數(停用)", "legacy路由失敗封包遺失數(停用)", "資料雜湊"));
                 for (int i = 0; i < result.RunSummaries.Count; i++)
                 {
                     ExperimentRunSummary s = result.RunSummaries[i];
@@ -8825,8 +8875,8 @@ namespace WindowsFormsApplication1
         private void WriteMissionHeader()
         {
             missionWriter.WriteLine(CsvRow("掃描參數名稱", "任務編號", "出發時間秒", "返回時間秒", "節點數",
-                "被動請求數", "主動充電數", "成功充電數", "失敗數", "走的距離m", "封包送出數",
-                "封包收到數", "封包遺失數", "路由失敗封包遺失數", "平均等待時間秒", "路線節點序列", "去重任務數"));
+                "被動請求數", "主動充電數", "成功充電數", "失敗數", "走的距離m", "legacy封包送出數(停用)",
+                "legacy封包收到數(停用)", "legacy封包遺失數(停用)", "legacy路由失敗封包遺失數(停用)", "平均等待時間秒", "路線節點序列", "去重任務數"));
         }
 
         private void WriteTaskHeader()
@@ -8835,15 +8885,15 @@ namespace WindowsFormsApplication1
                 "截止時間秒", "出發時間秒", "抵達時間秒", "等待時間秒", "開始充電時間秒",
                 "結束充電時間秒", "充電前能量J", "節點耗電率J每秒", "有效耗電率J每秒",
                 "請求時節點耗電率J每秒", "服務時節點耗電率J每秒", "耗電率預測誤差J每秒",
-                "路由總耗電率J每秒", "路由傳送耗電率J每秒", "路由接收耗電率J每秒", "路由子樹大小",
-                "預期轉送封包數每秒", "內部耗電率nJ每Tick", "與上一點距離m", "是否成功", "失敗原因", "WCV剩餘能量J"));
+                "legacy路由總耗電率J每秒(停用)", "legacy路由傳送耗電率J每秒(停用)", "legacy路由接收耗電率J每秒(停用)", "legacy路由子樹大小(停用)",
+                "legacy預期轉送封包數每秒(停用)", "內部耗電率nJ每Tick", "與上一點距離m", "是否成功", "失敗原因", "WCV剩餘能量J"));
         }
 
         private void WriteRoutingLoadHeader()
         {
-            routingLoadWriter.WriteLine(CsvRow("節點編號", "父節點編號", "子樹大小", "預期傳送封包數每秒",
-                "預期接收封包數每秒", "預期轉送封包數每秒", "估計傳送耗電率J每秒",
-                "估計接收耗電率J每秒", "估計路由總耗電率J每秒"));
+            routingLoadWriter.WriteLine(CsvRow("節點編號", "legacy父節點編號(停用)", "legacy子樹大小(停用)", "legacy預期傳送封包數每秒(停用)",
+                "legacy預期接收封包數每秒(停用)", "legacy預期轉送封包數每秒(停用)", "legacy估計傳送耗電率J每秒(停用)",
+                "legacy估計接收耗電率J每秒(停用)", "legacy估計路由總耗電率J每秒(停用)"));
         }
 
         private void WriteBprDebugHeader()
@@ -9053,16 +9103,16 @@ namespace WindowsFormsApplication1
             rows.Add(Row("演算法", s.SelectedAlgorithmsCsv, ""));
             rows.Add(Row("輸出目錄", s.OutputDirectory, ""));
             rows.Add(Row("任務明細 CSV 資料夾", result.TaskDetailsDirectory, "每個 run + algorithm 各自輸出 mission-details 與 task-records CSV"));
-            rows.Add(Row("ZHENG-inspired 動態耗能週期(s)", 10000, "每 10000s 檢查一次；延伸實驗，不是原始 ZHENG 重現"));
-            rows.Add(Row("ZHENG-inspired 耗能率倍率", RateMultiplierRangeText(s), "由耗能變動幅度決定"));
+            rows.Add(Row("動態耗能週期(s)", 10000, "每 10000s 檢查一次；純充電延伸實驗設定"));
+            rows.Add(Row("動態耗能率倍率", RateMultiplierRangeText(s), "由耗能變動幅度決定"));
             rows.Add(Row("基地台", "(0,0) sink + 充電中心", "固定單台 WCV，每趟 mission 後回 BS"));
             rows.Add(Row("FUZZY", "Mamdani 模糊推論", "剩餘能量、距離、耗能率、臨界節點密度"));
-            rows.Add(Row("BP&R 標註", "ZHENG BP&R sliding-window BottleList", "使用 STable deadline、TdeadlineThreshold、Tjob(NmaxTask) sliding window、BottleList 與 cplist；RouteSafe 只改 BottleList 內選點策略"));
+            rows.Add(Row("BP&R 標註", "CHENG paper-random + legacy deterministic extensions", "CHENG_* 使用 STable/deadline danger interval/BottleList seeded random；ZHENG_ROUTE_* 是 route-cost extension，不是 CHENG 原文 random"));
             rows.Add(Row("GENE/PSO/Cuckoo 標註", "full route optimization baselines", "GA、random-key PSO、Cuckoo Search 共用 route fitness"));
             rows.Add(Row("任務明細總列數", result.TotalTaskRecordCount, "逐節點 task records 已改寫入 CSV，不再輸出到 Excel"));
 
             rows.Add(Row("", "", ""));
-            rows.Add(Row("Run", "Seed", "共用資料 hash", "rate-change 次數", "ParentId=-1 節點數", "不連通節點比例"));
+            rows.Add(Row("Run", "Seed", "共用資料 hash", "rate-change 次數", "legacy ParentId=-1 節點數(停用)", "legacy 不連通節點比例(停用)"));
             for (int i = 0; i < result.ArtifactSummaries.Count; i++)
             {
                 ExperimentArtifactSummary artifact = result.ArtifactSummaries[i];
@@ -9079,8 +9129,8 @@ namespace WindowsFormsApplication1
             rows.Add(Row("Run", "Seed", "演算法", "共用資料hash", "Prate_change", "耗能變動幅度(%)", "rate schedule數", "實際套用rate變動數",
                 "網路生命週期(s)", "第一個死亡節點", "第一個死亡時間(s)", "死亡原因", "直接耗能源",
                 "成功充電數", "失敗/逾期數", "request數", "proactive數", "mission數", "移動距離(m)",
-                "封包送出", "封包收到", "封包遺失", "routing failed 遺失", "ParentId=-1 節點數",
-                "不連通節點比例", "平均等待(s)", "充電效率"));
+                "legacy封包送出(停用)", "legacy封包收到(停用)", "legacy封包遺失(停用)", "legacy routing failed 遺失(停用)", "legacy ParentId=-1 節點數(停用)",
+                "legacy 不連通節點比例(停用)", "平均等待(s)", "充電效率"));
 
             PrependSweepHeaders(rows[0]);
             AppendRunAntiInflationHeaders(rows[0]);
@@ -9196,7 +9246,7 @@ namespace WindowsFormsApplication1
             List<List<object>> rows = new List<List<object>>();
             rows.Add(Row("演算法", "Run 次數", "平均生命週期(s)", "最小生命週期(s)", "最大生命週期(s)",
                 "平均成功充電", "平均失敗/逾期", "平均request", "平均移動距離(m)", "平均等待(s)",
-                "平均封包遺失", "平均routing failed遺失", "平均ParentId=-1節點數", "平均不連通比例", "平均充電效率"));
+                "平均legacy封包遺失(停用)", "平均legacy routing failed遺失(停用)", "平均legacy ParentId=-1節點數(停用)", "平均legacy不連通比例(停用)", "平均充電效率"));
 
             PrependSweepHeaders(rows[0]);
             rows[0].Add("ThresholdMode");
@@ -9304,10 +9354,10 @@ namespace WindowsFormsApplication1
                 "Reason", "ReasonZh", "DirectEnergyCause", "DirectEnergyCauseZh",
                 "SchedulingRelated", "SchedulingCause", "SchedulingCauseZh",
                 "PendingRequest", "HasPendingRequestAtDeath", "WasScheduledInCurrentMissionAtDeath",
-                "ParentIdAtDeath", "EnergyBeforeDeathJ",
+                "legacy ParentIdAtDeath(停用)", "EnergyBeforeDeathJ",
                 "BaseConsumeRateJPerSecondAtDeath", "EffectiveConsumeRateJPerSecondAtDeath",
-                "RoutingLoadJPerSecondAtDeath", "RoutingTxLoadJPerSecondAtDeath", "RoutingRxLoadJPerSecondAtDeath",
-                "RoutingSubtreeSize", "ExpectedRoutingForwardPacketsPerSecond",
+                "legacy RoutingLoadJPerSecondAtDeath(停用)", "legacy RoutingTxLoadJPerSecondAtDeath(停用)", "legacy RoutingRxLoadJPerSecondAtDeath(停用)",
+                "legacy RoutingSubtreeSize(停用)", "legacy ExpectedRoutingForwardPacketsPerSecond(停用)",
                 "EnergyJ", "RequestTimeSeconds", "WaitSeconds"));
             PrependSweepHeaders(rows[0]);
 

@@ -1,10 +1,10 @@
-# WSN / MyWSN / ZHENG-Inspired Extension Experiment System
+# WSN / MyWSN / CHENG Pure-Charging Experiment System
 
-本專案是一套 Wireless Rechargeable Sensor Network（WRSN）實驗系統，建置於 `C:\Users\931108boy\Desktop\WSN`。系統以 MyWSN rechargeable 版本的 WinForms 專案為基礎，加入參考 ZHENG single-WCV 架構的動態耗能、完整 BP&R sliding-window bottleneck proactive 機制，以及 FUZZY 排程方法，用來比較多個充電排程演算法在相同實驗條件下的表現。
+本專案是一套 Wireless Rechargeable Sensor Network（WRSN）純充電實驗系統，建置於 `C:\Users\931108boy\Desktop\WSN`。系統以 MyWSN rechargeable 版本的 WinForms 專案為基礎，加入參考 CHENG single-WCV 純充電架構的 activation/request flow、CHENG paper-random BP&R 機制，以及 FUZZY 排程方法，用來比較多個充電排程演算法在相同實驗條件下的表現。
 
-重要定位：目前參數與實作是「參考 ZHENG single-WCV 架構的延伸實驗」，不是 ZHENG 原始實驗重現；sensor 數量、sensor energy、simulation time、packet/routing 設定都可由本系統自訂。
+重要定位：目前主流程是「參考 CHENG single-WCV 架構的純充電延伸實驗」；ExperimentSystem 不使用 packet TX/RX/forward 或 routing-load 作為能耗、deadline 或死亡判斷。舊 MyWSN packet/routing 欄位僅作為 legacy UI / 相容資料保留。
 
-此版本的重點不是單純展示節點動畫，而是建立一個可以重複、可比較、可輸出 Excel 的實驗平台。每一次 run 都會先產生固定的地圖、事件、初始能量、routing parent 與耗能率變動排程，然後讓所有被選到的演算法使用同一份資料。這樣可以避免不同演算法其實是在不同網路條件下比較的問題。
+此版本的重點不是單純展示節點動畫，而是建立一個可以重複、可比較、可輸出 Excel 的實驗平台。每一次 run 都會先產生固定的地圖、activation events、初始能量與耗能率變動排程，然後讓所有被選到的演算法使用同一份資料。這樣可以避免不同演算法其實是在不同網路條件下比較的問題。
 
 批次實驗會以 run 為單位平行執行，以使用多核心 CPU；同一個 run 內的 algorithm 與 sensor 狀態推進仍維持序列，以避免破壞模擬時間順序。所有 run 完成後才由單一執行緒合併結果並寫出同一份 Excel。
 
@@ -45,7 +45,7 @@ C:\Users\931108boy\Desktop\WSN
 C:\Users\931108boy\Desktop\WSN
 ├─ README.md                         # 本文件
 ├─ PLAN.md                           # 實作計畫與目前設計決策
-├─ ZHENG.pdf                         # 論文參考資料
+├─ CHENG.pdf                         # 論文參考資料
 ├─ YU.pdf                            # 論文參考資料
 ├─ experiment-last-settings.xml      # UI/CLI 最近一次實驗設定
 ├─ outputs\                          # 實驗輸出資料夾
@@ -73,17 +73,17 @@ C:\Users\931108boy\Desktop\WSN
 
 本系統要解決的問題是：
 
-> 在相同 WRSN 實驗環境中，比較多個 WCV 充電排程演算法的 network lifetime、充電成功率、等待時間、封包送收狀況、死亡原因與任務細節。
+> 在相同 WRSN 純充電實驗環境中，比較多個 WCV 充電排程演算法的 network lifetime、充電成功率、等待時間、死亡原因與任務細節。
 
 具體目標：
 
 1. 固定同一 run 的實驗資料。
 2. 讓所有演算法共享相同 map、event、initial residual、routing parent、rate-change schedule。
 3. 不讓 `Prate_change` 自動跑多組值；單次測試只使用一個固定值。
-4. 能耗模型同時包含：
+4. 能耗模型採純充電定位：
    - 連續背景耗能。
-   - MyWSN packet TX / RX / forward 耗能。
-   - ZHENG-inspired 動態耗能率變動。
+   - CHENG activation/request schedule 與動態耗能率變動。
+   - packet TX/RX/forward 與 routing-load 在 ExperimentSystem 中停用，不列入死亡判斷。
 5. 所有演算法都走完整 mission 流程，而不是只選單一節點。
 6. FUZZY 必須納入實作，不作為延後項目。
 7. 產出繁體中文 Excel 報告，方便後續論文整理與實驗比較。
@@ -96,9 +96,9 @@ C:\Users\931108boy\Desktop\WSN
 
 - 感測器節點部署在 2D 平面。
 - BS（Base Station）固定在 `(0,0)`，同時作為 MyWSN sink 與 WCV 充電中心。
-- 節點產生封包事件，封包沿 routing parent 往 BS 傳送。
-- 若 routing parent 不存在或中途節點死亡，該封包視為遺失。
-- Excel 會另外輸出 `ParentId = -1` 節點數、不連通節點比例，以及因 routing failed 造成的 lost packet 數量，方便區分 routing 連通性與充電排程造成的影響。
+- ExperimentSystem 產生 CHENG activation/request events，不建立封包 routing tree。
+- death judgement 統一為 `residual <= 0`；request/deadline 由剩餘能量與 consume rate 推算。
+- `ParentId = -1`、routing failed、packet lost 與 routing-load 欄位屬 legacy/deprecated，相容保留但不作為純充電主比較指標。
 
 ### BS
 
@@ -154,18 +154,18 @@ base_rate_J_per_s = InitialEnergyJ / SensorBackgroundLifetimeSeconds
 consume_rate_J_per_s = base_rate_J_per_s * RateScale
 ```
 
-### Packet 能耗
+### Legacy Packet/Routing 欄位
 
-封包耗能使用 MyWSN 風格 TX/RX 模型：
+以下 MyWSN TX/RX 公式只屬 legacy UI / 相容欄位；ExperimentSystem 純充電主流程不使用這些值計算能耗、deadline、death 或 routing-load 輸出。
 
 ```text
 RX energy = ER * packet_bits
 TX energy = (ER + Eamp * radio_range^power_exponent) * packet_bits
 ```
 
-其中 Excel 報告同時列出 packet sent / received / lost。
+ExperimentSystem 不再把 packet sent / received / lost 當成純充電比較指標；routing-load CSV 預設停用。
 
-### ZHENG-Inspired 動態耗能
+### 動態耗能率變動
 
 每 `10000 s` 檢查一次是否改變節點耗能率。
 
@@ -180,7 +180,7 @@ if random <= Prate_change:
 此 schedule 先由 seed 產生，然後所有演算法共享同一份 schedule。
 `RateChangeVariationPercent` 預設為 `12.5`，所以預設倍率範圍就是 `0.875 ~ 1.125`。
 
-這裡只保留「固定週期、依機率調整耗能率」這個延伸實驗設定，並未宣稱重現 ZHENG 原始實驗參數。
+這裡只保留「固定週期、依機率調整耗能率」這個延伸實驗設定，並未宣稱重現 CHENG 原始所有實驗參數。
 
 ---
 
@@ -194,7 +194,10 @@ if random <= Prate_change:
 | NJF | Nearest Job First，依目前 WCV 位置選最近的下一個節點 |
 | TADP_LIN | 用 deadline urgency 與距離做線性綜合排序 |
 | RCSS | 加入耗能率因素，偏向高風險、高耗能節點 |
-| NJF_ZHENG_BPR | ZHENG BP&R deterministic；使用 persistent STable、LatestReportedDeadlineSeconds、BprDeadlineThresholdSeconds、BottleList，BottleList 內以 deadline / NodeId deterministic 選點 |
+| NJF_CHENG_BPR | CHENG paper BP&R；使用 persistent STable、deadline danger interval、BottleList 與 seeded random 選點，NJF 只決定 cplist 後的 route ordering |
+| TADP_CHENG_BPR | 同一份 CHENG paper-random cplist，改用 TADP/LIN route ordering |
+| EDF_CHENG_BPR | 同一份 CHENG paper-random cplist，改用 EDF route ordering |
+| NJF_ZHENG_BPR | Legacy deterministic BP&R extension；使用 persistent STable、LatestReportedDeadlineSeconds、BprDeadlineThresholdSeconds、BottleList，BottleList 內以 deadline / NodeId deterministic 選點；不是 CHENG 原文 random |
 | NJF_YU_BPR | YU interval BP&R deterministic；使用 persistent STable 建立 YU-inspired request interval / dangerous interval，dangerous interval 內以 deterministic selection 選點；`cplist.Count <= NmaxTask` |
 | NJF_ROUTE_ZHENG_BPR_LIMITED | Route + ZHENG BP&R；沿用 ZHENG deadline interval 與 BottleList，只把 BottleList 內選點改成 route insertion cost；`cplist.Count <= NmaxTask` |
 | NJF_ROUTE_ZHENG_BPR_EXTENDED | Route + ZHENG BP&R 容量放寬版；同上，但允許 `cplist.Count > NmaxTask` |
@@ -210,7 +213,7 @@ if random <= Prate_change:
 | PSO | Random-key Particle Swarm Optimization：每個 task 對應 position/velocity，依 position 排序成 route，使用 inertia/cognitive/social 更新 |
 | Cuckoo | Cuckoo Search route optimization：nest 為任務排列，使用 swap/insertion/inversion 擾動與 abandonment probability 淘汰較差 nests |
 
-注意：`NJF` 是沒有 proactive prediction 的 baseline，只等自然 request 並用 nearest-job-first 排路線。`NJF_ZHENG_BPR` 使用 ZHENG-style persistent STable deadline interval；`NJF_YU_BPR` 使用 YU-inspired request interval / dangerous interval detector，並用 deterministic selection 選點；`NJF_ROUTE_ZHENG_BPR_*` 仍使用同一套 ZHENG deadline interval 與 BottleList，只把 BottleList 內選點改成 route insertion cost。`NJF_ROUTE_YU_BPR_*` 使用 YU-inspired request interval / dangerous interval detector，再以 route insertion cost 選點；此版本不是完整 YU WCV+WCD 系統。舊 key `NJF_BPR`、`NJF_BPR_ROUTE_SAFE_LIMITED`、`NJF_BPR_ROUTE_SAFE_EXTENDED` 仍可讀取，會分別對應到新的 ZHENG key。GENE、PSO、Cuckoo 目前已改為正式 route optimization baseline，三者共用同一套 route fitness。
+注意：`NJF` 是沒有 proactive prediction 的 baseline，只等自然 request 並用 nearest-job-first 排路線。`*_CHENG_BPR` 使用 CHENG paper-random BottleList 選點；`NJF_ZHENG_BPR` 是 legacy deterministic extension，不是 CHENG 原文 random。`NJF_ROUTE_ZHENG_BPR_*` 仍使用同一套 ZHENG deadline interval 與 BottleList，只把 BottleList 內選點改成 route insertion cost。`NJF_YU_BPR` / `NJF_ROUTE_YU_BPR_*` 使用 YU-inspired request interval / dangerous interval detector；此版本不是完整 YU WCV+WCD 系統。舊 key `NJF_BPR` 會對應到 `NJF_CHENG_BPR`；舊 route-safe key 仍對應到 ZHENG route extension。GENE、PSO、Cuckoo 目前已改為正式 route optimization baseline，三者共用同一套 route fitness。
 
 主比較預設 `AllowStandaloneProactiveDispatch=false`：BP&R / YU proactive 只會插入已由 natural request 開啟的 mission，不會在 0 秒、沒有 request 時讓 WCV 主動巡邏。若要研究純 proactive 巡邏，請另外設定 `AllowStandaloneProactiveDispatch=true`，不要混入公平主比較。`*_EXTENDED` 是容量放寬實驗版，也不放進預設主比較清單。
 
@@ -341,9 +344,9 @@ C:\Users\931108boy\Desktop\WSN\experiment-last-settings.xml
 | `InitialEnergyJ` | 每個 sensor 初始能量 | 500 |
 | `SensorBackgroundLifetimeSeconds` | 滿電時只靠背景耗能可存活秒數 | 100000 |
 | `InitialResidualJitterPercent` | 初始能量隨機擾動百分比 | 0 |
-| `EventRatePerSecond` | 封包事件產生率 | 0.05 |
-| `PacketBits` | 封包大小 | 81920 |
-| `RadioRangeMeters` | radio range | 60 |
+| `EventRatePerSecond` | CHENG activation/request 頻率 p(次/s) | 0.05 |
+| `PacketBits` | deprecated；ExperimentSystem 不使用 packet energy | 81920 |
+| `RadioRangeMeters` | deprecated；ExperimentSystem 不建立 packet routing tree | 60 |
 | `ReceiverEnergyNjPerBit` | RX energy | 50 |
 | `AmplifierEnergyNjPerBitM2` | TX amplifier energy | 0.01 |
 | `PowerExponent` | power distance exponent | 2 |
@@ -365,7 +368,7 @@ C:\Users\931108boy\Desktop\WSN\experiment-last-settings.xml
 | `YuIntervalUncertaintySeconds` | YU-inspired request interval 半寬；0 表示使用 `BprDeadlineThresholdSeconds` | 0 |
 | `PrateChange` | 動態耗能變動機率 | 0.2 |
 | `RateChangeVariationPercent` | 動態耗能變動幅度百分比，倍率範圍為 `1 ± 此百分比` | 12.5 |
-| `SelectedAlgorithmsCsv` | 選擇演算法 | EDF,NJF,TADP_LIN,RCSS,NJF_ZHENG_BPR,NJF_YU_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_YU_BPR_LIMITED,FUZZY |
+| `SelectedAlgorithmsCsv` | 選擇演算法 | EDF,NJF,TADP_LIN,RCSS,NJF_CHENG_BPR,TADP_CHENG_BPR,EDF_CHENG_BPR,NJF_ZHENG_BPR,NJF_YU_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_YU_BPR_LIMITED,FUZZY |
 | `OutputDirectory` | Excel 輸出資料夾 | `C:\Users\931108boy\Desktop\WSN\outputs` |
 
 ---
@@ -537,12 +540,8 @@ yyyyMMdd-HHmmss-fff-wsn-comparison-seed{BaseSeed}-runs{RunCount}.xlsx
 - proactive 數
 - mission 數
 - 移動距離
-- 封包送出
-- 封包收到
-- 封包遺失
-- routing failed 造成的封包遺失
-- ParentId = -1 節點數量
-- 不連通節點比例
+- `routing-load.csv` 預設停用（deprecated）
+- legacy packet/routing 欄位不作為純充電主比較指標
 - 平均等待時間
 - 充電效率
 
@@ -776,4 +775,4 @@ GUI mode
 
 ## 一句話總結
 
-這個專案目前是一個以 MyWSN 為基礎、參考 ZHENG single-WCV 架構並加入 FUZZY 排程的 WRSN 批次延伸實驗平台。它的核心特色是同一 run 所有演算法共用同一份可重現資料，並輸出繁中 Excel，方便後續做論文實驗比較與結果整理。
+這個專案目前是一個以 MyWSN 為基礎、參考 CHENG single-WCV 純充電架構並加入 FUZZY 排程的 WRSN 批次延伸實驗平台。它的核心特色是同一 run 所有演算法共用同一份可重現資料，並輸出繁中 Excel，方便後續做論文實驗比較與結果整理。
