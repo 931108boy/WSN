@@ -451,12 +451,12 @@ namespace WindowsFormsApplication1
             for (int i = 0; i < expAlgorithmList.CheckedItems.Count; i++)
                 algorithms.Add(get_algorithm_key_from_display(Convert.ToString(expAlgorithmList.CheckedItems[i])));
             experimentSettings.SetSelectedAlgorithms(algorithms);
+            experimentSettings.Normalize();
             if (validateWcvFeasibility)
             {
                 BprTimingValidator.ThrowIfInvalid(experimentSettings);
                 WcvMaxTaskFeasibilityValidator.ThrowIfInvalid(experimentSettings);
             }
-            experimentSettings.Normalize();
             populate_experiment_controls_from_settings();
         }
 
@@ -696,18 +696,6 @@ namespace WindowsFormsApplication1
             {
                 apply_experiment_controls_to_settings(true);
                 experimentSettings.Normalize();
-                List<WcvMaxTaskFeasibilityResult> feasibilityResults =
-                    WcvMaxTaskFeasibilityValidator.ValidateSelectedAlgorithms(experimentSettings);
-                for (int i = 0; i < feasibilityResults.Count; i++)
-                {
-                    if (!feasibilityResults[i].IsValid)
-                    {
-                        log_experiment_message(feasibilityResults[i].ErrorMessage);
-                        MessageBox.Show(this, feasibilityResults[i].ErrorMessage, "WSN 實驗設定錯誤", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        return;
-                    }
-                }
-                log_experiment_message("WCV feasibility validation passed.");
                 List<BprTimingValidationResult> bprTimingResults =
                     BprTimingValidator.ValidateSelectedAlgorithms(experimentSettings);
                 for (int i = 0; i < bprTimingResults.Count; i++)
@@ -720,6 +708,18 @@ namespace WindowsFormsApplication1
                     }
                 }
                 log_experiment_message("BP&R timing validation passed.");
+                List<WcvMaxTaskFeasibilityResult> feasibilityResults =
+                    WcvMaxTaskFeasibilityValidator.ValidateSelectedAlgorithms(experimentSettings);
+                for (int i = 0; i < feasibilityResults.Count; i++)
+                {
+                    if (!feasibilityResults[i].IsValid)
+                    {
+                        log_experiment_message(feasibilityResults[i].ErrorMessage);
+                        MessageBox.Show(this, feasibilityResults[i].ErrorMessage, "WSN 實驗設定錯誤", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+                }
+                log_experiment_message("WCV feasibility validation passed.");
                 experimentSettings.SaveLast();
             }
             catch (Exception ex)

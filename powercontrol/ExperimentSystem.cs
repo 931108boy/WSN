@@ -1314,9 +1314,10 @@ namespace WindowsFormsApplication1
 
         public ExperimentBatchResult Run(ExperimentSettings settings)
         {
-            WcvMaxTaskFeasibilityValidator.ThrowIfInvalid(settings);
-            BprTimingValidator.ThrowIfInvalid(settings);
             settings.Normalize();
+            BprTimingValidator.ThrowIfInvalid(settings);
+            Report("BP&R timing validation passed.");
+            WcvMaxTaskFeasibilityValidator.ThrowIfInvalid(settings);
             List<string> algorithms = settings.GetSelectedAlgorithms();
             if (algorithms.Count == 0)
                 throw new InvalidOperationException("至少需要選擇一個演算法。");
@@ -1338,9 +1339,6 @@ namespace WindowsFormsApplication1
                     settings.WcvCapacityJ,
                     settings.NmaxTask));
             }
-            BprTimingValidator.ThrowIfInvalid(settings);
-            Report("BP&R timing validation passed.");
-
             ExperimentBatchResult result = new ExperimentBatchResult();
             result.Settings = settings;
             string executionDirectory = settings.CreateExecutionOutputDirectory();
@@ -1552,9 +1550,9 @@ namespace WindowsFormsApplication1
 
         public ExperimentBatchResult Run(ExperimentSettings baseSettings)
         {
-            WcvMaxTaskFeasibilityValidator.ThrowIfInvalid(baseSettings);
-            BprTimingValidator.ThrowIfInvalid(baseSettings);
             baseSettings.Normalize();
+            BprTimingValidator.ThrowIfInvalid(baseSettings);
+            WcvMaxTaskFeasibilityValidator.ThrowIfInvalid(baseSettings);
             List<string> algorithms = baseSettings.GetSelectedAlgorithms();
             if (algorithms.Count == 0)
                 throw new InvalidOperationException("請至少勾選一個排程演算法。");
@@ -1563,6 +1561,8 @@ namespace WindowsFormsApplication1
             if (steps.Count == 0)
                 throw new InvalidOperationException("請先設定參數迭代。");
 
+            for (int i = 0; i < steps.Count; i++)
+                BprTimingValidator.ThrowIfInvalid(steps[i].Settings);
             for (int i = 0; i < steps.Count; i++)
             {
                 List<WcvMaxTaskFeasibilityResult> stepFeasibilityResults =
@@ -1584,12 +1584,10 @@ namespace WindowsFormsApplication1
                     }
                 }
             }
-            for (int i = 0; i < steps.Count; i++)
-                BprTimingValidator.ThrowIfInvalid(steps[i].Settings);
-            Report(String.Format(CultureInfo.InvariantCulture,
-                "WCV feasibility validation passed for {0} sweep value(s).", steps.Count));
             Report(String.Format(CultureInfo.InvariantCulture,
                 "BP&R timing validation passed for {0} sweep value(s).", steps.Count));
+            Report(String.Format(CultureInfo.InvariantCulture,
+                "WCV feasibility validation passed for {0} sweep value(s).", steps.Count));
 
             ExperimentBatchResult result = new ExperimentBatchResult();
             result.Settings = baseSettings.Copy();
@@ -1750,8 +1748,16 @@ namespace WindowsFormsApplication1
                 settings.SweepParameterKey = definition.Key;
                 settings.CurrentSweepValue = value;
                 definition.SetValue(settings, value);
-                WcvMaxTaskFeasibilityValidator.ThrowIfInvalid(settings);
+                if (String.Equals(definition.Key, "TreqSeconds", StringComparison.OrdinalIgnoreCase))
+                {
+                    double stepTreq = Math.Max(1.0, value);
+                    settings.ThresholdMode = "TreqSeconds";
+                    settings.TreqSeconds = stepTreq;
+                    settings.BprDeadlineThresholdSeconds = stepTreq;
+                }
                 settings.Normalize();
+                BprTimingValidator.ThrowIfInvalid(settings);
+                WcvMaxTaskFeasibilityValidator.ThrowIfInvalid(settings);
                 steps.Add(new ExperimentSweepStep
                 {
                     Index = i,
@@ -2984,6 +2990,7 @@ namespace WindowsFormsApplication1
                 string failReason = "";
                 bool deadlineOk = arrivalTime <= request.DeadlineSeconds + Epsilon;
                 bool success = sensor.Alive && deadlineOk;
+                bool taskFailureCounted = false;
 
                 if (!deadlineOk)
                 {
@@ -2991,10 +2998,15 @@ namespace WindowsFormsApplication1
                     summary.FailedOrLateTasks++;
                 }
 
+                if (!deadlineOk)
+                    taskFailureCounted = true;
+
                 ChargingContext context = new ChargingContext();
+                double reservedReturnEnergy = Math.Min(wcvEnergy, returnEnergy);
                 context.NodeId = request.NodeId;
                 context.ChargeRateJPerSecond = settings.WcvChargeRateJPerSecond;
-                context.WcvEnergyJ = wcvEnergy;
+                context.WcvEnergyJ = Math.Max(0.0, wcvEnergy - reservedReturnEnergy);
+                context.ReservedReturnEnergyJ = reservedReturnEnergy;
                 context.DeliveredEnergyJ = 0.0;
 
                 int chargeSafety = 0;
@@ -3023,13 +3035,20 @@ namespace WindowsFormsApplication1
                     }
                 }
 
-                wcvEnergy = context.WcvEnergyJ;
+                wcvEnergy = context.TotalWcvEnergyJ();
                 double afterEnergy = sensor.EnergyJ;
                 double chargeEndTime = currentTime;
                 if (!sensor.Alive)
                 {
                     failReason = "充電前或充電中死亡";
                     success = false;
+                }
+                if (sensor.Alive &&
+                    sensor.EnergyJ < sensor.CapacityJ - 1e-5 &&
+                    String.IsNullOrWhiteSpace(failReason))
+                {
+                    success = false;
+                    failReason = "WCV charge energy insufficient after reserving return energy";
                 }
                 if (sensor.EnergyJ >= sensor.CapacityJ - 1e-5)
                     sensor.EnergyJ = sensor.CapacityJ;
@@ -3090,7 +3109,7 @@ namespace WindowsFormsApplication1
                     summary.SuccessfulCharges++;
                     summary.TotalWaitSeconds += record.WaitSeconds;
                 }
-                else if (String.IsNullOrWhiteSpace(failReason))
+                else if (!taskFailureCounted)
                 {
                     summary.FailedOrLateTasks++;
                 }
@@ -6626,6 +6645,9 @@ namespace WindowsFormsApplication1
                 AssertSelfTest(Array.IndexOf(ExperimentSettings.AllAlgorithms(), "NJF_YU_BPR") >= 0,
                     "AllAlgorithms should include NJF_YU_BPR.");
 
+                RunNormalizeThenValidateOrderingSelfTest(tempDirectory);
+                RunSweepTreqSecondsSelfTest(tempDirectory);
+                RunWcvReturnReserveSelfTest(tempDirectory, simulations);
                 RunWcvMaxTaskFeasibilitySelfTest();
                 RunChengPaperBprWrapperSelfTest(tempDirectory, simulations);
                 RunChengPaperRandomPoolSelfTest(tempDirectory, simulations);
@@ -7135,6 +7157,154 @@ namespace WindowsFormsApplication1
                 "選中最晚安全服務時間秒", "選中安全餘裕秒", "選中不確定範圍秒",
                 "選中有效耗電率J每秒", "選中路線插入成本", "加入前候選任務數",
                 "加入後候選任務數", "單趟任務上限", "是否允許超出容量" };
+        }
+
+        private static void RunNormalizeThenValidateOrderingSelfTest(string tempDirectory)
+        {
+            ExperimentSettings batchSettings = CreateBprSelfTestSettings(Path.Combine(tempDirectory, "normalize-batch"));
+            DisableTaskDetailCsv(batchSettings);
+            batchSettings.SelectedAlgorithmsCsv = "NJF";
+            batchSettings.SensorCount = 2;
+            batchSettings.SimulationTimeSeconds = 1.0;
+            batchSettings.EventRatePerSecond = 0.0;
+            batchSettings.NmaxTask = 0;
+            new ExperimentBatchRunner(null, false).Run(batchSettings);
+            AssertSelfTest(batchSettings.NmaxTask == 1,
+                "ExperimentBatchRunner.Run must normalize raw settings before validation.");
+
+            ExperimentSettings sweepSettings = CreateBprSelfTestSettings(Path.Combine(tempDirectory, "normalize-sweep"));
+            DisableTaskDetailCsv(sweepSettings);
+            sweepSettings.SelectedAlgorithmsCsv = "NJF";
+            sweepSettings.SensorCount = 2;
+            sweepSettings.SimulationTimeSeconds = 1.0;
+            sweepSettings.EventRatePerSecond = 0.0;
+            sweepSettings.SweepEnabled = true;
+            sweepSettings.SweepParameterKey = "SensorCount";
+            sweepSettings.SweepIterationCount = 0;
+            sweepSettings.SweepStepValue = 1.0;
+            sweepSettings.NmaxTask = 0;
+            new ExperimentSweepBatchRunner(null, false).Run(sweepSettings);
+            AssertSelfTest(sweepSettings.NmaxTask == 1,
+                "ExperimentSweepBatchRunner.Run must normalize raw settings before validation.");
+        }
+
+        private static void RunSweepTreqSecondsSelfTest(string tempDirectory)
+        {
+            ExperimentSettings settings = CreateBprSelfTestSettings(Path.Combine(tempDirectory, "sweep-treq"));
+            DisableTaskDetailCsv(settings);
+            settings.SelectedAlgorithmsCsv = "NJF";
+            settings.SensorCount = 2;
+            settings.SimulationTimeSeconds = 1.0;
+            settings.EventRatePerSecond = 0.0;
+            settings.ThresholdMode = "ChengTreq";
+            settings.Normalize();
+
+            double startTreq = settings.TreqSeconds;
+            double step = 7.0;
+            settings.SweepEnabled = true;
+            settings.SweepParameterKey = "TreqSeconds";
+            settings.SweepIterationCount = 2;
+            settings.SweepStepValue = step;
+
+            ExperimentBatchResult result = new ExperimentSweepBatchRunner(null, false).Run(settings);
+            AssertSelfTest(result.RunSummaries.Count == 3,
+                "TreqSeconds sweep self-test should produce one summary per sweep step.");
+            for (int i = 0; i < result.RunSummaries.Count; i++)
+            {
+                double expected = startTreq + step * i;
+                ExperimentRunSummary summary = result.RunSummaries[i];
+                AssertNear(summary.SweepValue, expected, 1e-9,
+                    "TreqSeconds sweep value should reflect the requested step value.");
+                AssertNear(summary.EffectiveTreqSeconds, expected, 1e-9,
+                    "TreqSeconds sweep step should use the requested TreqSeconds at runtime.");
+                AssertSelfTest(String.Equals(summary.TreqSource, "TreqSeconds", StringComparison.Ordinal),
+                    "TreqSeconds sweep step should switch to manual TreqSeconds mode.");
+            }
+        }
+
+        private static void DisableTaskDetailCsv(ExperimentSettings settings)
+        {
+            settings.WriteTaskDetailCsv = false;
+            settings.WriteMissionDetailsCsv = false;
+            settings.WriteTaskRecordsCsv = false;
+            settings.WriteBprDebugCsv = false;
+            settings.WriteYuBprDebugCsv = false;
+        }
+
+        private static void RunWcvReturnReserveSelfTest(string tempDirectory, List<ExperimentSimulation> simulations)
+        {
+            string reserveDirectory = Path.Combine(tempDirectory, "wcv-return-reserve");
+            Directory.CreateDirectory(reserveDirectory);
+
+            ExperimentSettings settings = CreateBprSelfTestSettings(reserveDirectory);
+            settings.SensorCount = 1;
+            settings.SimulationTimeSeconds = 100.0;
+            settings.SensorBackgroundLifetimeSeconds = 1000000000.0;
+            settings.WcvSpeedMetersPerSecond = 10.0;
+            settings.WcvChargeRateJPerSecond = 10.0;
+            settings.WcvCapacityJ = 25.0;
+            settings.WcvMoveCostJPerMeter = 1.0;
+            settings.NmaxTask = 1;
+            settings.SelectedAlgorithmsCsv = "NJF";
+            settings.Normalize();
+
+            ExperimentArtifact artifact = CreateBprSelfTestArtifact(new double[] { 90.0 });
+            artifact.Sensors[1].X = 10.0;
+            artifact.Sensors[1].Y = 0.0;
+
+            MissionDetailCsvOutputOptions options = new MissionDetailCsvOutputOptions();
+            options.WriteMissionDetails = false;
+            options.WriteTaskRecords = true;
+            options.WriteBprDebug = false;
+            options.WriteYuBprDebug = false;
+
+            ExperimentSimulation simulation = new ExperimentSimulation(
+                settings,
+                artifact,
+                "NJF",
+                reserveDirectory,
+                options);
+            simulations.Add(simulation);
+
+            ChargingRequest request = new ChargingRequest();
+            request.RequestId = 1;
+            request.NodeId = 1;
+            request.RequestTimeSeconds = 0.0;
+            request.DeadlineSeconds = 1000.0;
+            request.RequestEnergyJ = simulation.sensors[1].EnergyJ;
+            request.ConsumeRateJPerSecond = simulation.sensors[1].ConsumeRateJPerSecond;
+            request.BaseConsumeRateJPerSecond = simulation.sensors[1].ConsumeRateJPerSecond;
+            request.RequestNodeConsumeRateJPerSecond = simulation.sensors[1].ConsumeRateJPerSecond;
+            request.EffectiveConsumeRateJPerSecond = simulation.sensors[1].ConsumeRateJPerSecond;
+            simulation.activeRequests.Add(request);
+            simulation.sensors[1].HasPendingRequest = true;
+
+            simulation.ExecuteMission();
+            if (simulation.csvWriter != null)
+                simulation.csvWriter.Dispose();
+
+            AssertSelfTest(simulation.summary.SuccessfulCharges == 0,
+                "A partial charge that preserves return energy must not be counted as a successful full charge.");
+            AssertSelfTest(simulation.summary.FailedOrLateTasks == 1,
+                "A partial charge caused by return-energy reservation should be counted as a failed task.");
+
+            string taskPath = Path.Combine(reserveDirectory, "run001-seed777-NJF-task-records.csv");
+            AssertSelfTest(File.Exists(taskPath), "Return-reserve task-record CSV was not written.");
+            string[] lines = File.ReadAllLines(taskPath, Encoding.UTF8);
+            AssertSelfTest(lines.Length == 2,
+                "Return-reserve self-test should write exactly one task-record row.");
+
+            Dictionary<string, int> columns = BuildCsvHeaderMap(lines[0].Split(','));
+            string[] fields = lines[1].Split(',');
+            bool success = Boolean.Parse(fields[columns["Success"]]);
+            double wcvEnergyAfter = Double.Parse(fields[columns["WcvEnergyAfterJ"]], CultureInfo.InvariantCulture);
+            double returnEnergy = ExperimentArtifact.Distance(artifact.Sensors[1].X, artifact.Sensors[1].Y,
+                artifact.BaseX, artifact.BaseY) * settings.WcvMoveCostJPerMeter;
+
+            AssertSelfTest(!success,
+                "Return-reserve self-test task should be recorded as failed/partial, not successful.");
+            AssertSelfTest(wcvEnergyAfter >= returnEnergy - 1e-6,
+                "WCV task record should retain enough energy to return to base after charging.");
         }
 
         private static void RunWcvMaxTaskFeasibilitySelfTest()
@@ -8298,7 +8468,13 @@ namespace WindowsFormsApplication1
         public int NodeId;
         public double ChargeRateJPerSecond;
         public double WcvEnergyJ;
+        public double ReservedReturnEnergyJ;
         public double DeliveredEnergyJ;
+
+        public double TotalWcvEnergyJ()
+        {
+            return Math.Max(0.0, WcvEnergyJ) + Math.Max(0.0, ReservedReturnEnergyJ);
+        }
     }
 
     internal class ChargingRequest
@@ -8584,9 +8760,10 @@ namespace WindowsFormsApplication1
             using (StreamWriter writer = new StreamWriter(path, false, new UTF8Encoding(true)))
             {
                 writer.WriteLine(CsvRow("SweepParameterName", "SweepValue", "RunIndex", "Seed", "Algorithm",
-                    "NetworkLifetimeSeconds", "SuccessfulCharges", "FailedOrLateTasks", "NaturalRequestCount",
-                    "ProactiveTaskCount", "TotalChargingTaskCount", "MissionCount", "MovementDistanceMeters",
-                    "AverageWaitSeconds", "ArtifactHash"));
+                    "ThresholdMode", "TreqSeconds", "TreqSource", "NetworkLifetimeSeconds",
+                    "SuccessfulCharges", "FailedOrLateTasks", "NaturalRequestCount", "ProactiveTaskCount",
+                    "TotalChargingTaskCount", "MissionCount", "MovementDistanceMeters", "AverageWaitSeconds",
+                    "ArtifactHash"));
                 for (int i = 0; i < result.RunSummaries.Count; i++)
                 {
                     ExperimentRunSummary s = result.RunSummaries[i];
@@ -8596,6 +8773,9 @@ namespace WindowsFormsApplication1
                         s.RunIndex,
                         s.Seed,
                         s.Algorithm,
+                        s.ThresholdMode,
+                        s.EffectiveTreqSeconds,
+                        s.TreqSource,
                         s.NetworkLifetimeSeconds,
                         s.SuccessfulCharges,
                         s.FailedOrLateTasks,

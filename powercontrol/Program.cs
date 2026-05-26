@@ -62,8 +62,9 @@ namespace WindowsFormsApplication1
                     return;
                 }
 
-                WcvMaxTaskFeasibilityValidator.ThrowIfInvalid(settings);
+                settings.Normalize();
                 BprTimingValidator.ThrowIfInvalid(settings);
+                WcvMaxTaskFeasibilityValidator.ThrowIfInvalid(settings);
 
                 Action<string> progressCallback = delegate (string message)
                 {
