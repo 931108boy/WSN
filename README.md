@@ -2,7 +2,6 @@
 
 本專案是一套 Wireless Rechargeable Sensor Network（WRSN）純充電實驗系統，建置於 `C:\Users\931108boy\Desktop\WSN`。系統以 MyWSN rechargeable 版本的 WinForms 專案為基礎，加入參考 CHENG single-WCV 純充電架構的 activation/request flow、CHENG paper-random BP&R 機制，以及 FUZZY 排程方法，用來比較多個充電排程演算法在相同實驗條件下的表現。
 
-重要定位：目前主流程是「參考 CHENG single-WCV 架構的純充電延伸實驗」；ExperimentSystem 不使用 packet TX/RX/forward 或 routing-load 作為能耗、deadline 或死亡判斷。舊 MyWSN packet/routing 欄位僅作為 legacy UI / 相容資料保留。
 
 此版本的重點不是單純展示節點動畫，而是建立一個可以重複、可比較、可輸出 Excel 的實驗平台。每一次 run 都會先產生固定的地圖、activation events、初始能量與耗能率變動排程，然後讓所有被選到的演算法使用同一份資料。這樣可以避免不同演算法其實是在不同網路條件下比較的問題。
 
@@ -78,12 +77,11 @@ C:\Users\931108boy\Desktop\WSN
 具體目標：
 
 1. 固定同一 run 的實驗資料。
-2. 讓所有演算法共享相同 map、event、initial residual、routing parent、rate-change schedule。
+2. 讓所有演算法共享相同 map、event、initial residual、shared schedule、rate-change schedule。
 3. 不讓 `Prate_change` 自動跑多組值；單次測試只使用一個固定值。
 4. 能耗模型採純充電定位：
    - 連續背景耗能。
    - CHENG activation/request schedule 與動態耗能率變動。
-   - packet TX/RX/forward 與 routing-load 在 ExperimentSystem 中停用，不列入死亡判斷。
 5. 所有演算法都走完整 mission 流程，而不是只選單一節點。
 6. FUZZY 必須納入實作，不作為延後項目。
 7. 產出繁體中文 Excel 報告，方便後續論文整理與實驗比較。
@@ -96,9 +94,8 @@ C:\Users\931108boy\Desktop\WSN
 
 - 感測器節點部署在 2D 平面。
 - BS（Base Station）固定在 `(0,0)`，同時作為 MyWSN sink 與 WCV 充電中心。
-- ExperimentSystem 產生 CHENG activation/request events，不建立封包 routing tree。
+- ExperimentSystem 產生 CHENG activation/request events，不建立封包 charging event flow。
 - death judgement 統一為 `residual <= 0`；request/deadline 由剩餘能量與 consume rate 推算。
-- `ParentId = -1`、routing failed、packet lost 與 routing-load 欄位屬 legacy/deprecated，相容保留但不作為純充電主比較指標。
 
 ### BS
 
@@ -154,16 +151,12 @@ base_rate_J_per_s = InitialEnergyJ / SensorBackgroundLifetimeSeconds
 consume_rate_J_per_s = base_rate_J_per_s * RateScale
 ```
 
-### Legacy Packet/Routing 欄位
 
-以下 MyWSN TX/RX 公式只屬 legacy UI / 相容欄位；ExperimentSystem 純充電主流程不使用這些值計算能耗、deadline、death 或 routing-load 輸出。
+MyWSN TX/RX 公式已不屬於 ExperimentSystem 設定；純充電主流程不使用 pure charging 參數計算能耗、deadline、death 或輸出。
 
 ```text
-RX energy = ER * packet_bits
-TX energy = (ER + Eamp * radio_range^power_exponent) * packet_bits
 ```
 
-ExperimentSystem 不再把 packet sent / received / lost 當成純充電比較指標；routing-load CSV 預設停用。
 
 ### 動態耗能率變動
 
@@ -345,11 +338,6 @@ C:\Users\931108boy\Desktop\WSN\experiment-last-settings.xml
 | `SensorBackgroundLifetimeSeconds` | 滿電時只靠背景耗能可存活秒數 | 100000 |
 | `InitialResidualJitterPercent` | 初始能量隨機擾動百分比 | 0 |
 | `EventRatePerSecond` | CHENG activation/request 頻率 p(次/s) | 0.05 |
-| `PacketBits` | deprecated；ExperimentSystem 不使用 packet energy | 81920 |
-| `RadioRangeMeters` | deprecated；ExperimentSystem 不建立 packet routing tree | 60 |
-| `ReceiverEnergyNjPerBit` | RX energy | 50 |
-| `AmplifierEnergyNjPerBitM2` | TX amplifier energy | 0.01 |
-| `PowerExponent` | power distance exponent | 2 |
 | `WcvSpeedMetersPerSecond` | WCV 速度 | 5 |
 | `WcvChargeRateJPerSecond` | WCV 充電速率 | 5 |
 | `WcvCapacityJ` | WCV 能量容量 | 200000 |
@@ -540,8 +528,6 @@ yyyyMMdd-HHmmss-fff-wsn-comparison-seed{BaseSeed}-runs{RunCount}.xlsx
 - proactive 數
 - mission 數
 - 移動距離
-- `routing-load.csv` 預設停用（deprecated）
-- legacy packet/routing 欄位不作為純充電主比較指標
 - 平均等待時間
 - 充電效率
 

@@ -46,16 +46,24 @@ namespace WindowsFormsApplication1
                 {
                     if (args.Length > 1 && File.Exists(args[1]))
                     {
-                        settings = ExperimentSettings.Load(args[1]);
+                        settings = ExperimentSettings.LoadRaw(args[1]);
                         persistSettings = false;
                     }
                     else
-                        settings = ExperimentSettings.LoadLast();
+                    {
+                        string lastSettingsPath = ExperimentSettings.LastSettingsPath();
+                        settings = File.Exists(lastSettingsPath)
+                            ? ExperimentSettings.LoadRaw(lastSettingsPath)
+                            : ExperimentSettings.CreateDefault();
+                    }
                 }
                 else
                 {
                     return;
                 }
+
+                WcvMaxTaskFeasibilityValidator.ThrowIfInvalid(settings);
+                BprTimingValidator.ThrowIfInvalid(settings);
 
                 Action<string> progressCallback = delegate (string message)
                 {

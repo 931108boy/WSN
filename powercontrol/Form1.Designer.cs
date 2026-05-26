@@ -97,12 +97,10 @@
             this.label23 = new System.Windows.Forms.Label();
             this.stop_time = new System.Windows.Forms.TextBox();
             this.label15 = new System.Windows.Forms.Label();
-            this.button10 = new System.Windows.Forms.Button();
             this.label25 = new System.Windows.Forms.Label();
             this.button12 = new System.Windows.Forms.Button();
             this.shownode = new System.Windows.Forms.TextBox();
             this.button13 = new System.Windows.Forms.Button();
-            this.button15 = new System.Windows.Forms.Button();
             this.label24 = new System.Windows.Forms.Label();
             this.button17 = new System.Windows.Forms.Button();
             this.button18 = new System.Windows.Forms.Button();
@@ -112,10 +110,6 @@
             this.NEDF_btn = new System.Windows.Forms.RadioButton();
             this.D_LIN = new System.Windows.Forms.RadioButton();
             this.M_LIN = new System.Windows.Forms.RadioButton();
-            this.PSO_btn = new System.Windows.Forms.RadioButton();
-            this.cuck_btn = new System.Windows.Forms.RadioButton();
-            this.RCSS_btn = new System.Windows.Forms.RadioButton();
-            this.GENE_btn = new System.Windows.Forms.RadioButton();
             this.LIN_btn = new System.Windows.Forms.RadioButton();
             this.EDF_btn = new System.Windows.Forms.RadioButton();
             this.label26 = new System.Windows.Forms.Label();
@@ -137,8 +131,6 @@
             this.label33 = new System.Windows.Forms.Label();
             this.repeatCountBox = new System.Windows.Forms.TextBox();
             this.label34 = new System.Windows.Forms.Label();
-            this.EDF_gene = new System.Windows.Forms.CheckBox();
-            this.NJF_gene = new System.Windows.Forms.CheckBox();
             this.angleSorting = new System.Windows.Forms.CheckBox();
             this.useMaxCar = new System.Windows.Forms.CheckBox();
             this.panel1.SuspendLayout();
@@ -792,15 +784,6 @@
             this.label15.TabIndex = 55;
             this.label15.Text = "執行時間";
             // 
-            // button10
-            // 
-            this.button10.Location = new System.Drawing.Point(1015, 964);
-            this.button10.Name = "button10";
-            this.button10.Size = new System.Drawing.Size(84, 23);
-            this.button10.TabIndex = 57;
-            this.button10.Text = "Show Tree";
-            this.button10.UseVisualStyleBackColor = true;
-            // 
             // label25
             // 
             this.label25.AutoSize = true;
@@ -837,15 +820,6 @@
             this.button13.Text = "Show var";
             this.button13.UseVisualStyleBackColor = true;
             // 
-            // button15
-            // 
-            this.button15.Location = new System.Drawing.Point(1015, 780);
-            this.button15.Name = "button15";
-            this.button15.Size = new System.Drawing.Size(94, 23);
-            this.button15.TabIndex = 64;
-            this.button15.Text = "Routing_Tree";
-            this.button15.UseVisualStyleBackColor = true;
-            // 
             // label24
             // 
             this.label24.AutoSize = true;
@@ -881,10 +855,6 @@
             this.groupBox1.Controls.Add(this.NEDF_btn);
             this.groupBox1.Controls.Add(this.D_LIN);
             this.groupBox1.Controls.Add(this.M_LIN);
-            this.groupBox1.Controls.Add(this.PSO_btn);
-            this.groupBox1.Controls.Add(this.cuck_btn);
-            this.groupBox1.Controls.Add(this.RCSS_btn);
-            this.groupBox1.Controls.Add(this.GENE_btn);
             this.groupBox1.Controls.Add(this.LIN_btn);
             this.groupBox1.Controls.Add(this.EDF_btn);
             this.groupBox1.Location = new System.Drawing.Point(1014, 396);
@@ -956,54 +926,6 @@
             this.M_LIN.Tag = "2";
             this.M_LIN.Text = "M_LIN";
             this.M_LIN.UseVisualStyleBackColor = true;
-            // 
-            // PSO_btn
-            // 
-            this.PSO_btn.AutoSize = true;
-            this.PSO_btn.Location = new System.Drawing.Point(9, 57);
-            this.PSO_btn.Name = "PSO_btn";
-            this.PSO_btn.Size = new System.Drawing.Size(43, 16);
-            this.PSO_btn.TabIndex = 100;
-            this.PSO_btn.TabStop = true;
-            this.PSO_btn.Tag = "2";
-            this.PSO_btn.Text = "PSO";
-            this.PSO_btn.UseVisualStyleBackColor = true;
-            // 
-            // cuck_btn
-            // 
-            this.cuck_btn.AutoSize = true;
-            this.cuck_btn.Location = new System.Drawing.Point(69, 57);
-            this.cuck_btn.Name = "cuck_btn";
-            this.cuck_btn.Size = new System.Drawing.Size(60, 16);
-            this.cuck_btn.TabIndex = 99;
-            this.cuck_btn.TabStop = true;
-            this.cuck_btn.Tag = "2";
-            this.cuck_btn.Text = "Cuckoo";
-            this.cuck_btn.UseVisualStyleBackColor = true;
-            // 
-            // RCSS_btn
-            // 
-            this.RCSS_btn.AutoSize = true;
-            this.RCSS_btn.Location = new System.Drawing.Point(199, 21);
-            this.RCSS_btn.Name = "RCSS_btn";
-            this.RCSS_btn.Size = new System.Drawing.Size(51, 16);
-            this.RCSS_btn.TabIndex = 98;
-            this.RCSS_btn.TabStop = true;
-            this.RCSS_btn.Tag = "2";
-            this.RCSS_btn.Text = "RCSS";
-            this.RCSS_btn.UseVisualStyleBackColor = true;
-            // 
-            // GENE_btn
-            // 
-            this.GENE_btn.AutoSize = true;
-            this.GENE_btn.Location = new System.Drawing.Point(69, 21);
-            this.GENE_btn.Name = "GENE_btn";
-            this.GENE_btn.Size = new System.Drawing.Size(53, 16);
-            this.GENE_btn.TabIndex = 2;
-            this.GENE_btn.TabStop = true;
-            this.GENE_btn.Tag = "3";
-            this.GENE_btn.Text = "GENE";
-            this.GENE_btn.UseVisualStyleBackColor = true;
             // 
             // LIN_btn
             // 
@@ -1194,26 +1116,6 @@
             this.label34.TabIndex = 95;
             this.label34.Text = "執行次數";
             // 
-            // EDF_gene
-            // 
-            this.EDF_gene.AutoSize = true;
-            this.EDF_gene.Location = new System.Drawing.Point(1185, 318);
-            this.EDF_gene.Name = "EDF_gene";
-            this.EDF_gene.Size = new System.Drawing.Size(70, 16);
-            this.EDF_gene.TabIndex = 96;
-            this.EDF_gene.Text = "EDF gene";
-            this.EDF_gene.UseVisualStyleBackColor = true;
-            // 
-            // NJF_gene
-            // 
-            this.NJF_gene.AutoSize = true;
-            this.NJF_gene.Location = new System.Drawing.Point(1185, 340);
-            this.NJF_gene.Name = "NJF_gene";
-            this.NJF_gene.Size = new System.Drawing.Size(67, 16);
-            this.NJF_gene.TabIndex = 97;
-            this.NJF_gene.Text = "NJF gene";
-            this.NJF_gene.UseVisualStyleBackColor = true;
-            // 
             // angleSorting
             // 
             this.angleSorting.AutoSize = true;
@@ -1241,8 +1143,6 @@
             this.ClientSize = new System.Drawing.Size(1323, 961);
             this.Controls.Add(this.useMaxCar);
             this.Controls.Add(this.angleSorting);
-            this.Controls.Add(this.NJF_gene);
-            this.Controls.Add(this.EDF_gene);
             this.Controls.Add(this.repeatCountBox);
             this.Controls.Add(this.label34);
             this.Controls.Add(this.button16);
@@ -1266,12 +1166,10 @@
             this.Controls.Add(this.button18);
             this.Controls.Add(this.button17);
             this.Controls.Add(this.label24);
-            this.Controls.Add(this.button15);
             this.Controls.Add(this.button13);
             this.Controls.Add(this.shownode);
             this.Controls.Add(this.button12);
             this.Controls.Add(this.label25);
-            this.Controls.Add(this.button10);
             this.Controls.Add(this.stop_time);
             this.Controls.Add(this.label15);
             this.Controls.Add(this.rectime_in);
@@ -1386,19 +1284,16 @@
         private System.Windows.Forms.Label label23;
         private System.Windows.Forms.TextBox stop_time;
         private System.Windows.Forms.Label label15;
-        private System.Windows.Forms.Button button10;
         private System.Windows.Forms.Label label25;
         private System.Windows.Forms.Button button12;
         private System.Windows.Forms.TextBox shownode;
         private System.Windows.Forms.Button button13;
-        private System.Windows.Forms.Button button15;
         private System.Windows.Forms.Label label24;
         private System.Windows.Forms.CheckBox density_control;
         private System.Windows.Forms.RichTextBox density_in;
         private System.Windows.Forms.Button button17;
         private System.Windows.Forms.Button button18;
         private System.Windows.Forms.GroupBox groupBox1;
-        private System.Windows.Forms.RadioButton GENE_btn;
         private System.Windows.Forms.RadioButton LIN_btn;
         private System.Windows.Forms.RadioButton EDF_btn;
         private System.Windows.Forms.Button generate_data_btn;
@@ -1422,13 +1317,8 @@
         private System.Windows.Forms.Label label33;
         private System.Windows.Forms.TextBox repeatCountBox;
         private System.Windows.Forms.Label label34;
-        private System.Windows.Forms.CheckBox EDF_gene;
-        private System.Windows.Forms.CheckBox NJF_gene;
         private System.Windows.Forms.CheckBox angleSorting;
         private System.Windows.Forms.CheckBox useMaxCar;
-        private System.Windows.Forms.RadioButton RCSS_btn;
-        private System.Windows.Forms.RadioButton cuck_btn;
-        private System.Windows.Forms.RadioButton PSO_btn;
         private System.Windows.Forms.RadioButton M_LIN;
         private System.Windows.Forms.RadioButton D_LIN;
         private System.Windows.Forms.RadioButton Prevention_btn;

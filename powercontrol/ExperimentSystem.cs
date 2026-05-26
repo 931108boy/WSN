@@ -18,7 +18,6 @@ namespace WindowsFormsApplication1
     {
         public bool WriteMissionDetails { get; set; }
         public bool WriteTaskRecords { get; set; }
-        public bool WriteRoutingLoad { get; set; }
         public bool WriteBprDebug { get; set; }
         public bool WriteYuBprDebug { get; set; }
 
@@ -26,14 +25,13 @@ namespace WindowsFormsApplication1
         {
             WriteMissionDetails = true;
             WriteTaskRecords = true;
-            WriteRoutingLoad = false;
             WriteBprDebug = true;
             WriteYuBprDebug = true;
         }
 
         public bool HasAnyOutput()
         {
-            return WriteMissionDetails || WriteTaskRecords || WriteRoutingLoad ||
+            return WriteMissionDetails || WriteTaskRecords ||
                 WriteBprDebug || WriteYuBprDebug;
         }
 
@@ -50,7 +48,6 @@ namespace WindowsFormsApplication1
 
             options.WriteMissionDetails = settings.WriteMissionDetailsCsv;
             options.WriteTaskRecords = settings.WriteTaskRecordsCsv;
-            options.WriteRoutingLoad = settings.WriteRoutingLoadCsv;
             options.WriteBprDebug = settings.WriteBprDebugCsv;
             options.WriteYuBprDebug = settings.WriteYuBprDebugCsv;
             return options;
@@ -61,7 +58,6 @@ namespace WindowsFormsApplication1
             List<string> names = new List<string>();
             if (WriteMissionDetails) names.Add("mission-details.csv");
             if (WriteTaskRecords) names.Add("task-records.csv");
-            if (WriteRoutingLoad) names.Add("routing-load.csv");
             if (WriteBprDebug) names.Add("bpr-debug.csv");
             if (WriteYuBprDebug) names.Add("yu-bpr-debug.csv");
             return names.Count == 0 ? "none" : String.Join(", ", names.ToArray());
@@ -81,11 +77,7 @@ namespace WindowsFormsApplication1
         public double SensorBackgroundLifetimeSeconds { get; set; }
         public double InitialResidualJitterPercent { get; set; }
         public double EventRatePerSecond { get; set; }
-        public double PacketBits { get; set; }
-        public double RadioRangeMeters { get; set; }
-        public double ReceiverEnergyNjPerBit { get; set; }
-        public double AmplifierEnergyNjPerBitM2 { get; set; }
-        public double PowerExponent { get; set; }
+        public double CriticalDensityRadiusMeters { get; set; }
         public double WcvSpeedMetersPerSecond { get; set; }
         public double WcvChargeRateJPerSecond { get; set; }
         public double WcvCapacityJ { get; set; }
@@ -111,7 +103,6 @@ namespace WindowsFormsApplication1
         public bool WriteTaskDetailCsv { get; set; }
         public bool WriteMissionDetailsCsv { get; set; }
         public bool WriteTaskRecordsCsv { get; set; }
-        public bool WriteRoutingLoadCsv { get; set; }
         public bool WriteBprDebugCsv { get; set; }
         public bool WriteYuBprDebugCsv { get; set; }
         public bool UseFastSimulationScheduling { get; set; }
@@ -140,11 +131,7 @@ namespace WindowsFormsApplication1
             SensorBackgroundLifetimeSeconds = 100000.0;
             InitialResidualJitterPercent = 0.0;
             EventRatePerSecond = 0.02;
-            PacketBits = 10.0 * 1024.0 * 8.0;
-            RadioRangeMeters = 60.0;
-            ReceiverEnergyNjPerBit = 50.0;
-            AmplifierEnergyNjPerBitM2 = 0.01;
-            PowerExponent = 2.0;
+            CriticalDensityRadiusMeters = 90.0;
             WcvSpeedMetersPerSecond = 5.0;
             WcvChargeRateJPerSecond = 5.0;
             WcvCapacityJ = 200000.0;
@@ -170,7 +157,6 @@ namespace WindowsFormsApplication1
             WriteTaskDetailCsv = true;
             WriteMissionDetailsCsv = true;
             WriteTaskRecordsCsv = true;
-            WriteRoutingLoadCsv = false;
             WriteBprDebugCsv = true;
             WriteYuBprDebugCsv = true;
             UseFastSimulationScheduling = true;
@@ -189,7 +175,6 @@ namespace WindowsFormsApplication1
                 "EDF",
                 "NJF",
                 "TADP_LIN",
-                "RCSS",
                 "NJF_CHENG_BPR",
                 "TADP_CHENG_BPR",
                 "EDF_CHENG_BPR",
@@ -198,17 +183,13 @@ namespace WindowsFormsApplication1
                 "NJF_ROUTE_ZHENG_BPR_LIMITED",
                 "NJF_ROUTE_ZHENG_BPR_EXTENDED",
                 "NJF_ROUTE_YU_BPR_LIMITED",
-                "NJF_ROUTE_YU_BPR_EXTENDED",
-                "FUZZY",
-                "GENE",
-                "PSO",
-                "Cuckoo"
+                "NJF_ROUTE_YU_BPR_EXTENDED"
             };
         }
 
         public static string DefaultAlgorithmSelectionCsv()
         {
-            return "EDF,NJF,TADP_LIN,RCSS,NJF_CHENG_BPR,TADP_CHENG_BPR,EDF_CHENG_BPR,NJF_ZHENG_BPR,NJF_YU_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_YU_BPR_LIMITED,FUZZY";
+            return "EDF,NJF,TADP_LIN,NJF_CHENG_BPR,TADP_CHENG_BPR,EDF_CHENG_BPR,NJF_ZHENG_BPR,NJF_YU_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_YU_BPR_LIMITED";
         }
 
         public static string CanonicalAlgorithmKey(string algorithm)
@@ -258,7 +239,7 @@ namespace WindowsFormsApplication1
             settings.NmaxTask = 40;
             settings.PrateChange = 0.2;
             settings.RateChangeVariationPercent = 12.5;
-            settings.SelectedAlgorithmsCsv = "EDF,FUZZY";
+            settings.SelectedAlgorithmsCsv = "EDF,NJF";
             settings.OutputDirectory = Path.Combine(settings.ProjectRoot, "outputs");
             settings.Normalize();
             return settings;
@@ -274,7 +255,7 @@ namespace WindowsFormsApplication1
             string current = AppDomain.CurrentDomain.BaseDirectory;
             for (int i = 0; i < 8 && !String.IsNullOrEmpty(current); i++)
             {
-                if (File.Exists(Path.Combine(current, "powercontrol.sln")) || File.Exists(Path.Combine(current, "CHENG.pdf")))
+                if (File.Exists(Path.Combine(current, "powercontrol.sln")) || File.Exists(Path.Combine(current, "ZHENG.pdf")))
                     return current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
                 DirectoryInfo parent = Directory.GetParent(current);
@@ -302,12 +283,17 @@ namespace WindowsFormsApplication1
 
         public static ExperimentSettings Load(string path)
         {
+            ExperimentSettings settings = LoadRaw(path);
+            settings.Normalize();
+            return settings;
+        }
+
+        public static ExperimentSettings LoadRaw(string path)
+        {
             XmlSerializer serializer = new XmlSerializer(typeof(ExperimentSettings));
             using (FileStream stream = File.OpenRead(path))
             {
-                ExperimentSettings settings = (ExperimentSettings)serializer.Deserialize(stream);
-                settings.Normalize();
-                return settings;
+                return (ExperimentSettings)serializer.Deserialize(stream);
             }
         }
 
@@ -349,15 +335,11 @@ namespace WindowsFormsApplication1
             SensorBackgroundLifetimeSeconds = Math.Max(1.0, SensorBackgroundLifetimeSeconds);
             InitialResidualJitterPercent = Clamp(InitialResidualJitterPercent, 0.0, 95.0);
             EventRatePerSecond = Math.Max(0.0, EventRatePerSecond);
-            PacketBits = Math.Max(1.0, PacketBits);
-            RadioRangeMeters = Math.Max(1.0, RadioRangeMeters);
-            ReceiverEnergyNjPerBit = Math.Max(0.0, ReceiverEnergyNjPerBit);
-            AmplifierEnergyNjPerBitM2 = Math.Max(0.0, AmplifierEnergyNjPerBitM2);
-            PowerExponent = Math.Max(1.0, PowerExponent);
+            CriticalDensityRadiusMeters = Math.Max(1.0, CriticalDensityRadiusMeters);
             if (WcvSpeedMetersPerSecond <= 0.0)
-                throw new InvalidOperationException("WcvSpeedMetersPerSecond must be greater than 0 for WCV travel time and CHENG Treq calculation.");
+                throw new InvalidOperationException("目前設定不可行：WCV 移動速度必須大於 0。");
             if (WcvChargeRateJPerSecond <= 0.0)
-                throw new InvalidOperationException("WcvChargeRateJPerSecond must be greater than 0 for sensor full-charge time and CHENG Treq calculation.");
+                throw new InvalidOperationException("目前設定不可行：WCV 充電速率必須大於 0。");
             WcvCapacityJ = Math.Max(0.001, WcvCapacityJ);
             WcvMoveCostJPerMeter = Math.Max(0.0, WcvMoveCostJPerMeter);
             NmaxTask = Math.Max(1, NmaxTask);
@@ -372,6 +354,12 @@ namespace WindowsFormsApplication1
             RequestThresholdPercent = Clamp(RequestThresholdPercent, 1.0, 90.0);
             TreqSeconds = Math.Max(1.0, TreqSeconds);
             BprDeadlineThresholdSeconds = Math.Max(1.0, BprDeadlineThresholdSeconds);
+            if (ChengTreqCalculator.IsChengTreqMode(ThresholdMode))
+            {
+                double autoTreq = ComputeAutoTreqSeconds();
+                TreqSeconds = autoTreq;
+                BprDeadlineThresholdSeconds = autoTreq;
+            }
             ProactivePredictionHorizonSeconds = Math.Max(0.0, ProactivePredictionHorizonSeconds);
             ProactiveCandidateMaxEnergyRatio = Clamp(ProactiveCandidateMaxEnergyRatio, 0.1, 1.0);
             ProactiveCooldownSeconds = Math.Max(0.0, ProactiveCooldownSeconds);
@@ -384,11 +372,9 @@ namespace WindowsFormsApplication1
             {
                 WriteMissionDetailsCsv = false;
                 WriteTaskRecordsCsv = false;
-                WriteRoutingLoadCsv = false;
                 WriteBprDebugCsv = false;
                 WriteYuBprDebugCsv = false;
             }
-            WriteRoutingLoadCsv = false;
             WriteTaskDetailCsv = HasAnyTaskDetailCsvOutput();
             MaxParallelJobs = Math.Max(0, MaxParallelJobs);
             if (String.IsNullOrWhiteSpace(SweepParameterKey) || ExperimentSweepParameterCatalog.Find(SweepParameterKey) == null)
@@ -409,7 +395,7 @@ namespace WindowsFormsApplication1
 
         public bool HasAnyTaskDetailCsvOutput()
         {
-            return WriteMissionDetailsCsv || WriteTaskRecordsCsv || WriteRoutingLoadCsv ||
+            return WriteMissionDetailsCsv || WriteTaskRecordsCsv ||
                 WriteBprDebugCsv || WriteYuBprDebugCsv;
         }
 
@@ -465,12 +451,12 @@ namespace WindowsFormsApplication1
             SelectedAlgorithmsCsv = String.Join(",", selected.ToArray());
         }
 
-        internal static bool IsProjectRootValid(string projectRoot)
+        private static bool IsProjectRootValid(string projectRoot)
         {
             if (String.IsNullOrWhiteSpace(projectRoot) || !Directory.Exists(projectRoot))
                 return false;
             return File.Exists(Path.Combine(projectRoot, "powercontrol.sln")) ||
-                File.Exists(Path.Combine(projectRoot, "CHENG.pdf"));
+                File.Exists(Path.Combine(projectRoot, "ZHENG.pdf"));
         }
 
         private static bool IsDefaultOutputDirectory(string outputDirectory, string projectRoot)
@@ -747,13 +733,25 @@ namespace WindowsFormsApplication1
                 IsChengTreqMode(thresholdMode);
         }
 
-        public static double GetEffectiveTreqSeconds(ExperimentSettings settings, int maxTask)
+        public static bool IsTreqSecondsMode(string thresholdMode)
+        {
+            return String.Equals(thresholdMode, "TreqSeconds", StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static double GetEffectiveRequestThresholdSeconds(ExperimentSettings settings, int maxTask)
         {
             if (settings == null)
                 return 0.0;
             if (IsChengTreqMode(settings.ThresholdMode))
                 return Compute(settings, maxTask).TreqSeconds;
-            return Math.Max(0.0, settings.TreqSeconds);
+            if (IsTreqSecondsMode(settings.ThresholdMode))
+                return Math.Max(0.0, settings.TreqSeconds);
+            return 0.0;
+        }
+
+        public static double GetEffectiveTreqSeconds(ExperimentSettings settings, int maxTask)
+        {
+            return GetEffectiveRequestThresholdSeconds(settings, maxTask);
         }
 
         public static ChengTreqMetrics Compute(ExperimentSettings settings, int maxTask)
@@ -761,9 +759,9 @@ namespace WindowsFormsApplication1
             if (settings == null)
                 throw new InvalidOperationException("ExperimentSettings is required for CHENG Treq calculation.");
             if (settings.WcvSpeedMetersPerSecond <= 0.0)
-                throw new InvalidOperationException("WcvSpeedMetersPerSecond must be greater than 0 for CHENG Treq calculation.");
+                throw new InvalidOperationException("目前設定不可行：WCV 移動速度必須大於 0。");
             if (settings.WcvChargeRateJPerSecond <= 0.0)
-                throw new InvalidOperationException("WcvChargeRateJPerSecond must be greater than 0 for CHENG Treq calculation.");
+                throw new InvalidOperationException("目前設定不可行：WCV 充電速率必須大於 0。");
 
             int k = Math.Max(1, maxTask);
             double width = Math.Max(1.0, settings.MapWidthMeters);
@@ -804,6 +802,337 @@ namespace WindowsFormsApplication1
             metrics.LmaxStepMeters = lmaxStep;
             metrics.TreqSeconds = Math.Max(0.0, treq);
             return metrics;
+        }
+    }
+
+    internal sealed class WcvMaxTaskFeasibilityResult
+    {
+        public bool IsValid;
+        public string Algorithm;
+        public int ValidationTaskLimit;
+        public string ErrorMessage;
+        public double EstimatedMaxTaskMissionPathLengthMeters;
+        public double EstimatedMaxTaskMoveEnergyJ;
+        public double EstimatedMaxTaskChargeEnergyJ;
+        public double EstimatedMaxTaskMissionEnergyJ;
+        public double EstimatedFullChargeSeconds;
+        public double EstimatedMaxTaskMoveSeconds;
+        public double EstimatedMaxTaskChargeSeconds;
+        public double EstimatedMaxTaskMissionSeconds;
+    }
+
+    internal static class WcvMaxTaskFeasibilityValidator
+    {
+        public static double EstimateMaxTaskMissionPathLengthMeters(ExperimentSettings settings)
+        {
+            return EstimateMaxTaskMissionPathLengthMeters(settings, settings == null ? 0 : settings.NmaxTask);
+        }
+
+        public static double EstimateMaxTaskMissionPathLengthMeters(ExperimentSettings settings, int validationTaskLimit)
+        {
+            if (settings == null)
+                return 0.0;
+            return ChengTreqCalculator.Compute(settings, validationTaskLimit).LpathMeters;
+        }
+
+        public static double EstimateMaxTaskMissionEnergyJ(ExperimentSettings settings)
+        {
+            WcvMaxTaskFeasibilityResult result = ValidateWcvCapacityForMaxTask(settings);
+            return result.EstimatedMaxTaskMissionEnergyJ;
+        }
+
+        public static double EstimateMaxTaskMissionSeconds(ExperimentSettings settings)
+        {
+            WcvMaxTaskFeasibilityResult result = ValidateWcvCapacityForMaxTask(settings);
+            return result.EstimatedMaxTaskMissionSeconds;
+        }
+
+        public static WcvMaxTaskFeasibilityResult ValidateWcvCapacityForMaxTask(ExperimentSettings settings)
+        {
+            return ValidateWcvCapacityForAlgorithm(settings, "");
+        }
+
+        public static WcvMaxTaskFeasibilityResult ValidateWcvCapacityForAlgorithm(ExperimentSettings settings, string algorithm)
+        {
+            WcvMaxTaskFeasibilityResult result = new WcvMaxTaskFeasibilityResult();
+            result.IsValid = false;
+            result.Algorithm = String.IsNullOrWhiteSpace(algorithm) ? "" : ExperimentSettings.CanonicalAlgorithmKey(algorithm);
+
+            if (settings == null)
+            {
+                result.ErrorMessage = "目前設定不可行：缺少實驗設定。";
+                return result;
+            }
+
+            if (settings.NmaxTask <= 0)
+                return Fail(result, settings, "目前設定不可行：NmaxTask 必須大於 0。");
+            if (settings.WcvCapacityJ <= 0.0)
+                return Fail(result, settings, "目前設定不可行：WCV 容量必須大於 0。");
+            if (settings.MapWidthMeters <= 0.0 || settings.MapHeightMeters <= 0.0)
+                return Fail(result, settings, "目前設定不可行：地圖邊長必須大於 0。");
+            if (settings.InitialEnergyJ <= 0.0)
+                return Fail(result, settings, "目前設定不可行：Sensor 滿電容量必須大於 0。");
+            if (settings.WcvChargeRateJPerSecond <= 0.0)
+                return Fail(result, settings, "目前設定不可行：WCV 充電速率必須大於 0。");
+            if (settings.WcvSpeedMetersPerSecond <= 0.0)
+                return Fail(result, settings, "目前設定不可行：WCV 移動速度必須大於 0。");
+            if (settings.WcvMoveCostJPerMeter < 0.0)
+                return Fail(result, settings, "目前設定不可行：WCV 移動耗能必須大於或等於 0。");
+
+            result.ValidationTaskLimit = settings.NmaxTask;
+
+            FillEstimates(result, settings);
+            if (result.EstimatedMaxTaskMissionEnergyJ > settings.WcvCapacityJ)
+            {
+                result.ErrorMessage = BuildErrorMessage(settings, result,
+                    "目前設定不可行：WCV 容量不足以完成一趟最大任務數。");
+                return result;
+            }
+
+            result.IsValid = true;
+            result.ErrorMessage = "";
+            return result;
+        }
+
+        public static void ThrowIfInvalid(ExperimentSettings settings)
+        {
+            List<WcvMaxTaskFeasibilityResult> results = ValidateSelectedAlgorithms(settings);
+            for (int i = 0; i < results.Count; i++)
+            {
+                if (!results[i].IsValid)
+                    throw new InvalidOperationException(results[i].ErrorMessage);
+            }
+        }
+
+        public static List<WcvMaxTaskFeasibilityResult> ValidateSelectedAlgorithms(ExperimentSettings settings)
+        {
+            List<WcvMaxTaskFeasibilityResult> results = new List<WcvMaxTaskFeasibilityResult>();
+            if (settings == null)
+            {
+                results.Add(ValidateWcvCapacityForAlgorithm(settings, ""));
+                return results;
+            }
+
+            List<string> algorithms = settings.GetSelectedAlgorithms();
+            if (algorithms.Count == 0)
+                algorithms.Add("");
+            for (int i = 0; i < algorithms.Count; i++)
+                results.Add(ValidateWcvCapacityForAlgorithm(settings, algorithms[i]));
+            return results;
+        }
+
+        private static WcvMaxTaskFeasibilityResult Fail(
+            WcvMaxTaskFeasibilityResult result,
+            ExperimentSettings settings,
+            string reason)
+        {
+            if (settings != null &&
+                settings.NmaxTask > 0 &&
+                settings.MapWidthMeters > 0.0 &&
+                settings.MapHeightMeters > 0.0 &&
+                settings.InitialEnergyJ > 0.0 &&
+                settings.WcvChargeRateJPerSecond > 0.0 &&
+                settings.WcvSpeedMetersPerSecond > 0.0 &&
+                settings.WcvMoveCostJPerMeter >= 0.0)
+            {
+                if (result.ValidationTaskLimit <= 0)
+                    result.ValidationTaskLimit = settings.NmaxTask;
+                FillEstimates(result, settings);
+            }
+            result.ErrorMessage = BuildErrorMessage(settings, result, reason);
+            return result;
+        }
+
+        private static void FillEstimates(WcvMaxTaskFeasibilityResult result, ExperimentSettings settings)
+        {
+            int maxTask = Math.Max(1, result.ValidationTaskLimit <= 0 ? settings.NmaxTask : result.ValidationTaskLimit);
+            result.ValidationTaskLimit = maxTask;
+            result.EstimatedFullChargeSeconds = settings.InitialEnergyJ / settings.WcvChargeRateJPerSecond;
+            result.EstimatedMaxTaskChargeEnergyJ = maxTask * settings.InitialEnergyJ;
+            result.EstimatedMaxTaskMissionPathLengthMeters = EstimateMaxTaskMissionPathLengthMeters(settings, maxTask);
+            result.EstimatedMaxTaskMoveEnergyJ =
+                result.EstimatedMaxTaskMissionPathLengthMeters * settings.WcvMoveCostJPerMeter;
+            result.EstimatedMaxTaskMissionEnergyJ =
+                result.EstimatedMaxTaskMoveEnergyJ + result.EstimatedMaxTaskChargeEnergyJ;
+            result.EstimatedMaxTaskMoveSeconds =
+                result.EstimatedMaxTaskMissionPathLengthMeters / settings.WcvSpeedMetersPerSecond;
+            result.EstimatedMaxTaskChargeSeconds = maxTask * result.EstimatedFullChargeSeconds;
+            result.EstimatedMaxTaskMissionSeconds =
+                result.EstimatedMaxTaskMoveSeconds + result.EstimatedMaxTaskChargeSeconds;
+        }
+
+        private static string BuildErrorMessage(
+            ExperimentSettings settings,
+            WcvMaxTaskFeasibilityResult result,
+            string reason)
+        {
+            StringBuilder builder = new StringBuilder();
+            builder.AppendLine(reason);
+            builder.AppendLine();
+            if (settings != null)
+            {
+                if (!String.IsNullOrWhiteSpace(result.Algorithm))
+                    builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "演算法：{0}", result.Algorithm));
+                builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "ValidationTaskLimit：{0}", result.ValidationTaskLimit));
+                builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "NmaxTask：{0}", settings.NmaxTask));
+                builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "WCV 容量：{0} J", resultFormat(settings.WcvCapacityJ)));
+                builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "估計一趟最大任務能耗：{0} J", resultFormat(result.EstimatedMaxTaskMissionEnergyJ)));
+                builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "估計路徑長度：{0} m", resultFormat(result.EstimatedMaxTaskMissionPathLengthMeters)));
+                builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "估計移動能耗：{0} J", resultFormat(result.EstimatedMaxTaskMoveEnergyJ)));
+                builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "估計充電能量：{0} J", resultFormat(result.EstimatedMaxTaskChargeEnergyJ)));
+                builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "Sensor 滿電容量：{0} J", resultFormat(settings.InitialEnergyJ)));
+                builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "WCV 移動耗能：{0} J/m", resultFormat(settings.WcvMoveCostJPerMeter)));
+                builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "WCV 充電速率：{0} J/s", resultFormat(settings.WcvChargeRateJPerSecond)));
+                builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "WCV 移動速度：{0} m/s", resultFormat(settings.WcvSpeedMetersPerSecond)));
+                builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "地圖邊長：{0} m", resultFormat(Math.Max(settings.MapWidthMeters, settings.MapHeightMeters))));
+            }
+            builder.AppendLine();
+            builder.AppendLine("請降低 NmaxTask，或提高 WCV 容量，或檢查地圖大小、移動耗能、sensor 滿電容量與充電速率設定。");
+            return builder.ToString().TrimEnd();
+        }
+
+        private static string resultFormat(double value)
+        {
+            return value.ToString("0.###", CultureInfo.InvariantCulture);
+        }
+    }
+
+    internal sealed class BprTimingValidationResult
+    {
+        public bool IsValid;
+        public string Algorithm;
+        public string ErrorMessage;
+    }
+
+    internal static class BprTimingValidator
+    {
+        public static List<BprTimingValidationResult> ValidateSelectedAlgorithms(ExperimentSettings settings)
+        {
+            List<BprTimingValidationResult> results = new List<BprTimingValidationResult>();
+            if (settings == null)
+            {
+                BprTimingValidationResult missing = new BprTimingValidationResult();
+                missing.IsValid = false;
+                missing.Algorithm = "";
+                missing.ErrorMessage = "目前設定不可行：缺少實驗設定。";
+                results.Add(missing);
+                return results;
+            }
+
+            List<string> algorithms = settings.GetSelectedAlgorithms();
+            if (algorithms.Count == 0)
+                algorithms.Add("");
+            for (int i = 0; i < algorithms.Count; i++)
+                results.Add(ValidateAlgorithm(settings, algorithms[i]));
+            return results;
+        }
+
+        public static void ThrowIfInvalid(ExperimentSettings settings)
+        {
+            List<BprTimingValidationResult> results = ValidateSelectedAlgorithms(settings);
+            for (int i = 0; i < results.Count; i++)
+            {
+                if (!results[i].IsValid)
+                    throw new InvalidOperationException(results[i].ErrorMessage);
+            }
+        }
+
+        public static BprTimingValidationResult ValidateAlgorithm(ExperimentSettings settings, string algorithm)
+        {
+            BprTimingValidationResult result = new BprTimingValidationResult();
+            result.Algorithm = String.IsNullOrWhiteSpace(algorithm) ? "" : ExperimentSettings.CanonicalAlgorithmKey(algorithm);
+            result.IsValid = true;
+            result.ErrorMessage = "";
+
+            if (settings == null)
+            {
+                result.IsValid = false;
+                result.ErrorMessage = "目前設定不可行：缺少實驗設定。";
+                return result;
+            }
+
+            if (!IsBprAlgorithm(result.Algorithm))
+                return result;
+            if (!String.Equals(settings.ThresholdMode, "Percent", StringComparison.OrdinalIgnoreCase))
+                return result;
+            if (settings.ProactivePredictionHorizonSeconds > 0.0 &&
+                settings.ProactiveCooldownSeconds > 0.0 &&
+                settings.BprDeadlineThresholdSeconds > 0.0)
+                return result;
+
+            result.IsValid = false;
+            result.ErrorMessage = BuildPercentModeErrorMessage(settings, result.Algorithm);
+            return result;
+        }
+
+        public static bool IsBprAlgorithm(string algorithm)
+        {
+            string key = ExperimentSettings.CanonicalAlgorithmKey(algorithm);
+            return String.Equals(key, "NJF_CHENG_BPR", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(key, "TADP_CHENG_BPR", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(key, "EDF_CHENG_BPR", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(key, "NJF_ZHENG_BPR", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(key, "NJF_YU_BPR", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(key, "NJF_ROUTE_ZHENG_BPR_LIMITED", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(key, "NJF_ROUTE_ZHENG_BPR_EXTENDED", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(key, "NJF_ROUTE_YU_BPR_LIMITED", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(key, "NJF_ROUTE_YU_BPR_EXTENDED", StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static string ResolvePredictionHorizonSource(ExperimentSettings settings)
+        {
+            if (settings == null)
+                return "InvalidPercentMode";
+            if (settings.ProactivePredictionHorizonSeconds > 0.0)
+                return "Explicit";
+            if (ChengTreqCalculator.IsChengTreqMode(settings.ThresholdMode))
+                return "ChengTreq";
+            if (ChengTreqCalculator.IsTreqSecondsMode(settings.ThresholdMode))
+                return "TreqSeconds";
+            return "InvalidPercentMode";
+        }
+
+        public static string ResolveCooldownSource(ExperimentSettings settings)
+        {
+            if (settings == null)
+                return "InvalidPercentMode";
+            if (settings.ProactiveCooldownSeconds > 0.0)
+                return "Explicit";
+            if (ChengTreqCalculator.IsChengTreqMode(settings.ThresholdMode))
+                return "ChengTreq";
+            if (ChengTreqCalculator.IsTreqSecondsMode(settings.ThresholdMode))
+                return "TreqSeconds";
+            return "InvalidPercentMode";
+        }
+
+        public static string ResolveDeadlineThresholdSource(ExperimentSettings settings)
+        {
+            if (settings == null)
+                return "InvalidPercentMode";
+            if (settings.BprDeadlineThresholdSeconds > 0.0)
+                return "Explicit";
+            if (ChengTreqCalculator.IsChengTreqMode(settings.ThresholdMode))
+                return "ChengTreq";
+            if (ChengTreqCalculator.IsTreqSecondsMode(settings.ThresholdMode))
+                return "TreqSeconds";
+            return "InvalidPercentMode";
+        }
+
+        private static string BuildPercentModeErrorMessage(ExperimentSettings settings, string algorithm)
+        {
+            StringBuilder builder = new StringBuilder();
+            builder.AppendLine("目前設定不可行：ThresholdMode = Percent 時，BP&R 需要明確設定時間參數。");
+            builder.AppendLine();
+            builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "演算法：{0}", algorithm));
+            builder.AppendLine("目前 ThresholdMode：Percent");
+            builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "ProactivePredictionHorizonSeconds：{0}", settings.ProactivePredictionHorizonSeconds));
+            builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "ProactiveCooldownSeconds：{0}", settings.ProactiveCooldownSeconds));
+            builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "BprDeadlineThresholdSeconds：{0}", settings.BprDeadlineThresholdSeconds));
+            builder.AppendLine(String.Format(CultureInfo.InvariantCulture, "TreqSeconds：{0}", settings.TreqSeconds));
+            builder.AppendLine();
+            builder.AppendLine("Percent 模式的自然請求門檻使用 RequestThresholdPercent，但 BP&R 的預測範圍與 cooldown 是時間參數，不能隱性使用 TreqSeconds。");
+            builder.AppendLine("請明確設定 ProactivePredictionHorizonSeconds、ProactiveCooldownSeconds、BprDeadlineThresholdSeconds，或改用 ChengTreq / TreqSeconds 模式。");
+            return builder.ToString();
         }
     }
 
@@ -985,10 +1314,32 @@ namespace WindowsFormsApplication1
 
         public ExperimentBatchResult Run(ExperimentSettings settings)
         {
+            WcvMaxTaskFeasibilityValidator.ThrowIfInvalid(settings);
+            BprTimingValidator.ThrowIfInvalid(settings);
             settings.Normalize();
             List<string> algorithms = settings.GetSelectedAlgorithms();
             if (algorithms.Count == 0)
                 throw new InvalidOperationException("至少需要選擇一個演算法。");
+
+            List<WcvMaxTaskFeasibilityResult> feasibilityResults =
+                WcvMaxTaskFeasibilityValidator.ValidateSelectedAlgorithms(settings);
+            for (int i = 0; i < feasibilityResults.Count; i++)
+            {
+                if (!feasibilityResults[i].IsValid)
+                {
+                    Report(feasibilityResults[i].ErrorMessage);
+                    throw new InvalidOperationException(feasibilityResults[i].ErrorMessage);
+                }
+                Report(String.Format(CultureInfo.InvariantCulture,
+                    "WCV feasibility validation passed: Algorithm={0}, ValidationTaskLimit={1}, EstimatedMaxTaskMissionEnergyJ={2}, WcvCapacityJ={3}, NmaxTask={4}",
+                    feasibilityResults[i].Algorithm,
+                    feasibilityResults[i].ValidationTaskLimit,
+                    feasibilityResults[i].EstimatedMaxTaskMissionEnergyJ,
+                    settings.WcvCapacityJ,
+                    settings.NmaxTask));
+            }
+            BprTimingValidator.ThrowIfInvalid(settings);
+            Report("BP&R timing validation passed.");
 
             ExperimentBatchResult result = new ExperimentBatchResult();
             result.Settings = settings;
@@ -1010,14 +1361,14 @@ namespace WindowsFormsApplication1
 
             ChengTreqMetrics chengMetrics = ChengTreqCalculator.Compute(settings, settings.NmaxTask);
             string treqSource = ChengTreqCalculator.IsChengTreqMode(settings.ThresholdMode)
-                ? "Auto"
-                : (String.Equals(settings.ThresholdMode, "TreqSeconds", StringComparison.OrdinalIgnoreCase) ? "Manual" : "NotUsed");
+                ? "ChengTreq"
+                : (String.Equals(settings.ThresholdMode, "TreqSeconds", StringComparison.OrdinalIgnoreCase) ? "TreqSeconds" : "Percent");
             Report(String.Format(CultureInfo.InvariantCulture,
                 "ThresholdMode={0}, RequestThresholdPercent={1}, ConfiguredTreqSeconds={2}, EffectiveTreqSeconds={3}, TreqSource={4}, NmaxTask={5}, MapWidthMeters={6}, MapHeightMeters={7}, ComputedLpathMeters={8}, ComputedTjobSeconds={9}, ComputedLmaxStepMeters={10}",
                 settings.ThresholdMode,
                 settings.RequestThresholdPercent,
                 settings.TreqSeconds,
-                ChengTreqCalculator.GetEffectiveTreqSeconds(settings, settings.NmaxTask),
+                ChengTreqCalculator.GetEffectiveRequestThresholdSeconds(settings, settings.NmaxTask),
                 treqSource,
                 settings.NmaxTask,
                 settings.MapWidthMeters,
@@ -1201,6 +1552,8 @@ namespace WindowsFormsApplication1
 
         public ExperimentBatchResult Run(ExperimentSettings baseSettings)
         {
+            WcvMaxTaskFeasibilityValidator.ThrowIfInvalid(baseSettings);
+            BprTimingValidator.ThrowIfInvalid(baseSettings);
             baseSettings.Normalize();
             List<string> algorithms = baseSettings.GetSelectedAlgorithms();
             if (algorithms.Count == 0)
@@ -1209,6 +1562,34 @@ namespace WindowsFormsApplication1
             List<ExperimentSweepStep> steps = BuildSweepSteps(baseSettings);
             if (steps.Count == 0)
                 throw new InvalidOperationException("請先設定參數迭代。");
+
+            for (int i = 0; i < steps.Count; i++)
+            {
+                List<WcvMaxTaskFeasibilityResult> stepFeasibilityResults =
+                    WcvMaxTaskFeasibilityValidator.ValidateSelectedAlgorithms(steps[i].Settings);
+                for (int j = 0; j < stepFeasibilityResults.Count; j++)
+                {
+                    if (!stepFeasibilityResults[j].IsValid)
+                    {
+                        string message = String.Format(CultureInfo.InvariantCulture,
+                            "Sweep value {0}/{1} ({2}={3}) failed WCV feasibility validation.{4}{5}",
+                            i + 1,
+                            steps.Count,
+                            steps[i].ParameterKey,
+                            FormatSweepValue(steps[i]),
+                            Environment.NewLine,
+                            stepFeasibilityResults[j].ErrorMessage);
+                        Report(message);
+                        throw new InvalidOperationException(message);
+                    }
+                }
+            }
+            for (int i = 0; i < steps.Count; i++)
+                BprTimingValidator.ThrowIfInvalid(steps[i].Settings);
+            Report(String.Format(CultureInfo.InvariantCulture,
+                "WCV feasibility validation passed for {0} sweep value(s).", steps.Count));
+            Report(String.Format(CultureInfo.InvariantCulture,
+                "BP&R timing validation passed for {0} sweep value(s).", steps.Count));
 
             ExperimentBatchResult result = new ExperimentBatchResult();
             result.Settings = baseSettings.Copy();
@@ -1369,6 +1750,7 @@ namespace WindowsFormsApplication1
                 settings.SweepParameterKey = definition.Key;
                 settings.CurrentSweepValue = value;
                 definition.SetValue(settings, value);
+                WcvMaxTaskFeasibilityValidator.ThrowIfInvalid(settings);
                 settings.Normalize();
                 steps.Add(new ExperimentSweepStep
                 {
@@ -1484,8 +1866,6 @@ namespace WindowsFormsApplication1
         public int Seed;
         public string ArtifactHash;
         public int RateChangeScheduleCount;
-        public int RoutingParentMissingNodeCount;
-        public double RoutingDisconnectedNodeRatio;
         public bool SweepEnabled;
         public int SweepIndex;
         public string SweepParameterKey;
@@ -1542,7 +1922,7 @@ namespace WindowsFormsApplication1
             artifact.SweepParameterName = artifact.SweepEnabled ? sweepDefinition.DisplayName : "";
             artifact.SweepValue = artifact.SweepEnabled ? sweepDefinition.GetValue(settings) : 0.0;
 
-            BuildRandomSensors(settings, artifact, random);
+            BuildRandomSensors(settings, artifact, random, seed);
             artifact.UsesActivationSchedule = true;
             GenerateChengActivationEvents(settings, artifact, seed);
 
@@ -1683,7 +2063,7 @@ namespace WindowsFormsApplication1
             return EmptyRateChanges;
         }
 
-        private static void BuildRandomSensors(ExperimentSettings settings, ExperimentArtifact artifact, Random random)
+        private static void BuildRandomSensors(ExperimentSettings settings, ExperimentArtifact artifact, Random random, int seed)
         {
             artifact.Sensors.Clear();
 
@@ -1692,9 +2072,15 @@ namespace WindowsFormsApplication1
             baseStation.X = artifact.BaseX;
             baseStation.Y = artifact.BaseY;
             baseStation.InitialEnergyJ = Double.PositiveInfinity;
+            baseStation.InitialResidualEnergyJ = Double.PositiveInfinity;
             baseStation.ParentId = -1;
             baseStation.InitiallyActive = true;
             artifact.Sensors.Add(baseStation);
+
+            Random residualRandom = settings.InitialResidualJitterPercent > 0.0
+                ? new Random(StableInitialResidualSeed(seed))
+                : null;
+            double minimumResidualRatio = 1.0 - settings.InitialResidualJitterPercent / 100.0;
 
             for (int id = 1; id <= settings.SensorCount; id++)
             {
@@ -1703,53 +2089,27 @@ namespace WindowsFormsApplication1
                 sensor.X = random.NextDouble() * settings.MapWidthMeters;
                 sensor.Y = random.NextDouble() * settings.MapHeightMeters;
                 sensor.InitialEnergyJ = settings.InitialEnergyJ;
+                sensor.InitialResidualEnergyJ = settings.InitialEnergyJ;
+                if (residualRandom != null)
+                {
+                    double residualRatio = minimumResidualRatio +
+                        residualRandom.NextDouble() * (1.0 - minimumResidualRatio);
+                    sensor.InitialResidualEnergyJ = settings.InitialEnergyJ * residualRatio;
+                }
                 sensor.ParentId = -1;
                 sensor.InitiallyActive = false;
                 artifact.Sensors.Add(sensor);
             }
         }
 
-        private static void AssignRoutingParents(ExperimentSettings settings, ExperimentArtifact artifact)
+        private static int StableInitialResidualSeed(int runSeed)
         {
-            int nodeCount = artifact.Sensors.Count;
-            for (int i = 0; i < nodeCount; i++)
-                artifact.Sensors[i].ParentId = -1;
-
-            List<int>[] graph = new List<int>[nodeCount];
-            for (int i = 0; i < nodeCount; i++)
-                graph[i] = new List<int>();
-
-            for (int i = 0; i < nodeCount; i++)
+            unchecked
             {
-                for (int j = i + 1; j < nodeCount; j++)
-                {
-                    double linkDistance = Distance(artifact.Sensors[i].X, artifact.Sensors[i].Y,
-                        artifact.Sensors[j].X, artifact.Sensors[j].Y);
-                    if (linkDistance <= settings.RadioRangeMeters)
-                    {
-                        graph[i].Add(j);
-                        graph[j].Add(i);
-                    }
-                }
-            }
-
-            bool[] visited = new bool[nodeCount];
-            Queue<int> queue = new Queue<int>();
-            visited[0] = true;
-            queue.Enqueue(0);
-            while (queue.Count > 0)
-            {
-                int current = queue.Dequeue();
-                for (int i = 0; i < graph[current].Count; i++)
-                {
-                    int next = graph[current][i];
-                    if (visited[next])
-                        continue;
-
-                    visited[next] = true;
-                    artifact.Sensors[next].ParentId = current;
-                    queue.Enqueue(next);
-                }
+                int hash = 17;
+                hash = hash * 31 + runSeed;
+                hash = hash * 31 + 3000017;
+                return hash & 0x7fffffff;
             }
         }
 
@@ -1769,6 +2129,7 @@ namespace WindowsFormsApplication1
                     AddHash(ref hash, Sensors[i].X);
                     AddHash(ref hash, Sensors[i].Y);
                     AddHash(ref hash, Sensors[i].InitialEnergyJ);
+                    AddHash(ref hash, Sensors[i].InitialResidualEnergyJ);
                     AddHash(ref hash, Sensors[i].ParentId);
                     AddHash(ref hash, Sensors[i].InitiallyActive ? 1 : 0);
                 }
@@ -1813,16 +2174,6 @@ namespace WindowsFormsApplication1
             return Math.Sqrt(dx * dx + dy * dy);
         }
 
-        public int CountMissingRoutingParents()
-        {
-            return 0;
-        }
-
-        public double MissingRoutingParentRatio()
-        {
-            return 0.0;
-        }
-
         public ExperimentArtifactSummary CreateSummary()
         {
             ExperimentArtifactSummary summary = new ExperimentArtifactSummary();
@@ -1830,8 +2181,6 @@ namespace WindowsFormsApplication1
             summary.Seed = Seed;
             summary.ArtifactHash = ArtifactHash;
             summary.RateChangeScheduleCount = RateChanges == null ? 0 : RateChanges.Count;
-            summary.RoutingParentMissingNodeCount = CountMissingRoutingParents();
-            summary.RoutingDisconnectedNodeRatio = MissingRoutingParentRatio();
             summary.SweepEnabled = SweepEnabled;
             summary.SweepIndex = SweepIndex;
             summary.SweepParameterKey = SweepParameterKey;
@@ -1847,6 +2196,7 @@ namespace WindowsFormsApplication1
         public double X;
         public double Y;
         public double InitialEnergyJ;
+        public double InitialResidualEnergyJ;
         public int ParentId;
         public bool InitiallyActive;
     }
@@ -1892,13 +2242,6 @@ namespace WindowsFormsApplication1
         private double currentTime;
         private bool stopForFirstDeath;
         private HashSet<int> plannedMissionNodeIds;
-        private int[] routingSubtreeSizeByNodeId;
-        private double[] expectedRoutingTxPacketsPerSecondByNodeId;
-        private double[] expectedRoutingRxPacketsPerSecondByNodeId;
-        private double[] expectedRoutingForwardPacketsPerSecondByNodeId;
-        private double[] estimatedRoutingTxLoadJPerSecondByNodeId;
-        private double[] estimatedRoutingRxLoadJPerSecondByNodeId;
-        private double[] estimatedRoutingLoadJPerSecondByNodeId;
         private long predictionCacheVersion;
         private BprPredictedRequestCache bprPredictedRequestCache;
         private YuPredictedIntervalCache yuPredictedIntervalCache;
@@ -1924,11 +2267,6 @@ namespace WindowsFormsApplication1
             public double ConsumeRateJPerSecond;
             public double BaseConsumeRateJPerSecond;
             public double EffectiveConsumeRateJPerSecond;
-            public double RoutingLoadJPerSecond;
-            public double RoutingTxLoadJPerSecond;
-            public double RoutingRxLoadJPerSecond;
-            public int RoutingSubtreeSize;
-            public double ExpectedRoutingForwardPacketsPerSecond;
             public bool IsPendingRequest;
             public bool IsScheduledInCurrentMission;
             public bool IsAlive;
@@ -1947,9 +2285,6 @@ namespace WindowsFormsApplication1
             public double ConsumeRateJPerSecond;
             public double BaseConsumeRateJPerSecond;
             public double EffectiveConsumeRateJPerSecond;
-            public double RoutingLoadJPerSecond;
-            public int RoutingSubtreeSize;
-            public double ExpectedRoutingForwardPacketsPerSecond;
             public double UncertaintySeconds;
             public bool IsPendingRequest;
             public bool IsScheduledInCurrentMission;
@@ -2127,15 +2462,6 @@ namespace WindowsFormsApplication1
             for (int i = 0; i < artifact.Sensors.Count; i++)
                 sensors[i] = new SensorState(artifact.Sensors[i], settings, artifact.UsesActivationSchedule);
             artifact.GetRateChangesForNode(0);
-            InitializeDeprecatedRoutingLoadFields();
-            if (csvWriter != null)
-                csvWriter.WriteRoutingLoad(artifact, routingSubtreeSizeByNodeId,
-                    expectedRoutingTxPacketsPerSecondByNodeId,
-                    expectedRoutingRxPacketsPerSecondByNodeId,
-                    expectedRoutingForwardPacketsPerSecondByNodeId,
-                    estimatedRoutingTxLoadJPerSecondByNodeId,
-                    estimatedRoutingRxLoadJPerSecondByNodeId,
-                    estimatedRoutingLoadJPerSecondByNodeId);
             InitializeBprSTable();
 
             summary = new ExperimentRunSummary();
@@ -2148,10 +2474,10 @@ namespace WindowsFormsApplication1
             summary.RateChangeVariationPercent = settings.RateChangeVariationPercent;
             summary.ThresholdMode = settings.ThresholdMode;
             summary.RequestThresholdPercent = settings.RequestThresholdPercent;
-            summary.EffectiveTreqSeconds = ChengTreqCalculator.GetEffectiveTreqSeconds(settings, settings.NmaxTask);
+            summary.EffectiveTreqSeconds = ChengTreqCalculator.GetEffectiveRequestThresholdSeconds(settings, settings.NmaxTask);
             summary.TreqSource = ChengTreqCalculator.IsChengTreqMode(settings.ThresholdMode)
-                ? "Auto"
-                : (String.Equals(settings.ThresholdMode, "TreqSeconds", StringComparison.OrdinalIgnoreCase) ? "Manual" : "NotUsed");
+                ? "ChengTreq"
+                : (String.Equals(settings.ThresholdMode, "TreqSeconds", StringComparison.OrdinalIgnoreCase) ? "TreqSeconds" : "Percent");
             summary.RateChangeScheduleCount = artifact.RateChanges.Count;
             summary.NetworkLifetimeSeconds = settings.SimulationTimeSeconds;
             summary.FirstDeadNodeId = -1;
@@ -2162,8 +2488,6 @@ namespace WindowsFormsApplication1
             summary.FirstDeadDirectEnergyCauseZh = "";
             summary.FirstDeadSchedulingCause = "";
             summary.FirstDeadSchedulingCauseZh = "";
-            summary.RoutingParentMissingNodeCount = artifact.CountMissingRoutingParents();
-            summary.RoutingDisconnectedNodeRatio = artifact.MissingRoutingParentRatio();
         }
 
         private void CopySweepFieldsTo(ExperimentRunSummary record)
@@ -2251,7 +2575,7 @@ namespace WindowsFormsApplication1
                 summary.NetworkLifetimeSeconds = settings.SimulationTimeSeconds;
 
             summary.MissionCount = missionId;
-            summary.RequestCount = summary.NaturalRequestCount + summary.ProactiveTaskCount;
+            summary.TotalChargingTaskCount = summary.NaturalRequestCount + summary.ProactiveTaskCount;
             summary.ChargeEfficiency = summary.DeliveredEnergyJ /
                 Math.Max(summary.DeliveredEnergyJ + summary.MoveEnergyJ, 1e-9);
             summary.AverageWaitSeconds = summary.SuccessfulCharges > 0
@@ -2306,45 +2630,6 @@ namespace WindowsFormsApplication1
                 builder.Append(reserved[i].ToString(CultureInfo.InvariantCulture));
             }
             return builder.ToString();
-        }
-
-        private void InitializeDeprecatedRoutingLoadFields()
-        {
-            int count = sensors.Length;
-            routingSubtreeSizeByNodeId = new int[count];
-            expectedRoutingTxPacketsPerSecondByNodeId = new double[count];
-            expectedRoutingRxPacketsPerSecondByNodeId = new double[count];
-            expectedRoutingForwardPacketsPerSecondByNodeId = new double[count];
-            estimatedRoutingTxLoadJPerSecondByNodeId = new double[count];
-            estimatedRoutingRxLoadJPerSecondByNodeId = new double[count];
-            estimatedRoutingLoadJPerSecondByNodeId = new double[count];
-        }
-
-        private void RefreshRoutingLoadEstimateForNode(int nodeId)
-        {
-        }
-
-        private double GetRoutingTxLoadJPerSecond(SensorState sensor)
-        {
-            if (sensor == null || sensor.Id <= 0 || sensor.Id >= sensors.Length ||
-                expectedRoutingTxPacketsPerSecondByNodeId == null)
-                return 0.0;
-
-            return 0.0;
-        }
-
-        private double GetRoutingRxLoadJPerSecond(SensorState sensor)
-        {
-            if (sensor == null || sensor.Id <= 0 || sensor.Id >= sensors.Length ||
-                expectedRoutingRxPacketsPerSecondByNodeId == null)
-                return 0.0;
-
-            return 0.0;
-        }
-
-        private double GetRoutingLoadJPerSecond(SensorState sensor)
-        {
-            return GetRoutingTxLoadJPerSecond(sensor) + GetRoutingRxLoadJPerSecond(sensor);
         }
 
         private double GetEffectiveConsumeRateJPerSecond(SensorState sensor)
@@ -2409,24 +2694,6 @@ namespace WindowsFormsApplication1
                 sensor.CapacityJ * settings.RequestThresholdPercent / 100.0);
         }
 
-        private int GetRoutingSubtreeSize(int nodeId)
-        {
-            if (routingSubtreeSizeByNodeId == null || nodeId <= 0 || nodeId >= routingSubtreeSizeByNodeId.Length)
-                return 0;
-            return routingSubtreeSizeByNodeId[nodeId];
-        }
-
-        private double GetExpectedRoutingForwardPacketsPerSecond(int nodeId)
-        {
-            if (expectedRoutingForwardPacketsPerSecondByNodeId == null ||
-                nodeId <= 0 ||
-                nodeId >= expectedRoutingForwardPacketsPerSecondByNodeId.Length)
-            {
-                return 0.0;
-            }
-            return expectedRoutingForwardPacketsPerSecondByNodeId[nodeId];
-        }
-
         private double GetRequestEffectiveConsumeRate(ChargingRequest request)
         {
             if (request == null)
@@ -2438,19 +2705,14 @@ namespace WindowsFormsApplication1
             return request.ConsumeRateJPerSecond;
         }
 
-        private void PopulateChargingRequestRoutingFields(ChargingRequest request, SensorState sensor)
+        private void PopulateChargingRequestEnergyFields(ChargingRequest request, SensorState sensor)
         {
             if (request == null || sensor == null)
                 return;
             request.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
             request.BaseConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
             request.RequestNodeConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
-            request.RoutingTxLoadJPerSecond = 0.0;
-            request.RoutingRxLoadJPerSecond = 0.0;
-            request.RoutingLoadJPerSecond = 0.0;
             request.EffectiveConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
-            request.RoutingSubtreeSize = 0;
-            request.ExpectedRoutingForwardPacketsPerSecond = 0.0;
         }
 
         private double ComputeBprRequestDeadlineSeconds(SensorState sensor)
@@ -2569,12 +2831,7 @@ namespace WindowsFormsApplication1
             entry.EnergyJ = sensor.EnergyJ;
             entry.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
             entry.BaseConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
-            entry.RoutingTxLoadJPerSecond = 0.0;
-            entry.RoutingRxLoadJPerSecond = 0.0;
-            entry.RoutingLoadJPerSecond = 0.0;
             entry.EffectiveConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
-            entry.RoutingSubtreeSize = 0;
-            entry.ExpectedRoutingForwardPacketsPerSecond = 0.0;
             entry.IsAlive = sensor.Alive;
             entry.IsPendingRequest = sensor.HasPendingRequest || HasActiveRequestForNode(nodeId);
             entry.IsScheduledInCurrentMission = IsNodeReservedForCurrentMission(nodeId);
@@ -2600,12 +2857,7 @@ namespace WindowsFormsApplication1
             entry.EnergyJ = sensor.EnergyJ;
             entry.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
             entry.BaseConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
-            entry.RoutingTxLoadJPerSecond = 0.0;
-            entry.RoutingRxLoadJPerSecond = 0.0;
-            entry.RoutingLoadJPerSecond = 0.0;
             entry.EffectiveConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
-            entry.RoutingSubtreeSize = 0;
-            entry.ExpectedRoutingForwardPacketsPerSecond = 0.0;
             entry.IsPendingRequest = sensor.HasPendingRequest || HasActiveRequestForNode(sensor.Id);
             entry.IsScheduledInCurrentMission = IsNodeReservedForCurrentMission(sensor.Id);
             entry.IsAlive = sensor.Alive;
@@ -2686,11 +2938,6 @@ namespace WindowsFormsApplication1
             foreach (int nodeId in plannedMissionNodeIds)
                 RefreshBprSTableEntry(nodeId, "mission_scheduled", true);
             MarkProactiveNodesSelected(route);
-            int startPacketSent = summary.PacketSent;
-            int startPacketReceived = summary.PacketReceived;
-            int startPacketLost = summary.PacketLost;
-            int startRoutingFailedPacketLost = summary.RoutingFailedPacketLost;
-
             double wcvEnergy = settings.WcvCapacityJ;
             double posX = artifact.BaseX;
             double posY = artifact.BaseY;
@@ -2825,7 +3072,7 @@ namespace WindowsFormsApplication1
                 record.InternalEnergyBeforeNj = beforeEnergy * 1000000000.0;
                 record.InternalEnergyAfterNj = afterEnergy * 1000000000.0;
                 record.ConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
-                PopulateTaskRecordRoutingFields(record, request.NodeId, request);
+                PopulateTaskRecordEnergyFields(record, request.NodeId, request);
                 PopulateNodeConsumeRateSnapshotFields(record, request, serviceNodeConsumeRateSnapshot, true);
                 record.InternalRateNjPerTick = sensor.ConsumeRateJPerSecond * 1000000000.0 * 0.01;
                 record.DeliveredEnergyJ = context.DeliveredEnergyJ;
@@ -2871,10 +3118,6 @@ namespace WindowsFormsApplication1
             }
 
             mission.ReturnTimeSeconds = currentTime;
-            mission.PacketSent = summary.PacketSent - startPacketSent;
-            mission.PacketReceived = summary.PacketReceived - startPacketReceived;
-            mission.PacketLost = summary.PacketLost - startPacketLost;
-            mission.RoutingFailedPacketLost = summary.RoutingFailedPacketLost - startRoutingFailedPacketLost;
             mission.AverageWaitSeconds = mission.SuccessfulCharges > 0
                 ? mission.TotalWaitSeconds / mission.SuccessfulCharges
                 : 0.0;
@@ -2905,7 +3148,7 @@ namespace WindowsFormsApplication1
             }
             else
             {
-                mission.RequestCount++;
+                mission.OnDemandRequestCount++;
             }
 
             if (record.Success)
@@ -2945,7 +3188,7 @@ namespace WindowsFormsApplication1
             record.InternalEnergyBeforeNj = record.EnergyBeforeJ * 1000000000.0;
             record.InternalEnergyAfterNj = record.EnergyAfterJ * 1000000000.0;
             record.ConsumeRateJPerSecond = sensors[request.NodeId].ConsumeRateJPerSecond;
-            PopulateTaskRecordRoutingFields(record, request.NodeId, request);
+            PopulateTaskRecordEnergyFields(record, request.NodeId, request);
             PopulateNodeConsumeRateSnapshotFields(record, request, 0.0, false);
             record.InternalRateNjPerTick = record.ConsumeRateJPerSecond * 1000000000.0 * 0.01;
             record.DeliveredEnergyJ = 0.0;
@@ -2965,7 +3208,7 @@ namespace WindowsFormsApplication1
                 csvWriter.WriteTask(record);
         }
 
-        private void PopulateTaskRecordRoutingFields(ExperimentTaskRecord record, int nodeId, ChargingRequest request)
+        private void PopulateTaskRecordEnergyFields(ExperimentTaskRecord record, int nodeId, ChargingRequest request)
         {
             if (record == null)
                 return;
@@ -2974,11 +3217,6 @@ namespace WindowsFormsApplication1
             {
                 record.BaseConsumeRateJPerSecond = request.BaseConsumeRateJPerSecond;
                 record.EffectiveConsumeRateJPerSecond = request.EffectiveConsumeRateJPerSecond;
-                record.RoutingLoadJPerSecond = request.RoutingLoadJPerSecond;
-                record.RoutingTxLoadJPerSecond = request.RoutingTxLoadJPerSecond;
-                record.RoutingRxLoadJPerSecond = request.RoutingRxLoadJPerSecond;
-                record.RoutingSubtreeSize = request.RoutingSubtreeSize;
-                record.ExpectedRoutingForwardPacketsPerSecond = request.ExpectedRoutingForwardPacketsPerSecond;
                 return;
             }
 
@@ -2987,12 +3225,7 @@ namespace WindowsFormsApplication1
 
             SensorState sensor = sensors[nodeId];
             record.BaseConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
-            record.RoutingTxLoadJPerSecond = 0.0;
-            record.RoutingRxLoadJPerSecond = 0.0;
-            record.RoutingLoadJPerSecond = 0.0;
             record.EffectiveConsumeRateJPerSecond = sensor.ConsumeRateJPerSecond;
-            record.RoutingSubtreeSize = 0;
-            record.ExpectedRoutingForwardPacketsPerSecond = 0.0;
         }
 
         private static void PopulateNodeConsumeRateSnapshotFields(
@@ -3249,9 +3482,6 @@ namespace WindowsFormsApplication1
                 return BuildNearestRoute(cplist, maxTask);
             }
 
-            if (algorithm == "FUZZY")
-                AddProactiveCandidates(pool, maxTask);
-
             if (pool.Count == 0)
                 return pool;
 
@@ -3261,16 +3491,6 @@ namespace WindowsFormsApplication1
                 return BuildNearestRoute(pool, maxTask);
             if (algorithm == "TADP_LIN")
                 return BuildCompositeRoute(pool, maxTask, 0.50, 0.50, 0.00);
-            if (algorithm == "RCSS")
-                return BuildCompositeRoute(pool, maxTask, 0.20, 0.25, 0.55);
-            if (algorithm == "FUZZY")
-                return BuildFuzzyRoute(pool, maxTask);
-            if (algorithm == "GENE")
-                return BuildGeneticRoute(pool, maxTask);
-            if (algorithm == "PSO")
-                return BuildPsoRoute(pool, maxTask);
-            if (algorithm == "Cuckoo")
-                return BuildCuckooRoute(pool, maxTask);
 
             return BuildNearestRoute(pool, maxTask);
         }
@@ -3411,7 +3631,7 @@ namespace WindowsFormsApplication1
                 proactive.RequestTimeSeconds = currentTime;
                 proactive.DeadlineSeconds = currentTime + timeToDeath;
                 proactive.RequestEnergyJ = sensor.EnergyJ;
-                PopulateChargingRequestRoutingFields(proactive, sensor);
+                PopulateChargingRequestEnergyFields(proactive, sensor);
                 proactive.IsProactive = true;
                 proactive.ProactiveReason = "FUZZY_RISK";
                 proactive.CriticalDensity = ComputeCriticalNodeDensity(id);
@@ -3942,7 +4162,7 @@ namespace WindowsFormsApplication1
             {
                 SensorState sensor = sensors[predicted.NodeId];
                 proactive.RequestEnergyJ = sensor.EnergyJ;
-                PopulateChargingRequestRoutingFields(proactive, sensor);
+                PopulateChargingRequestEnergyFields(proactive, sensor);
                 if (Double.IsNaN(proactive.DeadlineSeconds) ||
                     Double.IsInfinity(proactive.DeadlineSeconds))
                 {
@@ -4408,7 +4628,7 @@ namespace WindowsFormsApplication1
             if (sensor != null)
             {
                 proactive.RequestEnergyJ = sensor.EnergyJ;
-                PopulateChargingRequestRoutingFields(proactive, sensor);
+                PopulateChargingRequestEnergyFields(proactive, sensor);
             }
             if (decision.EffectiveConsumeRateJPerSecond > 0.0)
                 proactive.EffectiveConsumeRateJPerSecond = decision.EffectiveConsumeRateJPerSecond;
@@ -4533,7 +4753,7 @@ namespace WindowsFormsApplication1
             {
                 SensorState sensor = sensors[decision.NodeId];
                 proactive.RequestEnergyJ = sensor.EnergyJ;
-                PopulateChargingRequestRoutingFields(proactive, sensor);
+                PopulateChargingRequestEnergyFields(proactive, sensor);
             }
             proactive.EffectiveConsumeRateJPerSecond = decision.EffectiveConsumeRateJPerSecond;
             proactive.CriticalDensity = 0.0;
@@ -4662,9 +4882,6 @@ namespace WindowsFormsApplication1
                 interval.ConsumeRateJPerSecond = entry.ConsumeRateJPerSecond;
                 interval.BaseConsumeRateJPerSecond = entry.BaseConsumeRateJPerSecond;
                 interval.EffectiveConsumeRateJPerSecond = entry.EffectiveConsumeRateJPerSecond;
-                interval.RoutingLoadJPerSecond = entry.RoutingLoadJPerSecond;
-                interval.RoutingSubtreeSize = entry.RoutingSubtreeSize;
-                interval.ExpectedRoutingForwardPacketsPerSecond = entry.ExpectedRoutingForwardPacketsPerSecond;
                 interval.UncertaintySeconds = uncertainty;
                 interval.IsPendingRequest = entry.IsPendingRequest;
                 interval.IsScheduledInCurrentMission = entry.IsScheduledInCurrentMission;
@@ -4772,11 +4989,6 @@ namespace WindowsFormsApplication1
             proactive.BaseConsumeRateJPerSecond = interval.BaseConsumeRateJPerSecond;
             proactive.RequestNodeConsumeRateJPerSecond = interval.ConsumeRateJPerSecond;
             proactive.EffectiveConsumeRateJPerSecond = interval.EffectiveConsumeRateJPerSecond;
-            proactive.RoutingLoadJPerSecond = interval.RoutingLoadJPerSecond;
-            proactive.RoutingTxLoadJPerSecond = 0.0;
-            proactive.RoutingRxLoadJPerSecond = 0.0;
-            proactive.RoutingSubtreeSize = interval.RoutingSubtreeSize;
-            proactive.ExpectedRoutingForwardPacketsPerSecond = interval.ExpectedRoutingForwardPacketsPerSecond;
             proactive.CriticalDensity = 0.0;
             proactive.IsProactive = true;
             proactive.ProactiveReason = YuBprDangerIntervalRemovalReason;
@@ -4815,14 +5027,27 @@ namespace WindowsFormsApplication1
         {
             if (settings.ProactivePredictionHorizonSeconds > 0.0)
                 return settings.ProactivePredictionHorizonSeconds;
-            return GetEffectiveTreqSeconds(maxTask) + EstimateBprTjobSeconds(maxTask);
+            return ResolveBprTimeBaseSeconds(maxTask, "目前設定不可行：ThresholdMode = Percent 時，BP&R 預測範圍不可隱性使用 TreqSeconds。" + Environment.NewLine +
+                "請明確設定 ProactivePredictionHorizonSeconds，或改用 ChengTreq / TreqSeconds 模式。") +
+                EstimateBprTjobSeconds(maxTask);
         }
 
         private double ResolveProactiveCooldownSeconds()
         {
             if (settings.ProactiveCooldownSeconds > 0.0)
                 return settings.ProactiveCooldownSeconds;
-            return GetEffectiveTreqSeconds();
+            return ResolveBprTimeBaseSeconds(GetMissionTaskLimit(),
+                "目前設定不可行：ThresholdMode = Percent 時，BP&R cooldown 不可隱性使用 TreqSeconds。" + Environment.NewLine +
+                "請明確設定 ProactiveCooldownSeconds，或改用 ChengTreq / TreqSeconds 模式。");
+        }
+
+        private double ResolveBprTimeBaseSeconds(int maxTask, string percentModeErrorMessage)
+        {
+            if (ChengTreqCalculator.IsChengTreqMode(settings.ThresholdMode))
+                return ComputeChengTreqSeconds(maxTask);
+            if (ChengTreqCalculator.IsTreqSecondsMode(settings.ThresholdMode))
+                return Math.Max(0.0, settings.TreqSeconds);
+            throw new InvalidOperationException(percentModeErrorMessage);
         }
 
         private double GetEffectiveTreqSeconds()
@@ -4834,7 +5059,9 @@ namespace WindowsFormsApplication1
         {
             if (ChengTreqCalculator.IsChengTreqMode(settings.ThresholdMode))
                 return ComputeChengTreqSeconds(maxTask);
-            return Math.Max(0.0, settings.TreqSeconds);
+            if (ChengTreqCalculator.IsTreqSecondsMode(settings.ThresholdMode))
+                return Math.Max(0.0, settings.TreqSeconds);
+            return 0.0;
         }
 
         private ChengTreqMetrics ComputeChengTreqMetrics(int maxTask)
@@ -4952,11 +5179,6 @@ namespace WindowsFormsApplication1
             proactive.BaseConsumeRateJPerSecond = entry.BaseConsumeRateJPerSecond;
             proactive.RequestNodeConsumeRateJPerSecond = entry.ConsumeRateJPerSecond;
             proactive.EffectiveConsumeRateJPerSecond = entry.EffectiveConsumeRateJPerSecond;
-            proactive.RoutingLoadJPerSecond = entry.RoutingLoadJPerSecond;
-            proactive.RoutingTxLoadJPerSecond = entry.RoutingTxLoadJPerSecond;
-            proactive.RoutingRxLoadJPerSecond = entry.RoutingRxLoadJPerSecond;
-            proactive.RoutingSubtreeSize = entry.RoutingSubtreeSize;
-            proactive.ExpectedRoutingForwardPacketsPerSecond = entry.ExpectedRoutingForwardPacketsPerSecond;
             proactive.CriticalDensity = 0.0;
             proactive.IsProactive = true;
             proactive.ProactiveReason = ZhengBprWindowRemovalReason;
@@ -4965,11 +5187,13 @@ namespace WindowsFormsApplication1
 
         private double GetBprDeadlineThresholdSeconds()
         {
+            if (settings.BprDeadlineThresholdSeconds <= 0.0)
+                return ResolveBprTimeBaseSeconds(GetMissionTaskLimit(),
+                    "目前設定不可行：ThresholdMode = Percent 時，BP&R deadline threshold 不可隱性使用 TreqSeconds。" + Environment.NewLine +
+                    "請明確設定 BprDeadlineThresholdSeconds，或改用 ChengTreq / TreqSeconds 模式。");
             if (ChengTreqCalculator.IsChengTreqMode(settings.ThresholdMode) &&
                 settings.BprDeadlineThresholdSeconds <= 1.0 + Epsilon)
-            {
                 return GetEffectiveTreqSeconds();
-            }
             return settings.BprDeadlineThresholdSeconds;
         }
 
@@ -5988,7 +6212,7 @@ namespace WindowsFormsApplication1
         private double ComputeCriticalNodeDensity(int nodeId)
         {
             SensorState center = sensors[nodeId];
-            double radius = settings.RadioRangeMeters * 1.5;
+            double radius = settings.CriticalDensityRadiusMeters;
             int total = 0;
             int critical = 0;
             for (int i = 1; i < sensors.Length; i++)
@@ -6234,7 +6458,7 @@ namespace WindowsFormsApplication1
                     double effectiveRate = GetEffectiveConsumeRateJPerSecond(sensor);
                     request.DeadlineSeconds = currentTime + Math.Max(0.0, sensor.EnergyJ / Math.Max(effectiveRate, 1e-12));
                     request.RequestEnergyJ = sensor.EnergyJ;
-                    PopulateChargingRequestRoutingFields(request, sensor);
+                    PopulateChargingRequestEnergyFields(request, sensor);
                     request.CriticalDensity = ComputeCriticalNodeDensity(id);
                     request.IsProactive = false;
                     request.ProactiveReason = "";
@@ -6283,16 +6507,12 @@ namespace WindowsFormsApplication1
             double energyBeforeDeathJ = sensor.EnergyJ;
             bool hasPendingRequestAtDeath = sensor.HasPendingRequest || HasActiveRequestForNode(nodeId);
             bool wasScheduledInCurrentMissionAtDeath = IsNodeReservedForCurrentMission(nodeId);
-            int parentIdAtDeath = sensor.ParentId;
             bool schedulingRelated = hasPendingRequestAtDeath || wasScheduledInCurrentMissionAtDeath;
             string reason = directCause;
             string reasonZh = ReasonZh(reason);
             string directEnergyCauseZh = ReasonZh(directCause);
             string schedulingCause = schedulingRelated ? "scheduling_wait" : "";
             string schedulingCauseZh = schedulingRelated ? ReasonZh("scheduling_wait") : "";
-            double routingTxLoadAtDeath = GetRoutingTxLoadJPerSecond(sensor);
-            double routingRxLoadAtDeath = GetRoutingRxLoadJPerSecond(sensor);
-            double routingLoadAtDeath = routingTxLoadAtDeath + routingRxLoadAtDeath;
 
             sensor.Alive = false;
             sensor.EnergyJ = 0.0;
@@ -6315,15 +6535,9 @@ namespace WindowsFormsApplication1
             death.PendingRequest = hasPendingRequestAtDeath;
             death.HasPendingRequestAtDeath = hasPendingRequestAtDeath;
             death.WasScheduledInCurrentMissionAtDeath = wasScheduledInCurrentMissionAtDeath;
-            death.ParentIdAtDeath = parentIdAtDeath;
             death.EnergyBeforeDeathJ = energyBeforeDeathJ;
             death.BaseConsumeRateJPerSecondAtDeath = sensor.ConsumeRateJPerSecond;
-            death.RoutingTxLoadJPerSecondAtDeath = routingTxLoadAtDeath;
-            death.RoutingRxLoadJPerSecondAtDeath = routingRxLoadAtDeath;
-            death.RoutingLoadJPerSecondAtDeath = routingLoadAtDeath;
-            death.EffectiveConsumeRateJPerSecondAtDeath = sensor.ConsumeRateJPerSecond + routingLoadAtDeath;
-            death.RoutingSubtreeSize = GetRoutingSubtreeSize(nodeId);
-            death.ExpectedRoutingForwardPacketsPerSecond = GetExpectedRoutingForwardPacketsPerSecond(nodeId);
+            death.EffectiveConsumeRateJPerSecondAtDeath = sensor.ConsumeRateJPerSecond;
             death.EnergyJ = sensor.EnergyJ;
             death.RequestTimeSeconds = FindRequestTimeForNode(nodeId);
             death.WaitSeconds = death.RequestTimeSeconds >= 0.0 ? Math.Max(0.0, time - death.RequestTimeSeconds) : 0.0;
@@ -6412,7 +6626,7 @@ namespace WindowsFormsApplication1
                 AssertSelfTest(Array.IndexOf(ExperimentSettings.AllAlgorithms(), "NJF_YU_BPR") >= 0,
                     "AllAlgorithms should include NJF_YU_BPR.");
 
-                RunChengPaperFileNameSelfTest(tempDirectory);
+                RunWcvMaxTaskFeasibilitySelfTest();
                 RunChengPaperBprWrapperSelfTest(tempDirectory, simulations);
                 RunChengPaperRandomPoolSelfTest(tempDirectory, simulations);
                 RunChengActivationGenerationSelfTest(tempDirectory);
@@ -6422,7 +6636,6 @@ namespace WindowsFormsApplication1
                 RunProactiveCandidateFilterSelfTest(tempDirectory, simulations);
                 RunSimulationEndBeforeFullSelfTest(tempDirectory, simulations);
                 RunDeathReasonSelfTest(tempDirectory, simulations);
-                RunRoutingLoadDeadlinePrioritySelfTest(tempDirectory, simulations);
                 RunCompleteBprYuPredictionSelfTest(tempDirectory, simulations);
 
                 ExperimentArtifact maintenanceArtifact = CreateBprSelfTestArtifact(new double[] { 100.0, 100.0, 100.0 });
@@ -6644,9 +6857,9 @@ namespace WindowsFormsApplication1
                 string[] taskHeaders = taskLines[0].Split(',');
                 Dictionary<string, int> taskColumns = BuildCsvHeaderMap(taskHeaders);
                 string[] fields = taskLines[1].Split(',');
-                int missionColumn = taskColumns["任務編號"];
-                int nodeColumn = taskColumns["節點編號"];
-                int proactiveColumn = taskColumns["是否主動充電"];
+                int missionColumn = taskColumns["MissionId"];
+                int nodeColumn = taskColumns["NodeId"];
+                int proactiveColumn = taskColumns["IsProactive"];
                 AssertSelfTest(fields.Length > proactiveColumn && fields[missionColumn] == "1" && fields[nodeColumn] == "1",
                     "Task-record CSV row does not describe mission 1 / sensor 1.");
                 AssertSelfTest(String.Equals(fields[proactiveColumn], "True", StringComparison.OrdinalIgnoreCase),
@@ -6670,21 +6883,6 @@ namespace WindowsFormsApplication1
             }
         }
 
-        private static void RunChengPaperFileNameSelfTest(string tempDirectory)
-        {
-            string chengRoot = Path.Combine(tempDirectory, "cheng-paper-root");
-            string zhengRoot = Path.Combine(tempDirectory, "zheng-paper-root");
-            Directory.CreateDirectory(chengRoot);
-            Directory.CreateDirectory(zhengRoot);
-            File.WriteAllText(Path.Combine(chengRoot, "CHENG.pdf"), "placeholder");
-            File.WriteAllText(Path.Combine(zhengRoot, "ZHENG.pdf"), "placeholder");
-
-            AssertSelfTest(ExperimentSettings.IsProjectRootValid(chengRoot),
-                "Project root detection should accept CHENG.pdf as the paper reference file.");
-            AssertSelfTest(!ExperimentSettings.IsProjectRootValid(zhengRoot),
-                "Project root detection must not treat ZHENG.pdf as the formal CHENG paper reference.");
-        }
-
         private static void RunCsvOutputSelectionSelfTest(string tempDirectory)
         {
             ExperimentSettings legacyDisabled = CreateBprSelfTestSettings(tempDirectory);
@@ -6696,7 +6894,6 @@ namespace WindowsFormsApplication1
             ExperimentSettings taskOnly = CreateBprSelfTestSettings(tempDirectory);
             taskOnly.WriteMissionDetailsCsv = false;
             taskOnly.WriteTaskRecordsCsv = true;
-            taskOnly.WriteRoutingLoadCsv = false;
             taskOnly.WriteBprDebugCsv = false;
             taskOnly.WriteYuBprDebugCsv = false;
             taskOnly.WriteTaskDetailCsv = true;
@@ -6704,14 +6901,13 @@ namespace WindowsFormsApplication1
             AssertSelfTest(taskOnly.HasAnyTaskDetailCsvOutput(),
                 "A single selected detail CSV should keep CSV output enabled.");
             AssertSelfTest(!taskOnly.WriteMissionDetailsCsv && taskOnly.WriteTaskRecordsCsv &&
-                !taskOnly.WriteRoutingLoadCsv && !taskOnly.WriteBprDebugCsv && !taskOnly.WriteYuBprDebugCsv,
+                !taskOnly.WriteBprDebugCsv && !taskOnly.WriteYuBprDebugCsv,
                 "Normalize should preserve individual CSV selections when at least one output is enabled.");
 
             string selectionDirectory = Path.Combine(tempDirectory, "csv-selection");
             MissionDetailCsvOutputOptions options = new MissionDetailCsvOutputOptions();
             options.WriteMissionDetails = false;
             options.WriteTaskRecords = true;
-            options.WriteRoutingLoad = false;
             options.WriteBprDebug = false;
             options.WriteYuBprDebug = false;
 
@@ -6738,7 +6934,6 @@ namespace WindowsFormsApplication1
                 task.FailureReason = "";
                 writer.WriteTask(task);
 
-                writer.WriteRoutingLoad(artifact, null, null, null, null, null, null, null);
                 writer.WriteBprDebug(artifact.RunIndex, artifact.Seed, "EDF", 1, 0.0, 0,
                     0.0, 0.0, 0, 0, -1, Double.NaN, Double.NaN, Double.NaN,
                     Double.NaN, Double.NaN, "test", 0, 0, 1, false);
@@ -6756,8 +6951,6 @@ namespace WindowsFormsApplication1
             AssertCsvHeaderEquals(taskOnlyPath, ExpectedTaskRecordHeader(),
                 "Task-record CSV should use the requested Chinese columns.");
             AssertCsvDataColumnCounts(taskOnlyPath, ExpectedTaskRecordHeader().Length);
-            AssertSelfTest(!File.Exists(Path.Combine(selectionDirectory, "run001-seed777-EDF-routing-load.csv")),
-                "Routing load CSV should not be written when disabled.");
             AssertSelfTest(!File.Exists(Path.Combine(selectionDirectory, "run001-seed777-EDF-bpr-debug.csv")),
                 "BP&R debug CSV should not be written when disabled.");
             AssertSelfTest(!File.Exists(Path.Combine(selectionDirectory, "run001-seed777-EDF-yu-bpr-debug.csv")),
@@ -6785,8 +6978,6 @@ namespace WindowsFormsApplication1
                 ExpectedTaskRecordHeader(), "Task record CSV should use the requested Chinese columns.");
             AssertCsvDataColumnCounts(Path.Combine(edfDirectory, "run001-seed777-EDF-task-records.csv"),
                 ExpectedTaskRecordHeader().Length);
-            AssertSelfTest(!File.Exists(Path.Combine(edfDirectory, "run001-seed777-EDF-routing-load.csv")),
-                "Routing load CSV should remain disabled in the CHENG flow.");
             AssertSelfTest(!File.Exists(Path.Combine(edfDirectory, "run001-seed777-EDF-bpr-debug.csv")),
                 "Non-BP&R algorithms must not write bpr-debug CSV.");
             AssertSelfTest(!File.Exists(Path.Combine(edfDirectory, "run001-seed777-EDF-yu-bpr-debug.csv")),
@@ -6844,7 +7035,7 @@ namespace WindowsFormsApplication1
             mission.DispatchTimeSeconds = 1.0;
             mission.ReturnTimeSeconds = 2.0;
             mission.NodeCount = 1;
-            mission.RequestCount = 1;
+            mission.OnDemandRequestCount = 1;
             mission.RouteNodeIds = new List<int>();
             mission.RouteNodeIds.Add(1);
             writer.WriteMission(mission);
@@ -6868,11 +7059,6 @@ namespace WindowsFormsApplication1
             task.EnergyBeforeJ = 10.0;
             task.ConsumeRateJPerSecond = 0.1;
             task.EffectiveConsumeRateJPerSecond = 0.1;
-            task.RoutingLoadJPerSecond = 0.0;
-            task.RoutingTxLoadJPerSecond = 0.0;
-            task.RoutingRxLoadJPerSecond = 0.0;
-            task.RoutingSubtreeSize = 0;
-            task.ExpectedRoutingForwardPacketsPerSecond = 0.0;
             task.InternalRateNjPerTick = 1000.0;
             task.DistanceFromPreviousMeters = 10.0;
             task.Success = true;
@@ -6880,7 +7066,6 @@ namespace WindowsFormsApplication1
             task.WcvEnergyAfterJ = 999.0;
             writer.WriteTask(task);
 
-            writer.WriteRoutingLoad(artifact, null, null, null, null, null, null, null);
         }
 
         private static void WriteSampleBprRows(MissionDetailCsvWriter writer, ExperimentArtifact artifact, string algorithm)
@@ -6918,26 +7103,20 @@ namespace WindowsFormsApplication1
 
         private static string[] ExpectedMissionDetailHeader()
         {
-            return new string[] { "掃描參數名稱", "任務編號", "出發時間秒", "返回時間秒", "節點數",
-                "被動請求數", "主動充電數", "成功充電數", "失敗數", "走的距離m", "legacy封包送出數(停用)",
-                "legacy封包收到數(停用)", "legacy封包遺失數(停用)", "legacy路由失敗封包遺失數(停用)", "平均等待時間秒", "路線節點序列", "去重任務數" };
+            return new string[] { "SweepParameterName", "MissionId", "DispatchTimeSeconds", "ReturnTimeSeconds",
+                "NodeCount", "OnDemandRequestCount", "ProactiveCount", "SuccessfulCharges", "FailedCount",
+                "DistanceMeters", "AverageWaitSeconds", "RouteNodeIds", "DeduplicatedTaskCount" };
         }
 
         private static string[] ExpectedTaskRecordHeader()
         {
-            return new string[] { "任務編號", "任務順序", "節點編號", "是否主動充電", "請求時間秒",
-                "截止時間秒", "出發時間秒", "抵達時間秒", "等待時間秒", "開始充電時間秒",
-                "結束充電時間秒", "充電前能量J", "節點耗電率J每秒", "有效耗電率J每秒",
-                "請求時節點耗電率J每秒", "服務時節點耗電率J每秒", "耗電率預測誤差J每秒",
-                "legacy路由總耗電率J每秒(停用)", "legacy路由傳送耗電率J每秒(停用)", "legacy路由接收耗電率J每秒(停用)", "legacy路由子樹大小(停用)",
-                "legacy預期轉送封包數每秒(停用)", "內部耗電率nJ每Tick", "與上一點距離m", "是否成功", "失敗原因", "WCV剩餘能量J" };
-        }
-
-        private static string[] ExpectedRoutingLoadHeader()
-        {
-            return new string[] { "節點編號", "legacy父節點編號(停用)", "legacy子樹大小(停用)", "legacy預期傳送封包數每秒(停用)",
-                "legacy預期接收封包數每秒(停用)", "legacy預期轉送封包數每秒(停用)", "legacy估計傳送耗電率J每秒(停用)",
-                "legacy估計接收耗電率J每秒(停用)", "legacy估計路由總耗電率J每秒(停用)" };
+            return new string[] { "MissionId", "TaskOrder", "NodeId", "IsProactive", "RequestTimeSeconds",
+                "DeadlineSeconds", "DispatchTimeSeconds", "ArrivalTimeSeconds", "WaitSeconds",
+                "ChargeStartSeconds", "ChargeEndSeconds", "EnergyBeforeJ", "ConsumeRateJPerSecond",
+                "EffectiveConsumeRateJPerSecond", "RequestNodeConsumeRateJPerSecond",
+                "ServiceNodeConsumeRateJPerSecond", "NodeConsumeRatePredictionErrorJPerSecond",
+                "InternalRateNjPerTick", "DistanceFromPreviousMeters", "Success", "FailureReason",
+                "WcvEnergyAfterJ" };
         }
 
         private static string[] ExpectedBprDebugHeader()
@@ -6958,6 +7137,61 @@ namespace WindowsFormsApplication1
                 "加入後候選任務數", "單趟任務上限", "是否允許超出容量" };
         }
 
+        private static void RunWcvMaxTaskFeasibilitySelfTest()
+        {
+            ExperimentSettings feasible = ExperimentSettings.CreateDefault();
+            feasible.NmaxTask = 30;
+            feasible.WcvCapacityJ = 200000.0;
+            feasible.MapWidthMeters = 500.0;
+            feasible.MapHeightMeters = 500.0;
+            feasible.InitialEnergyJ = 100.0;
+            feasible.WcvMoveCostJPerMeter = 10.0;
+            feasible.WcvChargeRateJPerSecond = 5.0;
+            feasible.WcvSpeedMetersPerSecond = 5.0;
+            feasible.Normalize();
+            WcvMaxTaskFeasibilityResult feasibleResult =
+                WcvMaxTaskFeasibilityValidator.ValidateWcvCapacityForAlgorithm(feasible, "NJF_CHENG_BPR");
+            AssertSelfTest(feasibleResult.IsValid,
+                "Feasible NmaxTask/WCV capacity settings should pass validation.");
+            AssertSelfTest(feasibleResult.EstimatedMaxTaskMissionEnergyJ <= feasible.WcvCapacityJ,
+                "Feasible validation estimate should not exceed WCV capacity.");
+
+            ExperimentSettings infeasible = feasible.Copy();
+            infeasible.WcvCapacityJ = 1000.0;
+            infeasible.Normalize();
+            WcvMaxTaskFeasibilityResult infeasibleResult =
+                WcvMaxTaskFeasibilityValidator.ValidateWcvCapacityForAlgorithm(infeasible, "NJF_CHENG_BPR");
+            AssertSelfTest(!infeasibleResult.IsValid,
+                "Insufficient WCV capacity should fail validation.");
+            AssertSelfTest(infeasibleResult.ErrorMessage.IndexOf("估計一趟最大任務能耗", StringComparison.Ordinal) >= 0 &&
+                infeasibleResult.ErrorMessage.IndexOf("WCV 容量", StringComparison.Ordinal) >= 0,
+                "WCV feasibility error should include the estimated mission energy and capacity in Chinese.");
+
+            ExperimentSettings extendedFeasible = feasible.Copy();
+            extendedFeasible.SelectedAlgorithmsCsv = "NJF_ROUTE_YU_BPR_EXTENDED";
+            WcvMaxTaskFeasibilityResult extendedFeasibleResult =
+                WcvMaxTaskFeasibilityValidator.ValidateWcvCapacityForAlgorithm(extendedFeasible, "NJF_ROUTE_YU_BPR_EXTENDED");
+            AssertSelfTest(extendedFeasibleResult.IsValid &&
+                extendedFeasibleResult.ValidationTaskLimit == extendedFeasible.NmaxTask,
+                "EXTENDED algorithms should use NmaxTask for coarse preflight validation.");
+
+            ExperimentSettings extendedInsufficient = extendedFeasible.Copy();
+            extendedInsufficient.WcvCapacityJ = 1000.0;
+            WcvMaxTaskFeasibilityResult extendedInsufficientResult =
+                WcvMaxTaskFeasibilityValidator.ValidateWcvCapacityForAlgorithm(extendedInsufficient, "NJF_ROUTE_YU_BPR_EXTENDED");
+            AssertSelfTest(!extendedInsufficientResult.IsValid &&
+                extendedInsufficientResult.ValidationTaskLimit == extendedInsufficient.NmaxTask,
+                "EXTENDED insufficient capacity should fail using NmaxTask coarse preflight validation.");
+
+            ExperimentSettings invalidChargeRate = feasible.Copy();
+            invalidChargeRate.WcvChargeRateJPerSecond = 0.0;
+            WcvMaxTaskFeasibilityResult invalidChargeRateResult =
+                WcvMaxTaskFeasibilityValidator.ValidateWcvCapacityForAlgorithm(invalidChargeRate, "NJF");
+            AssertSelfTest(!invalidChargeRateResult.IsValid &&
+                invalidChargeRateResult.ErrorMessage.IndexOf("WCV 充電速率必須大於 0", StringComparison.Ordinal) >= 0,
+                "Invalid WCV charge rate should fail with a Chinese error message.");
+        }
+
         private static ExperimentSettings CreateBprSelfTestSettings(string outputDirectory)
         {
             ExperimentSettings settings = ExperimentSettings.CreateDefault();
@@ -6971,8 +7205,7 @@ namespace WindowsFormsApplication1
             settings.SensorBackgroundLifetimeSeconds = 100.0;
             settings.InitialResidualJitterPercent = 0.0;
             settings.EventRatePerSecond = 0.0;
-            settings.PacketBits = 1.0;
-            settings.RadioRangeMeters = 100.0;
+            settings.CriticalDensityRadiusMeters = 150.0;
             settings.WcvSpeedMetersPerSecond = 1.0;
             settings.WcvChargeRateJPerSecond = 10.0;
             settings.WcvCapacityJ = 10000.0;
@@ -6983,6 +7216,8 @@ namespace WindowsFormsApplication1
             settings.RequestThresholdPercent = 50.0;
             settings.TreqSeconds = 10.0;
             settings.BprDeadlineThresholdSeconds = 10.0;
+            settings.ProactivePredictionHorizonSeconds = 1000.0;
+            settings.ProactiveCooldownSeconds = 10.0;
             settings.PrateChange = 0.0;
             settings.RateChangeVariationPercent = 0.0;
             settings.SelectedAlgorithmsCsv = "NJF_ROUTE_ZHENG_BPR_LIMITED";
@@ -7006,7 +7241,7 @@ namespace WindowsFormsApplication1
             AssertSelfTest(artifact.UsesActivationSchedule,
                 "Generated experiment artifacts should use CHENG activation scheduling.");
             AssertSelfTest(artifact.ActivationEvents.Count == expectedActivationCount,
-                "EventRatePerSecond should produce p * SensorBackgroundLifetimeSeconds activation events, not packet events.");
+                "EventRatePerSecond should produce p * SensorBackgroundLifetimeSeconds activation events.");
             AssertSelfTest(artifact.ActivationEvents.Count <= settings.SensorCount,
                 "Activation event count must not exceed SensorCount.");
             for (int i = 1; i < artifact.ActivationEvents.Count; i++)
@@ -7017,7 +7252,7 @@ namespace WindowsFormsApplication1
             for (int i = 0; i < artifact.Sensors.Count; i++)
             {
                 AssertSelfTest(artifact.Sensors[i].ParentId < 0,
-                    "Experiment artifacts should not assign packet routing parents.");
+                    "Experiment artifacts should not assign parent links.");
             }
 
             ExperimentSettings zeroSettings = CreateBprSelfTestSettings(tempDirectory);
@@ -7537,133 +7772,6 @@ namespace WindowsFormsApplication1
                 "FirstDeadSchedulingCause should record scheduling_wait separately.");
         }
 
-        private static void RunRoutingLoadDeadlinePrioritySelfTest(string tempDirectory, List<ExperimentSimulation> simulations)
-        {
-            ExperimentSettings settings = CreateBprSelfTestSettings(tempDirectory);
-            settings.EventRatePerSecond = 3.0;
-            settings.PacketBits = 81920.0;
-            settings.RadioRangeMeters = 30.0;
-            settings.SensorBackgroundLifetimeSeconds = 100.0;
-            settings.ThresholdMode = "Percent";
-            settings.RequestThresholdPercent = 50.0;
-            settings.Normalize();
-
-            ExperimentSimulation simulation = new ExperimentSimulation(
-                settings,
-                CreateChainRoutingSelfTestArtifact(new double[] { 100.0, 100.0, 100.0 }),
-                "NJF",
-                null);
-            simulations.Add(simulation);
-
-            AssertSelfTest(simulation.GetRoutingLoadJPerSecond(simulation.sensors[1]) == 0.0 &&
-                simulation.GetRoutingLoadJPerSecond(simulation.sensors[2]) == 0.0 &&
-                simulation.GetRoutingLoadJPerSecond(simulation.sensors[3]) == 0.0,
-                "Routing load should be disabled in the CHENG experiment flow.");
-            AssertNear(simulation.GetEffectiveConsumeRateJPerSecond(simulation.sensors[1]),
-                simulation.sensors[1].ConsumeRateJPerSecond,
-                1e-12,
-                "Effective consume rate should be the sensor consume rate without routing load.");
-
-            double threshold = simulation.GetRequestThresholdJ(simulation.sensors[1]);
-            double baseDeadline = simulation.currentTime +
-                (simulation.sensors[1].EnergyJ - threshold) / simulation.sensors[1].ConsumeRateJPerSecond;
-            double effectiveDeadline = simulation.ComputeBprRequestDeadlineSeconds(simulation.sensors[1]);
-            AssertNear(effectiveDeadline, baseDeadline, 1e-9,
-                "BP&R deadline should not include routing load.");
-            AssertNear(simulation.FindNextRequestTime(null), baseDeadline, 1e-9,
-                "Natural request time advancement should use base consume rate, not routing-aware effective rate.");
-            AssertNear(simulation.FindNextDeathTime(null),
-                simulation.currentTime + simulation.sensors[1].EnergyJ / simulation.sensors[1].ConsumeRateJPerSecond,
-                1e-9,
-                "Natural death time advancement should use base consume rate, not routing-aware effective rate.");
-
-            ExperimentSettings treqSettings = CreateBprSelfTestSettings(tempDirectory);
-            treqSettings.EventRatePerSecond = 3.0;
-            treqSettings.PacketBits = 81920.0;
-            treqSettings.RadioRangeMeters = 30.0;
-            treqSettings.SensorBackgroundLifetimeSeconds = 100.0;
-            treqSettings.ThresholdMode = "TreqSeconds";
-            treqSettings.TreqSeconds = 10.0;
-            treqSettings.Normalize();
-            ExperimentSimulation treqSimulation = new ExperimentSimulation(
-                treqSettings,
-                CreateChainRoutingSelfTestArtifact(new double[] { 100.0, 100.0, 100.0 }),
-                "NJF",
-                null);
-            simulations.Add(treqSimulation);
-            AssertNear(treqSimulation.GetRequestThresholdJ(treqSimulation.sensors[1]),
-                treqSimulation.GetRequestThresholdJ(treqSimulation.sensors[3]),
-                1e-9,
-                "Natural TreqSeconds threshold should not include predicted routing load.");
-            double predictedNode1Rate = treqSimulation.ComputePredictedEffectiveConsumeRateJPerSecond(1, treqSimulation.sensors[1].RateScale);
-            double predictedNode3Rate = treqSimulation.ComputePredictedEffectiveConsumeRateJPerSecond(3, treqSimulation.sensors[3].RateScale);
-            AssertNear(predictedNode1Rate, predictedNode3Rate, 1e-12,
-                "BPR/YU predicted consume rates should not include routing load.");
-            AssertNear(treqSimulation.GetPredictedRequestThresholdJ(
-                    treqSimulation.sensors[1],
-                    predictedNode1Rate,
-                    treqSimulation.sensors[1].RateScale),
-                treqSimulation.GetPredictedRequestThresholdJ(
-                    treqSimulation.sensors[3],
-                    predictedNode3Rate,
-                    treqSimulation.sensors[3].RateScale),
-                1e-12,
-                "BPR/YU prediction threshold should not include routing-aware effective load.");
-
-            ExperimentSettings cheng500Settings = CreateBprSelfTestSettings(tempDirectory);
-            cheng500Settings.MapWidthMeters = 500.0;
-            cheng500Settings.MapHeightMeters = 500.0;
-            cheng500Settings.NmaxTask = 30;
-            cheng500Settings.InitialEnergyJ = 100.0;
-            cheng500Settings.WcvSpeedMetersPerSecond = 5.0;
-            cheng500Settings.WcvChargeRateJPerSecond = 5.0;
-            cheng500Settings.ThresholdMode = "ChengTreq";
-            cheng500Settings.Normalize();
-            ExperimentSimulation cheng500Simulation = new ExperimentSimulation(
-                cheng500Settings,
-                CreateBprSelfTestArtifact(new double[] { 100.0 }),
-                "NJF",
-                null);
-            simulations.Add(cheng500Simulation);
-            AssertNear(cheng500Simulation.ComputeChengTreqSeconds(30), 2899.8, 1.0,
-                "CHENG Treq for 500m x 500m, NmaxTask=30 should be near 2899.8 seconds.");
-
-            ExperimentSettings cheng1000Settings = CreateBprSelfTestSettings(tempDirectory);
-            cheng1000Settings.MapWidthMeters = 1000.0;
-            cheng1000Settings.MapHeightMeters = 1000.0;
-            cheng1000Settings.NmaxTask = 30;
-            cheng1000Settings.InitialEnergyJ = 100.0;
-            cheng1000Settings.WcvSpeedMetersPerSecond = 5.0;
-            cheng1000Settings.WcvChargeRateJPerSecond = 5.0;
-            cheng1000Settings.ThresholdMode = "ChengTreq";
-            cheng1000Settings.Normalize();
-            ExperimentSimulation cheng1000Simulation = new ExperimentSimulation(
-                cheng1000Settings,
-                CreateBprSelfTestArtifact(new double[] { 100.0 }),
-                "NJF",
-                null);
-            simulations.Add(cheng1000Simulation);
-            AssertNear(cheng1000Simulation.ComputeChengTreqSeconds(30), 4619.6, 1.0,
-                "CHENG Treq for 1000m x 1000m, NmaxTask=30 should be near 4619.6 seconds.");
-            double chengThreshold = cheng500Simulation.GetRequestThresholdJ(cheng500Simulation.sensors[1]);
-            AssertNear(chengThreshold,
-                Math.Min(cheng500Simulation.sensors[1].CapacityJ * 0.95,
-                    cheng500Simulation.sensors[1].ConsumeRateJPerSecond *
-                    cheng500Simulation.ComputeChengTreqSeconds(30)),
-                1e-9,
-                "ChengTreq mode should convert computed Treq seconds into a pure consume-rate request threshold.");
-
-            double beforeEnergy = simulation.sensors[1].EnergyJ;
-            double baseRate = simulation.sensors[1].ConsumeRateJPerSecond;
-            double effectiveRate = simulation.GetEffectiveConsumeRateJPerSecond(simulation.sensors[1]);
-            simulation.ApplyContinuousEnergy(1.0, null);
-            AssertNear(simulation.sensors[1].EnergyJ, beforeEnergy - baseRate, 1e-9,
-                "ApplyContinuousEnergy should subtract only base continuous consume rate.");
-            AssertNear(effectiveRate, baseRate, 1e-12,
-                "Effective consume rate should match base rate after packet/routing removal.");
-
-        }
-
         private static void RunCompleteBprYuPredictionSelfTest(string tempDirectory, List<ExperimentSimulation> simulations)
         {
             ExperimentSettings windowSettings = CreateBprSelfTestSettings(tempDirectory);
@@ -7953,14 +8061,6 @@ namespace WindowsFormsApplication1
             return interval;
         }
 
-        private static ExperimentArtifact CreateChainRoutingSelfTestArtifact(double[] sensorEnergies)
-        {
-            ExperimentArtifact artifact = CreateBprSelfTestArtifact(sensorEnergies);
-            for (int id = 1; id < artifact.Sensors.Count; id++)
-                artifact.Sensors[id].ParentId = id - 1;
-            return artifact;
-        }
-
         private static bool ContainsBprEntry(List<BprSTableEntry> entries, int nodeId)
         {
             for (int i = 0; i < entries.Count; i++)
@@ -8146,6 +8246,7 @@ namespace WindowsFormsApplication1
         public double Y;
         public double EnergyJ;
         public double CapacityJ;
+        public double InitialResidualEnergyJ;
         public double RateScale;
         public double ConsumeRateJPerSecond;
         public int ParentId;
@@ -8160,10 +8261,13 @@ namespace WindowsFormsApplication1
             X = template.X;
             Y = template.Y;
             CapacityJ = settings.InitialEnergyJ;
+            InitialResidualEnergyJ = template.InitialResidualEnergyJ > 0.0
+                ? template.InitialResidualEnergyJ
+                : template.InitialEnergyJ;
             RateScale = 1.0;
             ParentId = template.ParentId;
             IsActive = Id == 0 || template.InitiallyActive || !usesActivationSchedule;
-            EnergyJ = IsActive ? template.InitialEnergyJ : 0.0;
+            EnergyJ = IsActive ? InitialResidualEnergyJ : 0.0;
             Alive = true;
             HasPendingRequest = false;
             ActivationTimeSeconds = IsActive ? 0.0 : Double.PositiveInfinity;
@@ -8174,8 +8278,8 @@ namespace WindowsFormsApplication1
         {
             IsActive = true;
             ActivationTimeSeconds = activationTimeSeconds;
-            EnergyJ = settings.InitialEnergyJ;
             CapacityJ = settings.InitialEnergyJ;
+            EnergyJ = Math.Min(InitialResidualEnergyJ, CapacityJ);
             RateScale = 1.0;
             Alive = true;
             HasPendingRequest = false;
@@ -8208,11 +8312,6 @@ namespace WindowsFormsApplication1
         public double BaseConsumeRateJPerSecond;
         public double RequestNodeConsumeRateJPerSecond;
         public double EffectiveConsumeRateJPerSecond;
-        public double RoutingLoadJPerSecond;
-        public double RoutingTxLoadJPerSecond;
-        public double RoutingRxLoadJPerSecond;
-        public int RoutingSubtreeSize;
-        public double ExpectedRoutingForwardPacketsPerSecond;
         public double CriticalDensity;
         public bool IsProactive;
         public string ProactiveReason;
@@ -8229,11 +8328,6 @@ namespace WindowsFormsApplication1
             clone.BaseConsumeRateJPerSecond = BaseConsumeRateJPerSecond;
             clone.RequestNodeConsumeRateJPerSecond = RequestNodeConsumeRateJPerSecond;
             clone.EffectiveConsumeRateJPerSecond = EffectiveConsumeRateJPerSecond;
-            clone.RoutingLoadJPerSecond = RoutingLoadJPerSecond;
-            clone.RoutingTxLoadJPerSecond = RoutingTxLoadJPerSecond;
-            clone.RoutingRxLoadJPerSecond = RoutingRxLoadJPerSecond;
-            clone.RoutingSubtreeSize = RoutingSubtreeSize;
-            clone.ExpectedRoutingForwardPacketsPerSecond = ExpectedRoutingForwardPacketsPerSecond;
             clone.CriticalDensity = CriticalDensity;
             clone.IsProactive = IsProactive;
             clone.ProactiveReason = ProactiveReason;
@@ -8287,7 +8381,7 @@ namespace WindowsFormsApplication1
         public int RepeatChargeCount;
         public int ProactiveNearFullCount;
         public int MeaningfulProactiveCount;
-        public int RequestCount;
+        public int TotalChargingTaskCount;
         public int MissionCount;
         public double MovementDistanceMeters;
         public double MoveEnergyJ;
@@ -8295,12 +8389,6 @@ namespace WindowsFormsApplication1
         public double AverageDeliveredEnergyPerTask;
         public double AverageDeliveredEnergyPerProactiveTask;
         public double ChargeEfficiency;
-        public int PacketSent;
-        public int PacketReceived;
-        public int PacketLost;
-        public int RoutingFailedPacketLost;
-        public int RoutingParentMissingNodeCount;
-        public double RoutingDisconnectedNodeRatio;
         public double TotalWaitSeconds;
         public double AverageWaitSeconds;
     }
@@ -8339,11 +8427,6 @@ namespace WindowsFormsApplication1
         public double RequestNodeConsumeRateJPerSecond;
         public double ServiceNodeConsumeRateJPerSecond;
         public double NodeConsumeRatePredictionErrorJPerSecond;
-        public double RoutingLoadJPerSecond;
-        public double RoutingTxLoadJPerSecond;
-        public double RoutingRxLoadJPerSecond;
-        public int RoutingSubtreeSize;
-        public double ExpectedRoutingForwardPacketsPerSecond;
         public double InternalRateNjPerTick;
         public double DeliveredEnergyJ;
         public double DistanceFromPreviousMeters;
@@ -8366,17 +8449,13 @@ namespace WindowsFormsApplication1
         public double DispatchTimeSeconds;
         public double ReturnTimeSeconds;
         public int NodeCount;
-        public int RequestCount;
+        public int OnDemandRequestCount;
         public int ProactiveCount;
         public int SuccessfulCharges;
         public int FailedCount;
         public double DistanceMeters;
         public double MoveEnergyJ;
         public double DeliveredEnergyJ;
-        public int PacketSent;
-        public int PacketReceived;
-        public int PacketLost;
-        public int RoutingFailedPacketLost;
         public double TotalWaitSeconds;
         public double AverageWaitSeconds;
         public int DeduplicatedTaskCount;
@@ -8406,15 +8485,9 @@ namespace WindowsFormsApplication1
         public bool PendingRequest;
         public bool HasPendingRequestAtDeath;
         public bool WasScheduledInCurrentMissionAtDeath;
-        public int ParentIdAtDeath;
         public double EnergyBeforeDeathJ;
         public double BaseConsumeRateJPerSecondAtDeath;
         public double EffectiveConsumeRateJPerSecondAtDeath;
-        public double RoutingLoadJPerSecondAtDeath;
-        public double RoutingTxLoadJPerSecondAtDeath;
-        public double RoutingRxLoadJPerSecondAtDeath;
-        public int RoutingSubtreeSize;
-        public double ExpectedRoutingForwardPacketsPerSecond;
         public double EnergyJ;
         public double RequestTimeSeconds;
         public double WaitSeconds;
@@ -8424,7 +8497,6 @@ namespace WindowsFormsApplication1
     {
         private StreamWriter missionWriter;
         private StreamWriter taskWriter;
-        private StreamWriter routingLoadWriter;
         private StreamWriter bprDebugWriter;
         private StreamWriter yuBprDebugWriter;
         private string bprDebugPath;
@@ -8470,8 +8542,6 @@ namespace WindowsFormsApplication1
                 "{0}{1}{2}-mission-details.csv", filePrefix, runSeedPrefix, safeAlgorithm));
             string taskPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
                 "{0}{1}{2}-task-records.csv", filePrefix, runSeedPrefix, safeAlgorithm));
-            string routingLoadPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
-                "{0}{1}{2}-routing-load.csv", filePrefix, runSeedPrefix, safeAlgorithm));
             bprDebugPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
                 "{0}{1}{2}-bpr-debug.csv", filePrefix, runSeedPrefix, safeAlgorithm));
             yuBprDebugPath = Path.Combine(directory, String.Format(CultureInfo.InvariantCulture,
@@ -8487,11 +8557,6 @@ namespace WindowsFormsApplication1
             {
                 taskWriter = new StreamWriter(taskPath, false, csvEncoding);
                 WriteTaskHeader();
-            }
-            if (effectiveOptions.WriteRoutingLoad)
-            {
-                routingLoadWriter = new StreamWriter(routingLoadPath, false, csvEncoding);
-                WriteRoutingLoadHeader();
             }
             if (!effectiveOptions.WriteBprDebug || !IsZhengBprAlgorithm(algorithmKey))
                 bprDebugPath = "";
@@ -8518,10 +8583,10 @@ namespace WindowsFormsApplication1
             string path = Path.Combine(directory, "summary.csv");
             using (StreamWriter writer = new StreamWriter(path, false, new UTF8Encoding(true)))
             {
-                writer.WriteLine(CsvRow("掃描參數名稱", "掃描值", "執行次序", "亂數種子", "演算法",
-                    "網路壽命秒", "成功充電數", "失敗或逾期數", "被動請求數", "主動充電數",
-                    "任務數", "走的距離m", "平均等待時間秒", "legacy封包送出數(停用)", "legacy封包收到數(停用)",
-                    "legacy封包遺失數(停用)", "legacy路由失敗封包遺失數(停用)", "資料雜湊"));
+                writer.WriteLine(CsvRow("SweepParameterName", "SweepValue", "RunIndex", "Seed", "Algorithm",
+                    "NetworkLifetimeSeconds", "SuccessfulCharges", "FailedOrLateTasks", "NaturalRequestCount",
+                    "ProactiveTaskCount", "TotalChargingTaskCount", "MissionCount", "MovementDistanceMeters",
+                    "AverageWaitSeconds", "ArtifactHash"));
                 for (int i = 0; i < result.RunSummaries.Count; i++)
                 {
                     ExperimentRunSummary s = result.RunSummaries[i];
@@ -8536,13 +8601,10 @@ namespace WindowsFormsApplication1
                         s.FailedOrLateTasks,
                         s.NaturalRequestCount,
                         s.ProactiveTaskCount,
+                        s.TotalChargingTaskCount,
                         s.MissionCount,
                         s.MovementDistanceMeters,
                         s.AverageWaitSeconds,
-                        s.PacketSent,
-                        s.PacketReceived,
-                        s.PacketLost,
-                        s.RoutingFailedPacketLost,
                         s.ArtifactHash));
                 }
             }
@@ -8559,15 +8621,11 @@ namespace WindowsFormsApplication1
                 record.DispatchTimeSeconds,
                 record.ReturnTimeSeconds,
                 record.NodeCount,
-                record.RequestCount,
+                record.OnDemandRequestCount,
                 record.ProactiveCount,
                 record.SuccessfulCharges,
                 record.FailedCount,
                 record.DistanceMeters,
-                record.PacketSent,
-                record.PacketReceived,
-                record.PacketLost,
-                record.RoutingFailedPacketLost,
                 record.AverageWaitSeconds,
                 RouteText(record.RouteNodeIds),
                 record.DeduplicatedTaskCount));
@@ -8598,11 +8656,6 @@ namespace WindowsFormsApplication1
                 record.RequestNodeConsumeRateJPerSecond,
                 record.ServiceNodeConsumeRateJPerSecond,
                 record.NodeConsumeRatePredictionErrorJPerSecond,
-                record.RoutingLoadJPerSecond,
-                record.RoutingTxLoadJPerSecond,
-                record.RoutingRxLoadJPerSecond,
-                record.RoutingSubtreeSize,
-                record.ExpectedRoutingForwardPacketsPerSecond,
                 record.InternalRateNjPerTick,
                 record.DistanceFromPreviousMeters,
                 record.Success,
@@ -8650,35 +8703,6 @@ namespace WindowsFormsApplication1
                     "Invalid node consume rate snapshot: prediction error mismatch. NodeId=" +
                     record.NodeId.ToString(CultureInfo.InvariantCulture));
             }
-        }
-
-        public void WriteRoutingLoad(
-            ExperimentArtifact artifact,
-            int[] subtreeSizeByNodeId,
-            double[] expectedTxPacketsPerSecondByNodeId,
-            double[] expectedRxPacketsPerSecondByNodeId,
-            double[] expectedForwardPacketsPerSecondByNodeId,
-            double[] estimatedTxLoadJPerSecondByNodeId,
-            double[] estimatedRxLoadJPerSecondByNodeId,
-            double[] estimatedRoutingLoadJPerSecondByNodeId)
-        {
-            if (disposed || routingLoadWriter == null || artifact == null)
-                return;
-
-            for (int id = 1; id < artifact.Sensors.Count; id++)
-            {
-                routingLoadWriter.WriteLine(CsvRow(
-                    id,
-                    artifact.Sensors[id].ParentId,
-                    SafeArrayValue(subtreeSizeByNodeId, id),
-                    SafeArrayValue(expectedTxPacketsPerSecondByNodeId, id),
-                    SafeArrayValue(expectedRxPacketsPerSecondByNodeId, id),
-                    SafeArrayValue(expectedForwardPacketsPerSecondByNodeId, id),
-                    SafeArrayValue(estimatedTxLoadJPerSecondByNodeId, id),
-                    SafeArrayValue(estimatedRxLoadJPerSecondByNodeId, id),
-                    SafeArrayValue(estimatedRoutingLoadJPerSecondByNodeId, id)));
-            }
-            routingLoadWriter.Flush();
         }
 
         public void WriteBprDebug(
@@ -8830,36 +8854,38 @@ namespace WindowsFormsApplication1
                 missionWriter.Dispose();
             if (taskWriter != null)
                 taskWriter.Dispose();
-            if (routingLoadWriter != null)
-                routingLoadWriter.Dispose();
             if (bprDebugWriter != null)
                 bprDebugWriter.Dispose();
             if (yuBprDebugWriter != null)
                 yuBprDebugWriter.Dispose();
         }
 
+        private static string[] ExpectedMissionDetailHeader()
+        {
+            return new string[] { "SweepParameterName", "MissionId", "DispatchTimeSeconds", "ReturnTimeSeconds",
+                "NodeCount", "OnDemandRequestCount", "ProactiveCount", "SuccessfulCharges", "FailedCount",
+                "DistanceMeters", "AverageWaitSeconds", "RouteNodeIds", "DeduplicatedTaskCount" };
+        }
+
+        private static string[] ExpectedTaskRecordHeader()
+        {
+            return new string[] { "MissionId", "TaskOrder", "NodeId", "IsProactive", "RequestTimeSeconds",
+                "DeadlineSeconds", "DispatchTimeSeconds", "ArrivalTimeSeconds", "WaitSeconds",
+                "ChargeStartSeconds", "ChargeEndSeconds", "EnergyBeforeJ", "ConsumeRateJPerSecond",
+                "EffectiveConsumeRateJPerSecond", "RequestNodeConsumeRateJPerSecond",
+                "ServiceNodeConsumeRateJPerSecond", "NodeConsumeRatePredictionErrorJPerSecond",
+                "InternalRateNjPerTick", "DistanceFromPreviousMeters", "Success", "FailureReason",
+                "WcvEnergyAfterJ" };
+        }
+
         private void WriteMissionHeader()
         {
-            missionWriter.WriteLine(CsvRow("掃描參數名稱", "任務編號", "出發時間秒", "返回時間秒", "節點數",
-                "被動請求數", "主動充電數", "成功充電數", "失敗數", "走的距離m", "legacy封包送出數(停用)",
-                "legacy封包收到數(停用)", "legacy封包遺失數(停用)", "legacy路由失敗封包遺失數(停用)", "平均等待時間秒", "路線節點序列", "去重任務數"));
+            missionWriter.WriteLine(CsvRow(ExpectedMissionDetailHeader()));
         }
 
         private void WriteTaskHeader()
         {
-            taskWriter.WriteLine(CsvRow("任務編號", "任務順序", "節點編號", "是否主動充電", "請求時間秒",
-                "截止時間秒", "出發時間秒", "抵達時間秒", "等待時間秒", "開始充電時間秒",
-                "結束充電時間秒", "充電前能量J", "節點耗電率J每秒", "有效耗電率J每秒",
-                "請求時節點耗電率J每秒", "服務時節點耗電率J每秒", "耗電率預測誤差J每秒",
-                "legacy路由總耗電率J每秒(停用)", "legacy路由傳送耗電率J每秒(停用)", "legacy路由接收耗電率J每秒(停用)", "legacy路由子樹大小(停用)",
-                "legacy預期轉送封包數每秒(停用)", "內部耗電率nJ每Tick", "與上一點距離m", "是否成功", "失敗原因", "WCV剩餘能量J"));
-        }
-
-        private void WriteRoutingLoadHeader()
-        {
-            routingLoadWriter.WriteLine(CsvRow("節點編號", "legacy父節點編號(停用)", "legacy子樹大小(停用)", "legacy預期傳送封包數每秒(停用)",
-                "legacy預期接收封包數每秒(停用)", "legacy預期轉送封包數每秒(停用)", "legacy估計傳送耗電率J每秒(停用)",
-                "legacy估計接收耗電率J每秒(停用)", "legacy估計路由總耗電率J每秒(停用)"));
+            taskWriter.WriteLine(CsvRow(ExpectedTaskRecordHeader()));
         }
 
         private void WriteBprDebugHeader()
@@ -8997,17 +9023,17 @@ namespace WindowsFormsApplication1
             if (settings == null)
                 return "NotUsed";
             if (ChengTreqCalculator.IsChengTreqMode(settings.ThresholdMode))
-                return "Auto";
+                return "ChengTreq";
             if (String.Equals(settings.ThresholdMode, "TreqSeconds", StringComparison.OrdinalIgnoreCase))
-                return "Manual";
-            return "NotUsed";
+                return "TreqSeconds";
+            return "Percent";
         }
 
         private static List<List<object>> BuildSettingsRows(ExperimentBatchResult result)
         {
             ExperimentSettings s = result.Settings;
             ChengTreqMetrics chengMetrics = ChengTreqCalculator.Compute(s, s.NmaxTask);
-            double effectiveTreqSeconds = ChengTreqCalculator.GetEffectiveTreqSeconds(s, s.NmaxTask);
+            double effectiveTreqSeconds = ChengTreqCalculator.GetEffectiveRequestThresholdSeconds(s, s.NmaxTask);
             string treqSource = ResolveTreqSource(s);
             List<List<object>> rows = new List<List<object>>();
             rows.Add(Row("欄位", "值", "說明"));
@@ -9022,7 +9048,6 @@ namespace WindowsFormsApplication1
             rows.Add(Row("WriteTaskDetailCsv", s.WriteTaskDetailCsv, "false = skip per-run debug CSV files to reduce IO and memory pressure"));
             rows.Add(Row("WriteMissionDetailsCsv", s.WriteMissionDetailsCsv, "controls mission-details.csv output"));
             rows.Add(Row("WriteTaskRecordsCsv", s.WriteTaskRecordsCsv, "controls task-records.csv output"));
-            rows.Add(Row("WriteRoutingLoadCsv", s.WriteRoutingLoadCsv, "deprecated; routing-load.csv is disabled for CHENG flow"));
             rows.Add(Row("WriteBprDebugCsv", s.WriteBprDebugCsv, "controls bpr-debug.csv output"));
             rows.Add(Row("WriteYuBprDebugCsv", s.WriteYuBprDebugCsv, "controls yu-bpr-debug.csv output"));
             rows.Add(Row("UseFastSimulationScheduling", s.UseFastSimulationScheduling, "true = bounded artifact queue with simulation-level parallelism"));
@@ -9035,31 +9060,45 @@ namespace WindowsFormsApplication1
             rows.Add(Row("基礎連續耗能(J/s)", s.InitialEnergyJ / s.SensorBackgroundLifetimeSeconds, ""));
             rows.Add(Row("基礎連續耗能(nJ/tick)", s.InitialEnergyJ / s.SensorBackgroundLifetimeSeconds * 1000000000.0 * 0.01, "tick=0.01s"));
             rows.Add(Row("需求頻率 p(次/s)", s.EventRatePerSecond, "CHENG charging requirement / activation frequency; not packet event rate"));
-            rows.Add(Row("封包大小(bits)", s.PacketBits, "deprecated; packet energy is not used by ExperimentSystem"));
-            rows.Add(Row("通訊半徑(m)", s.RadioRangeMeters, "deprecated; packet routing tree is not used by ExperimentSystem"));
-            rows.Add(Row("RX 能耗(nJ/bit)", s.ReceiverEnergyNjPerBit, "deprecated"));
-            rows.Add(Row("放大器能耗(nJ/bit/m^2)", s.AmplifierEnergyNjPerBitM2, "deprecated"));
-            rows.Add(Row("距離耗能次方", s.PowerExponent, "deprecated"));
+            rows.Add(Row("CriticalDensityRadiusMeters", s.CriticalDensityRadiusMeters, "critical density radius"));
             rows.Add(Row("WCV 速度(m/s)", s.WcvSpeedMetersPerSecond, ""));
             rows.Add(Row("WCV 充電速率(J/s)", s.WcvChargeRateJPerSecond, ""));
             rows.Add(Row("WCV 容量(J)", s.WcvCapacityJ, ""));
             rows.Add(Row("WCV 移動耗能(J/m)", s.WcvMoveCostJPerMeter, ""));
             rows.Add(Row("每趟任務上限", s.NmaxTask, s.DynamicNmaxTask ? "動態上限" : "固定上限"));
             rows.Add(Row("門檻模式", s.ThresholdMode == "TreqSeconds" ? "Treq 秒數門檻" : (s.ThresholdMode == "ChengTreq" ? "CHENG Treq 自動門檻" : "百分比門檻"), ""));
+            List<WcvMaxTaskFeasibilityResult> feasibilityResults = WcvMaxTaskFeasibilityValidator.ValidateSelectedAlgorithms(s);
+            for (int i = 0; i < feasibilityResults.Count; i++)
+            {
+                WcvMaxTaskFeasibilityResult feasibility = feasibilityResults[i];
+                string prefix = String.Format(CultureInfo.InvariantCulture, "Validation[{0}]", i + 1);
+                rows.Add(Row(prefix + ".SelectedAlgorithm", feasibility.Algorithm, "preflight WCV capacity validation"));
+                rows.Add(Row(prefix + ".ValidationTaskLimit", feasibility.ValidationTaskLimit, "task limit used by validation"));
+                rows.Add(Row(prefix + ".EstimatedMaxTaskMissionEnergyJ", feasibility.EstimatedMaxTaskMissionEnergyJ, "preflight WCV capacity validation"));
+                rows.Add(Row(prefix + ".EstimatedMaxTaskMissionPathLengthMeters", feasibility.EstimatedMaxTaskMissionPathLengthMeters, "preflight WCV capacity validation"));
+                rows.Add(Row(prefix + ".EstimatedMaxTaskMoveEnergyJ", feasibility.EstimatedMaxTaskMoveEnergyJ, "preflight WCV capacity validation"));
+                rows.Add(Row(prefix + ".EstimatedMaxTaskChargeEnergyJ", feasibility.EstimatedMaxTaskChargeEnergyJ, "preflight WCV capacity validation"));
+                rows.Add(Row(prefix + ".EstimatedFullChargeSeconds", feasibility.EstimatedFullChargeSeconds, "InitialEnergyJ / WcvChargeRateJPerSecond"));
+                rows.Add(Row(prefix + ".EstimatedMaxTaskMissionSeconds", feasibility.EstimatedMaxTaskMissionSeconds, "move seconds + charge seconds"));
+                rows.Add(Row(prefix + ".WcvCapacityJ", s.WcvCapacityJ, "WCV capacity used by validation"));
+            }
             rows.Add(Row("ThresholdMode", s.ThresholdMode, "Percent / TreqSeconds / ChengTreq"));
             rows.Add(Row("RequestThresholdPercent", s.RequestThresholdPercent, "used when ThresholdMode = Percent"));
             rows.Add(Row("TreqSeconds", effectiveTreqSeconds, "effective Treq seconds used by time-threshold modes"));
-            rows.Add(Row("TreqSource", treqSource, "Auto / Manual / NotUsed"));
+            rows.Add(Row("TreqSource", treqSource, "Percent / TreqSeconds / ChengTreq"));
             rows.Add(Row("ConfiguredTreqSeconds", s.TreqSeconds, "manual TreqSeconds setting"));
             rows.Add(Row("EffectiveTreqSeconds", effectiveTreqSeconds, "actual Treq used by time-threshold modes"));
             rows.Add(Row("ComputedLpathMeters", chengMetrics.LpathMeters, "CHENG/NJF path length upper bound"));
             rows.Add(Row("ComputedTjobSeconds", chengMetrics.TjobSeconds, "CHENG mission time Tjob(NmaxTask)"));
             rows.Add(Row("ComputedLmaxStepMeters", chengMetrics.LmaxStepMeters, "map diagonal / farthest two-point step"));
             rows.Add(Row("BP&R deadline threshold(s)", s.BprDeadlineThresholdSeconds, "Persistent STable deadline maintenance threshold"));
+            rows.Add(Row("BprPredictionHorizonSource", BprTimingValidator.ResolvePredictionHorizonSource(s), "Explicit / ChengTreq / TreqSeconds / InvalidPercentMode"));
+            rows.Add(Row("BprCooldownSource", BprTimingValidator.ResolveCooldownSource(s), "Explicit / ChengTreq / TreqSeconds / InvalidPercentMode"));
+            rows.Add(Row("BprDeadlineThresholdSource", BprTimingValidator.ResolveDeadlineThresholdSource(s), "Explicit / ChengTreq / TreqSeconds / InvalidPercentMode"));
             rows.Add(Row("AllowStandaloneProactiveDispatch", s.AllowStandaloneProactiveDispatch, "false = BP&R/YU proactive tasks are inserted only into natural-request missions"));
-            rows.Add(Row("ProactivePredictionHorizonSeconds", s.ProactivePredictionHorizonSeconds, "0 = EffectiveTreqSeconds + EstimateBprTjobSeconds(NmaxTask)"));
+            rows.Add(Row("ProactivePredictionHorizonSeconds", s.ProactivePredictionHorizonSeconds, "0 = ChengTreq/TreqSeconds time base + EstimateBprTjobSeconds(NmaxTask)"));
             rows.Add(Row("ProactiveCandidateMaxEnergyRatio", s.ProactiveCandidateMaxEnergyRatio, "nodes at or above this capacity ratio are excluded from proactive candidates"));
-            rows.Add(Row("ProactiveCooldownSeconds", s.ProactiveCooldownSeconds, "0 = EffectiveTreqSeconds after charged or proactive-selected"));
+            rows.Add(Row("ProactiveCooldownSeconds", s.ProactiveCooldownSeconds, "0 = ChengTreq/TreqSeconds time base after charged or proactive-selected"));
             rows.Add(Row("YU danger window(s)", s.YuDangerWindowSeconds, "0 = use EstimateBprTjobSeconds(NmaxTask)"));
             rows.Add(Row("YU danger threshold K", s.YuDangerThresholdK, "0 = use NmaxTask + 1"));
             rows.Add(Row("YU interval uncertainty(s)", s.YuIntervalUncertaintySeconds, "0 = use BprDeadlineThresholdSeconds"));
@@ -9069,21 +9108,18 @@ namespace WindowsFormsApplication1
             rows.Add(Row("演算法", s.SelectedAlgorithmsCsv, ""));
             rows.Add(Row("輸出目錄", s.OutputDirectory, ""));
             rows.Add(Row("任務明細 CSV 資料夾", result.TaskDetailsDirectory, "每個 run + algorithm 各自輸出 mission-details 與 task-records CSV"));
-            rows.Add(Row("動態耗能週期(s)", 10000, "每 10000s 檢查一次；純充電延伸實驗設定"));
-            rows.Add(Row("動態耗能率倍率", RateMultiplierRangeText(s), "由耗能變動幅度決定"));
+            rows.Add(Row("ZHENG-inspired 動態耗能週期(s)", 10000, "每 10000s 檢查一次；延伸實驗，不是原始 ZHENG 重現"));
+            rows.Add(Row("ZHENG-inspired 耗能率倍率", RateMultiplierRangeText(s), "由耗能變動幅度決定"));
             rows.Add(Row("基地台", "(0,0) sink + 充電中心", "固定單台 WCV，每趟 mission 後回 BS"));
-            rows.Add(Row("FUZZY", "Mamdani 模糊推論", "剩餘能量、距離、耗能率、臨界節點密度"));
-            rows.Add(Row("BP&R 標註", "CHENG paper-random + legacy deterministic extensions", "CHENG_* 使用 STable/deadline danger interval/BottleList seeded random；ZHENG_ROUTE_* 是 route-cost extension，不是 CHENG 原文 random"));
-            rows.Add(Row("GENE/PSO/Cuckoo 標註", "full route optimization baselines", "GA、random-key PSO、Cuckoo Search 共用 route fitness"));
+            rows.Add(Row("BP&R 標註", "ZHENG BP&R sliding-window BottleList", "使用 STable deadline、TdeadlineThreshold、Tjob(NmaxTask) sliding window、BottleList 與 cplist；RouteSafe 只改 BottleList 內選點策略"));
             rows.Add(Row("任務明細總列數", result.TotalTaskRecordCount, "逐節點 task records 已改寫入 CSV，不再輸出到 Excel"));
 
             rows.Add(Row("", "", ""));
-            rows.Add(Row("Run", "Seed", "共用資料 hash", "rate-change 次數", "legacy ParentId=-1 節點數(停用)", "legacy 不連通節點比例(停用)"));
+            rows.Add(Row("Run", "Seed", "ArtifactHash", "RateChangeScheduleCount"));
             for (int i = 0; i < result.ArtifactSummaries.Count; i++)
             {
                 ExperimentArtifactSummary artifact = result.ArtifactSummaries[i];
-                rows.Add(Row(artifact.RunIndex, artifact.Seed, artifact.ArtifactHash, artifact.RateChangeScheduleCount,
-                    artifact.RoutingParentMissingNodeCount, artifact.RoutingDisconnectedNodeRatio));
+                rows.Add(Row(artifact.RunIndex, artifact.Seed, artifact.ArtifactHash, artifact.RateChangeScheduleCount));
             }
 
             return rows;
@@ -9092,11 +9128,12 @@ namespace WindowsFormsApplication1
         private static List<List<object>> BuildRunRows(ExperimentBatchResult result)
         {
             List<List<object>> rows = new List<List<object>>();
-            rows.Add(Row("Run", "Seed", "演算法", "共用資料hash", "Prate_change", "耗能變動幅度(%)", "rate schedule數", "實際套用rate變動數",
-                "網路生命週期(s)", "第一個死亡節點", "第一個死亡時間(s)", "死亡原因", "直接耗能源",
-                "成功充電數", "失敗/逾期數", "request數", "proactive數", "mission數", "移動距離(m)",
-                "legacy封包送出(停用)", "legacy封包收到(停用)", "legacy封包遺失(停用)", "legacy routing failed 遺失(停用)", "legacy ParentId=-1 節點數(停用)",
-                "legacy 不連通節點比例(停用)", "平均等待(s)", "充電效率"));
+            rows.Add(Row("Run", "Seed", "Algorithm", "ArtifactHash", "PrateChange", "RateChangeVariationPercent",
+                "RateChangeScheduleCount", "AppliedRateChangeCount", "NetworkLifetimeSeconds",
+                "FirstDeadNodeId", "FirstDeadTimeSeconds", "FirstDeadReason", "FirstDeadDirectEnergyCause",
+                "SuccessfulCharges", "FailedOrLateTasks", "NaturalRequestCount", "ProactiveTaskCount",
+                "TotalChargingTaskCount", "MissionCount", "MovementDistanceMeters",
+                "AverageWaitSeconds", "ChargeEfficiency"));
 
             PrependSweepHeaders(rows[0]);
             AppendRunAntiInflationHeaders(rows[0]);
@@ -9108,9 +9145,7 @@ namespace WindowsFormsApplication1
                 rows.Add(Row(s.RunIndex, s.Seed, AlgorithmDisplayName(s.Algorithm), s.ArtifactHash, s.PrateChange, s.RateChangeVariationPercent, s.RateChangeScheduleCount,
                     s.AppliedRateChangeCount, s.NetworkLifetimeSeconds, s.FirstDeadNodeId, s.FirstDeadTimeSeconds,
                     s.FirstDeadReasonZh, s.FirstDeadDirectEnergyCause, s.SuccessfulCharges, s.FailedOrLateTasks,
-                    s.NaturalRequestCount, s.ProactiveTaskCount, s.MissionCount, s.MovementDistanceMeters,
-                    s.PacketSent, s.PacketReceived, s.PacketLost, s.RoutingFailedPacketLost,
-                    s.RoutingParentMissingNodeCount, s.RoutingDisconnectedNodeRatio,
+                    s.NaturalRequestCount, s.ProactiveTaskCount, s.TotalChargingTaskCount, s.MissionCount, s.MovementDistanceMeters,
                     s.AverageWaitSeconds, s.ChargeEfficiency));
                 PrependSweepValues(rows[rows.Count - 1], s);
                 AddRunAntiInflationValues(rows[rows.Count - 1], s);
@@ -9210,9 +9245,11 @@ namespace WindowsFormsApplication1
         private static List<List<object>> BuildSummaryRows(ExperimentBatchResult result)
         {
             List<List<object>> rows = new List<List<object>>();
-            rows.Add(Row("演算法", "Run 次數", "平均生命週期(s)", "最小生命週期(s)", "最大生命週期(s)",
-                "平均成功充電", "平均失敗/逾期", "平均request", "平均移動距離(m)", "平均等待(s)",
-                "平均legacy封包遺失(停用)", "平均legacy routing failed遺失(停用)", "平均legacy ParentId=-1節點數(停用)", "平均legacy不連通比例(停用)", "平均充電效率"));
+            rows.Add(Row("Algorithm", "RunCount", "AverageNetworkLifetimeSeconds",
+                "MinNetworkLifetimeSeconds", "MaxNetworkLifetimeSeconds", "AverageSuccessfulCharges",
+                "AverageFailedOrLateTasks", "AverageNaturalRequestCount", "AverageProactiveTaskCount",
+                "AverageTotalChargingTaskCount", "AverageMissionCount", "AverageMovementDistanceMeters",
+                "AverageWaitSeconds", "AverageChargeEfficiency"));
 
             PrependSweepHeaders(rows[0]);
             rows[0].Add("ThresholdMode");
@@ -9242,12 +9279,11 @@ namespace WindowsFormsApplication1
                     Average(list, delegate (ExperimentRunSummary s) { return s.SuccessfulCharges; }),
                     Average(list, delegate (ExperimentRunSummary s) { return s.FailedOrLateTasks; }),
                     Average(list, delegate (ExperimentRunSummary s) { return s.NaturalRequestCount; }),
+                    Average(list, delegate (ExperimentRunSummary s) { return s.ProactiveTaskCount; }),
+                    Average(list, delegate (ExperimentRunSummary s) { return s.TotalChargingTaskCount; }),
+                    Average(list, delegate (ExperimentRunSummary s) { return s.MissionCount; }),
                     Average(list, delegate (ExperimentRunSummary s) { return s.MovementDistanceMeters; }),
                     Average(list, delegate (ExperimentRunSummary s) { return s.AverageWaitSeconds; }),
-                    Average(list, delegate (ExperimentRunSummary s) { return s.PacketLost; }),
-                    Average(list, delegate (ExperimentRunSummary s) { return s.RoutingFailedPacketLost; }),
-                    Average(list, delegate (ExperimentRunSummary s) { return s.RoutingParentMissingNodeCount; }),
-                    Average(list, delegate (ExperimentRunSummary s) { return s.RoutingDisconnectedNodeRatio; }),
                     Average(list, delegate (ExperimentRunSummary s) { return s.ChargeEfficiency; })));
                 PrependSweepValues(rows[rows.Count - 1], first);
                 rows[rows.Count - 1].Add(first.ThresholdMode);
@@ -9320,16 +9356,14 @@ namespace WindowsFormsApplication1
                 "Reason", "ReasonZh", "DirectEnergyCause", "DirectEnergyCauseZh",
                 "SchedulingRelated", "SchedulingCause", "SchedulingCauseZh",
                 "PendingRequest", "HasPendingRequestAtDeath", "WasScheduledInCurrentMissionAtDeath",
-                "legacy ParentIdAtDeath(停用)", "EnergyBeforeDeathJ",
+                "EnergyBeforeDeathJ",
                 "BaseConsumeRateJPerSecondAtDeath", "EffectiveConsumeRateJPerSecondAtDeath",
-                "legacy RoutingLoadJPerSecondAtDeath(停用)", "legacy RoutingTxLoadJPerSecondAtDeath(停用)", "legacy RoutingRxLoadJPerSecondAtDeath(停用)",
-                "legacy RoutingSubtreeSize(停用)", "legacy ExpectedRoutingForwardPacketsPerSecond(停用)",
                 "EnergyJ", "RequestTimeSeconds", "WaitSeconds"));
             PrependSweepHeaders(rows[0]);
 
             if (result.DeathRecords.Count == 0)
             {
-                rows.Add(Row("NO_DEATH", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""));
+                rows.Add(Row("NO_DEATH", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""));
                 PrependBlankSweepValues(rows[rows.Count - 1]);
                 return rows;
             }
@@ -9341,10 +9375,8 @@ namespace WindowsFormsApplication1
                     d.Reason, d.ReasonZh, d.DirectEnergyCause, d.DirectEnergyCauseZh,
                     d.SchedulingRelated, d.SchedulingCause, d.SchedulingCauseZh,
                     d.PendingRequest, d.HasPendingRequestAtDeath, d.WasScheduledInCurrentMissionAtDeath,
-                    d.ParentIdAtDeath, d.EnergyBeforeDeathJ,
+                    d.EnergyBeforeDeathJ,
                     d.BaseConsumeRateJPerSecondAtDeath, d.EffectiveConsumeRateJPerSecondAtDeath,
-                    d.RoutingLoadJPerSecondAtDeath, d.RoutingTxLoadJPerSecondAtDeath, d.RoutingRxLoadJPerSecondAtDeath,
-                    d.RoutingSubtreeSize, d.ExpectedRoutingForwardPacketsPerSecond,
                     d.EnergyJ, d.RequestTimeSeconds, d.WaitSeconds));
                 PrependSweepValues(rows[rows.Count - 1], d);
             }
@@ -9357,7 +9389,6 @@ namespace WindowsFormsApplication1
             if (key == "EDF") return "EDF（最早期限優先）";
             if (key == "NJF") return "NJF（no prediction baseline）";
             if (key == "TADP_LIN") return "TADP/LIN（時間與距離優先）";
-            if (key == "RCSS") return "RCSS（風險與耗能排序）";
             if (key == "NJF_CHENG_BPR") return "NJF_CHENG_BPR (CHENG paper BP&R, seeded random)";
             if (key == "TADP_CHENG_BPR") return "TADP_CHENG_BPR (CHENG paper BP&R, seeded random)";
             if (key == "EDF_CHENG_BPR") return "EDF_CHENG_BPR (CHENG paper BP&R, seeded random)";
@@ -9367,10 +9398,6 @@ namespace WindowsFormsApplication1
             if (key == "NJF_ROUTE_ZHENG_BPR_EXTENDED") return "NJF_ROUTE_ZHENG_BPR_EXTENDED (WCV route-aware BP&R extension, may exceed NmaxTask)";
             if (key == "NJF_ROUTE_YU_BPR_LIMITED") return "NJF_ROUTE_YU_BPR_LIMITED (WCV route-aware YU extension, <=NmaxTask)";
             if (key == "NJF_ROUTE_YU_BPR_EXTENDED") return "NJF_ROUTE_YU_BPR_EXTENDED (WCV route-aware YU extension, may exceed NmaxTask)";
-            if (key == "FUZZY") return "FUZZY (paper-flow fields, extra comparison)";
-            if (key == "GENE") return "GENE（GA route optimization）";
-            if (key == "PSO") return "PSO（random-key PSO route optimization）";
-            if (key == "Cuckoo") return "Cuckoo（Cuckoo Search route optimization）";
             return key;
         }
 
@@ -9900,11 +9927,7 @@ namespace WindowsFormsApplication1
             AddTextBox(panel, "SensorBackgroundLifetimeSeconds", "背景壽命(s)", y); y += 30;
             AddTextBox(panel, "InitialResidualJitterPercent", "初始能量擾動(%)", y); y += 30;
             AddTextBox(panel, "EventRatePerSecond", "需求頻率 p(次/s)", y); y += 30;
-            AddTextBox(panel, "PacketBits", "封包大小(bits，停用)", y); y += 30;
-            AddTextBox(panel, "RadioRangeMeters", "通訊半徑(m，停用)", y); y += 30;
-            AddTextBox(panel, "ReceiverEnergyNjPerBit", "接收能耗(nJ/bit)", y); y += 30;
-            AddTextBox(panel, "AmplifierEnergyNjPerBitM2", "放大器能耗(nJ/bit/m^2)", y); y += 30;
-            AddTextBox(panel, "PowerExponent", "距離耗能次方", y); y += 30;
+            AddTextBox(panel, "CriticalDensityRadiusMeters", "Critical density radius(m)", y); y += 30;
             AddTextBox(panel, "WcvSpeedMetersPerSecond", "WCV 速度(m/s)", y); y += 30;
             AddTextBox(panel, "WcvChargeRateJPerSecond", "WCV 充電速率(J/s)", y); y += 30;
             AddTextBox(panel, "WcvCapacityJ", "WCV 容量(J)", y); y += 30;
@@ -9997,11 +10020,7 @@ namespace WindowsFormsApplication1
             boxes["SensorBackgroundLifetimeSeconds"].Text = settings.SensorBackgroundLifetimeSeconds.ToString(CultureInfo.InvariantCulture);
             boxes["InitialResidualJitterPercent"].Text = settings.InitialResidualJitterPercent.ToString(CultureInfo.InvariantCulture);
             boxes["EventRatePerSecond"].Text = settings.EventRatePerSecond.ToString(CultureInfo.InvariantCulture);
-            boxes["PacketBits"].Text = settings.PacketBits.ToString(CultureInfo.InvariantCulture);
-            boxes["RadioRangeMeters"].Text = settings.RadioRangeMeters.ToString(CultureInfo.InvariantCulture);
-            boxes["ReceiverEnergyNjPerBit"].Text = settings.ReceiverEnergyNjPerBit.ToString(CultureInfo.InvariantCulture);
-            boxes["AmplifierEnergyNjPerBitM2"].Text = settings.AmplifierEnergyNjPerBitM2.ToString(CultureInfo.InvariantCulture);
-            boxes["PowerExponent"].Text = settings.PowerExponent.ToString(CultureInfo.InvariantCulture);
+            boxes["CriticalDensityRadiusMeters"].Text = settings.CriticalDensityRadiusMeters.ToString(CultureInfo.InvariantCulture);
             boxes["WcvSpeedMetersPerSecond"].Text = settings.WcvSpeedMetersPerSecond.ToString(CultureInfo.InvariantCulture);
             boxes["WcvChargeRateJPerSecond"].Text = settings.WcvChargeRateJPerSecond.ToString(CultureInfo.InvariantCulture);
             boxes["WcvCapacityJ"].Text = settings.WcvCapacityJ.ToString(CultureInfo.InvariantCulture);
@@ -10049,11 +10068,7 @@ namespace WindowsFormsApplication1
             settings.SensorBackgroundLifetimeSeconds = ParseDouble("SensorBackgroundLifetimeSeconds", settings.SensorBackgroundLifetimeSeconds);
             settings.InitialResidualJitterPercent = ParseDouble("InitialResidualJitterPercent", settings.InitialResidualJitterPercent);
             settings.EventRatePerSecond = ParseDouble("EventRatePerSecond", settings.EventRatePerSecond);
-            settings.PacketBits = ParseDouble("PacketBits", settings.PacketBits);
-            settings.RadioRangeMeters = ParseDouble("RadioRangeMeters", settings.RadioRangeMeters);
-            settings.ReceiverEnergyNjPerBit = ParseDouble("ReceiverEnergyNjPerBit", settings.ReceiverEnergyNjPerBit);
-            settings.AmplifierEnergyNjPerBitM2 = ParseDouble("AmplifierEnergyNjPerBitM2", settings.AmplifierEnergyNjPerBitM2);
-            settings.PowerExponent = ParseDouble("PowerExponent", settings.PowerExponent);
+            settings.CriticalDensityRadiusMeters = ParseDouble("CriticalDensityRadiusMeters", settings.CriticalDensityRadiusMeters);
             settings.WcvSpeedMetersPerSecond = ParseDouble("WcvSpeedMetersPerSecond", settings.WcvSpeedMetersPerSecond);
             settings.WcvChargeRateJPerSecond = ParseDouble("WcvChargeRateJPerSecond", settings.WcvChargeRateJPerSecond);
             settings.WcvCapacityJ = ParseDouble("WcvCapacityJ", settings.WcvCapacityJ);
@@ -10103,7 +10118,6 @@ namespace WindowsFormsApplication1
             if (key == "EDF") return "EDF（最早期限優先）";
             if (key == "NJF") return "NJF（no prediction baseline）";
             if (key == "TADP_LIN") return "TADP/LIN（時間與距離優先）";
-            if (key == "RCSS") return "RCSS（風險與耗能排序）";
             if (key == "NJF_CHENG_BPR") return "NJF_CHENG_BPR (CHENG paper BP&R, seeded random)";
             if (key == "TADP_CHENG_BPR") return "TADP_CHENG_BPR (CHENG paper BP&R, seeded random)";
             if (key == "EDF_CHENG_BPR") return "EDF_CHENG_BPR (CHENG paper BP&R, seeded random)";
@@ -10113,10 +10127,6 @@ namespace WindowsFormsApplication1
             if (key == "NJF_ROUTE_ZHENG_BPR_EXTENDED") return "NJF_ROUTE_ZHENG_BPR_EXTENDED (WCV route-aware BP&R extension, may exceed NmaxTask)";
             if (key == "NJF_ROUTE_YU_BPR_LIMITED") return "NJF_ROUTE_YU_BPR_LIMITED (WCV route-aware YU extension, <=NmaxTask)";
             if (key == "NJF_ROUTE_YU_BPR_EXTENDED") return "NJF_ROUTE_YU_BPR_EXTENDED (WCV route-aware YU extension, may exceed NmaxTask)";
-            if (key == "FUZZY") return "FUZZY (paper-flow fields, extra comparison)";
-            if (key == "GENE") return "GENE（GA route optimization）";
-            if (key == "PSO") return "PSO（random-key PSO route optimization）";
-            if (key == "Cuckoo") return "Cuckoo（Cuckoo Search route optimization）";
             return key;
         }
 

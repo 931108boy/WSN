@@ -11,18 +11,14 @@
   <SensorBackgroundLifetimeSeconds>100000</SensorBackgroundLifetimeSeconds>
   <InitialResidualJitterPercent>0</InitialResidualJitterPercent>
   <EventRatePerSecond>0.05</EventRatePerSecond>
-  <PacketBits>81920</PacketBits>
-  <RadioRangeMeters>60</RadioRangeMeters>
-  <ReceiverEnergyNjPerBit>50</ReceiverEnergyNjPerBit>
-  <AmplifierEnergyNjPerBitM2>0.01</AmplifierEnergyNjPerBitM2>
-  <PowerExponent>2</PowerExponent>
+  <CriticalDensityRadiusMeters>90</CriticalDensityRadiusMeters>
   <WcvSpeedMetersPerSecond>5</WcvSpeedMetersPerSecond>
   <WcvChargeRateJPerSecond>5</WcvChargeRateJPerSecond>
   <WcvCapacityJ>200000</WcvCapacityJ>
   <WcvMoveCostJPerMeter>10</WcvMoveCostJPerMeter>
   <NmaxTask>30</NmaxTask>
   <DynamicNmaxTask>false</DynamicNmaxTask>
-  <ThresholdMode>Percent</ThresholdMode>
+  <ThresholdMode>ChengTreq</ThresholdMode>
   <RequestThresholdPercent>10</RequestThresholdPercent>
   <TreqSeconds>4620</TreqSeconds>
   <PrateChange>0.2</PrateChange>

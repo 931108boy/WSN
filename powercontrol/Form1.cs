@@ -36,9 +36,9 @@ namespace WindowsFormsApplication1
         TextBox expNmaxTaskBox;
         TextBox expOutputDirectoryBox;
         ComboBox expThresholdModeBox;
+        ToolTip thresholdModeToolTip;
         CheckBox expWriteMissionDetailsBox;
         CheckBox expWriteTaskRecordsBox;
-        CheckBox expWriteRoutingLoadBox;
         CheckBox expWriteBprDebugBox;
         CheckBox expWriteYuBprDebugBox;
         CheckBox expFastSchedulingBox;
@@ -143,6 +143,9 @@ namespace WindowsFormsApplication1
             expThresholdModeBox.Size = new Size(180, 22);
             expThresholdModeBox.SelectedIndexChanged += expThresholdModeBox_SelectedIndexChanged;
             energyGroup.Controls.Add(expThresholdModeBox);
+            thresholdModeToolTip = new ToolTip();
+            thresholdModeToolTip.SetToolTip(modeLabel, "Percent 模式只控制自然請求百分比門檻。BP&R 的預測範圍與 cooldown 需要時間參數。執行 BP&R 時請使用 ChengTreq，或明確設定 ProactivePredictionHorizonSeconds / ProactiveCooldownSeconds / BprDeadlineThresholdSeconds。");
+            thresholdModeToolTip.SetToolTip(expThresholdModeBox, "Percent 模式只控制自然請求百分比門檻。BP&R 的預測範圍與 cooldown 需要時間參數。執行 BP&R 時請使用 ChengTreq，或明確設定 ProactivePredictionHorizonSeconds / ProactiveCooldownSeconds / BprDeadlineThresholdSeconds。");
 
             GroupBox wcvGroup = create_group_box("WCV 與任務流程", 784, 92, 360, 290);
             expWcvSpeedBox = add_labeled_textbox(wcvGroup, "WCV 速度(m/s)", "單台 WCV", 18, 30, "");
@@ -159,7 +162,7 @@ namespace WindowsFormsApplication1
             expNmaxTaskBox.TextChanged += auto_treq_parameter_changed;
             Label bsLabel = new Label();
             bsLabel.Text = "基地台 = (0,0) sink + 充電中心；每趟任務後 WCV 返回基地台。";
-            bsLabel.Location = new Point(18, 204);
+            bsLabel.Location = new Point(18, 236);
             bsLabel.Size = new Size(320, 42);
             wcvGroup.Controls.Add(bsLabel);
 
@@ -254,11 +257,8 @@ namespace WindowsFormsApplication1
 
             expWriteMissionDetailsBox = add_output_csv_checkbox(outputGroup, "mission-details", 110, 104, 130);
             expWriteTaskRecordsBox = add_output_csv_checkbox(outputGroup, "task-records", 245, 104, 125);
-            expWriteRoutingLoadBox = add_output_csv_checkbox(outputGroup, "routing-load(停用)", 375, 104, 120);
-            expWriteRoutingLoadBox.Checked = false;
-            expWriteRoutingLoadBox.Enabled = false;
-            expWriteBprDebugBox = add_output_csv_checkbox(outputGroup, "bpr-debug", 500, 104, 105);
-            expWriteYuBprDebugBox = add_output_csv_checkbox(outputGroup, "yu-bpr-debug", 610, 104, 118);
+            expWriteBprDebugBox = add_output_csv_checkbox(outputGroup, "bpr-debug", 375, 104, 105);
+            expWriteYuBprDebugBox = add_output_csv_checkbox(outputGroup, "yu-bpr-debug", 485, 104, 118);
 
             expLastOutputLabel = new Label();
             expLastOutputLabel.Text = "";
@@ -282,7 +282,7 @@ namespace WindowsFormsApplication1
 
             GroupBox noteGroup = create_group_box("資料產生說明", 24, 704, 1120, 120);
             Label note = new Label();
-            note.Text = "本系統不使用舊 MyWSN 的單一節點排程介面。資料由亂數種子產生共用地圖、CHENG 啟動需求與耗能率變動時間表，所有演算法共用同一資料雜湊碼。封包與 routing-load 僅保留為相容欄位。";
+            note.Text = "本系統不使用舊 MyWSN 的單一節點排程介面。資料由亂數種子產生共用地圖、CHENG 啟動需求與耗能率變動時間表，所有演算法共用同一資料雜湊碼。";
             note.Location = new Point(18, 28);
             note.Size = new Size(1070, 50);
             noteGroup.Controls.Add(note);
@@ -365,11 +365,6 @@ namespace WindowsFormsApplication1
                 expWriteMissionDetailsBox.Checked = experimentSettings.WriteMissionDetailsCsv;
             if (expWriteTaskRecordsBox != null)
                 expWriteTaskRecordsBox.Checked = experimentSettings.WriteTaskRecordsCsv;
-            if (expWriteRoutingLoadBox != null)
-            {
-                expWriteRoutingLoadBox.Checked = false;
-                expWriteRoutingLoadBox.Enabled = false;
-            }
             if (expWriteBprDebugBox != null)
                 expWriteBprDebugBox.Checked = experimentSettings.WriteBprDebugCsv;
             if (expWriteYuBprDebugBox != null)
@@ -399,6 +394,11 @@ namespace WindowsFormsApplication1
 
         void apply_experiment_controls_to_settings()
         {
+            apply_experiment_controls_to_settings(false);
+        }
+
+        void apply_experiment_controls_to_settings(bool validateWcvFeasibility)
+        {
             experimentSettings.BaseSeed = parse_int(expSeedBox, experimentSettings.BaseSeed);
             experimentSettings.RunCount = parse_int(expRunCountBox, experimentSettings.RunCount);
             experimentSettings.SensorCount = parse_int(expSensorCountBox, experimentSettings.SensorCount);
@@ -422,7 +422,6 @@ namespace WindowsFormsApplication1
                 experimentSettings.WriteMissionDetailsCsv = expWriteMissionDetailsBox.Checked;
             if (expWriteTaskRecordsBox != null)
                 experimentSettings.WriteTaskRecordsCsv = expWriteTaskRecordsBox.Checked;
-            experimentSettings.WriteRoutingLoadCsv = false;
             if (expWriteBprDebugBox != null)
                 experimentSettings.WriteBprDebugCsv = expWriteBprDebugBox.Checked;
             if (expWriteYuBprDebugBox != null)
@@ -452,6 +451,11 @@ namespace WindowsFormsApplication1
             for (int i = 0; i < expAlgorithmList.CheckedItems.Count; i++)
                 algorithms.Add(get_algorithm_key_from_display(Convert.ToString(expAlgorithmList.CheckedItems[i])));
             experimentSettings.SetSelectedAlgorithms(algorithms);
+            if (validateWcvFeasibility)
+            {
+                BprTimingValidator.ThrowIfInvalid(experimentSettings);
+                WcvMaxTaskFeasibilityValidator.ThrowIfInvalid(experimentSettings);
+            }
             experimentSettings.Normalize();
             populate_experiment_controls_from_settings();
         }
@@ -472,7 +476,6 @@ namespace WindowsFormsApplication1
             CheckBox[] boxes = new CheckBox[] {
                 expWriteMissionDetailsBox,
                 expWriteTaskRecordsBox,
-                expWriteRoutingLoadBox,
                 expWriteBprDebugBox,
                 expWriteYuBprDebugBox
             };
@@ -481,11 +484,6 @@ namespace WindowsFormsApplication1
                 if (boxes[i] != null)
                 {
                     boxes[i].Enabled = enabled;
-                    if (boxes[i] == expWriteRoutingLoadBox)
-                    {
-                        boxes[i].Checked = false;
-                        boxes[i].Enabled = false;
-                    }
                 }
             }
         }
@@ -571,7 +569,6 @@ namespace WindowsFormsApplication1
             if (key == "EDF") return "EDF（最早期限優先）";
             if (key == "NJF") return "NJF（最近工作優先）";
             if (key == "TADP_LIN") return "TADP/LIN（期限距離線性排序）";
-            if (key == "RCSS") return "RCSS（風險與耗能排序）";
             if (key == "NJF_CHENG_BPR") return "NJF_CHENG_BPR（CHENG原文BP&R，seeded random）";
             if (key == "TADP_CHENG_BPR") return "TADP_CHENG_BPR（CHENG原文BP&R，seeded random）";
             if (key == "EDF_CHENG_BPR") return "EDF_CHENG_BPR（CHENG原文BP&R，seeded random）";
@@ -583,10 +580,6 @@ namespace WindowsFormsApplication1
             if (key == "NJF_ROUTE_YU_BPR_EXTENDED") return "NJF_ROUTE_YU_BPR_EXTENDED（WCV route-aware YU extension，可超過NmaxTask）";
             if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（ZHENG BP&R route-cost，<=NmaxTask）";
             if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（ZHENG BP&R route-cost，可超過NmaxTask）";
-            if (key == "FUZZY") return "FUZZY（paper-flow欄位，額外比較）";
-            if (key == "GENE") return "GENE（GA route optimization）";
-            if (key == "PSO") return "PSO（random-key PSO route optimization）";
-            if (key == "Cuckoo") return "Cuckoo（Cuckoo Search route optimization）";
             return key;
         }
 
@@ -699,9 +692,42 @@ namespace WindowsFormsApplication1
 
         void experimentRunButton_Click(object sender, EventArgs e)
         {
-            apply_experiment_controls_to_settings();
-            experimentSettings.Normalize();
-            experimentSettings.SaveLast();
+            try
+            {
+                apply_experiment_controls_to_settings(true);
+                experimentSettings.Normalize();
+                List<WcvMaxTaskFeasibilityResult> feasibilityResults =
+                    WcvMaxTaskFeasibilityValidator.ValidateSelectedAlgorithms(experimentSettings);
+                for (int i = 0; i < feasibilityResults.Count; i++)
+                {
+                    if (!feasibilityResults[i].IsValid)
+                    {
+                        log_experiment_message(feasibilityResults[i].ErrorMessage);
+                        MessageBox.Show(this, feasibilityResults[i].ErrorMessage, "WSN 實驗設定錯誤", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+                }
+                log_experiment_message("WCV feasibility validation passed.");
+                List<BprTimingValidationResult> bprTimingResults =
+                    BprTimingValidator.ValidateSelectedAlgorithms(experimentSettings);
+                for (int i = 0; i < bprTimingResults.Count; i++)
+                {
+                    if (!bprTimingResults[i].IsValid)
+                    {
+                        log_experiment_message(bprTimingResults[i].ErrorMessage);
+                        MessageBox.Show(this, bprTimingResults[i].ErrorMessage, "WSN 實驗設定錯誤", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+                }
+                log_experiment_message("BP&R timing validation passed.");
+                experimentSettings.SaveLast();
+            }
+            catch (Exception ex)
+            {
+                log_experiment_message("設定錯誤：" + ex.Message);
+                MessageBox.Show(this, ex.Message, "WSN 實驗設定錯誤", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
             experimentRunButton.Enabled = false;
             experimentSaveButton.Enabled = false;
             experimentSweepButton.Enabled = false;

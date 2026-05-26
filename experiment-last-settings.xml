@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <ExperimentSettings xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <ProjectRoot>C:\Users\MB16\Desktop\WSN</ProjectRoot>
+  <ProjectRoot>C:\Users\寬\Desktop\WSN-main (2)\WSN-main</ProjectRoot>
   <BaseSeed>45</BaseSeed>
   <RunCount>5</RunCount>
   <SensorCount>2000</SensorCount>
@@ -11,11 +11,7 @@
   <SensorBackgroundLifetimeSeconds>100000</SensorBackgroundLifetimeSeconds>
   <InitialResidualJitterPercent>0</InitialResidualJitterPercent>
   <EventRatePerSecond>0.002</EventRatePerSecond>
-  <PacketBits>81920</PacketBits>
-  <RadioRangeMeters>60</RadioRangeMeters>
-  <ReceiverEnergyNjPerBit>50</ReceiverEnergyNjPerBit>
-  <AmplifierEnergyNjPerBitM2>0.01</AmplifierEnergyNjPerBitM2>
-  <PowerExponent>2</PowerExponent>
+  <CriticalDensityRadiusMeters>90</CriticalDensityRadiusMeters>
   <WcvSpeedMetersPerSecond>5</WcvSpeedMetersPerSecond>
   <WcvChargeRateJPerSecond>5</WcvChargeRateJPerSecond>
   <WcvCapacityJ>200000</WcvCapacityJ>
@@ -36,12 +32,11 @@
   <PrateChange>0</PrateChange>
   <RateChangeVariationPercent>12.5</RateChangeVariationPercent>
   <SelectedAlgorithmsCsv>EDF,NJF,TADP_LIN,NJF_CHENG_BPR,TADP_CHENG_BPR,EDF_CHENG_BPR,NJF_ZHENG_BPR,NJF_YU_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_ZHENG_BPR_EXTENDED,NJF_ROUTE_YU_BPR_LIMITED,NJF_ROUTE_YU_BPR_EXTENDED</SelectedAlgorithmsCsv>
-  <OutputDirectory>C:\Users\MB16\Desktop\WSN\outputs</OutputDirectory>
-  <LastOutputWorkbookPath>C:\Users\MB16\Desktop\WSN\outputs\20260524-202340-sweep3-EventRatePerSecond-start0.005-step0.005-seed45-runs5\comparison-seed45-runs5.xlsx</LastOutputWorkbookPath>
+  <OutputDirectory>C:\Users\寬\Desktop\WSN-main (2)\WSN-main\outputs</OutputDirectory>
+  <LastOutputWorkbookPath />
   <WriteTaskDetailCsv>true</WriteTaskDetailCsv>
   <WriteMissionDetailsCsv>true</WriteMissionDetailsCsv>
   <WriteTaskRecordsCsv>true</WriteTaskRecordsCsv>
-  <WriteRoutingLoadCsv>false</WriteRoutingLoadCsv>
   <WriteBprDebugCsv>true</WriteBprDebugCsv>
   <WriteYuBprDebugCsv>true</WriteYuBprDebugCsv>
   <UseFastSimulationScheduling>true</UseFastSimulationScheduling>
