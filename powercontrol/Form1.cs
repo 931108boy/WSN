@@ -572,14 +572,13 @@ namespace WindowsFormsApplication1
             if (key == "NJF_CHENG_BPR") return "NJF_CHENG_BPR（CHENG原文BP&R，seeded random）";
             if (key == "TADP_CHENG_BPR") return "TADP_CHENG_BPR（CHENG原文BP&R，seeded random）";
             if (key == "EDF_CHENG_BPR") return "EDF_CHENG_BPR（CHENG原文BP&R，seeded random）";
-            if (key == "NJF_ZHENG_BPR") return "NJF_ZHENG_BPR（ZHENG BP&R deterministic extension）";
-            if (key == "NJF_YU_BPR") return "NJF_YU_BPR（YU interval BP&R extension，非CHENG原文）";
-            if (key == "NJF_ROUTE_ZHENG_BPR_LIMITED") return "NJF_ROUTE_ZHENG_BPR_LIMITED（WCV route-aware extension，<=NmaxTask）";
-            if (key == "NJF_ROUTE_ZHENG_BPR_EXTENDED") return "NJF_ROUTE_ZHENG_BPR_EXTENDED（WCV route-aware extension，可超過NmaxTask）";
-            if (key == "NJF_ROUTE_YU_BPR_LIMITED") return "NJF_ROUTE_YU_BPR_LIMITED（WCV route-aware YU extension，<=NmaxTask）";
-            if (key == "NJF_ROUTE_YU_BPR_EXTENDED") return "NJF_ROUTE_YU_BPR_EXTENDED（WCV route-aware YU extension，可超過NmaxTask）";
-            if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（ZHENG BP&R route-cost，<=NmaxTask）";
-            if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（ZHENG BP&R route-cost，可超過NmaxTask）";
+            if (key == "NJF_YU_BPR") return "NJF_YU_BPR（YU interval BP&R，seeded random）";
+            if (key == "NJF_ROUTE_CHENG_BPR_LIMITED") return "NJF_ROUTE_CHENG_BPR_LIMITED（CHENG interval BP&R，route insertion cost，<=NmaxTask）";
+            if (key == "NJF_ROUTE_CHENG_BPR_EXTENDED") return "NJF_ROUTE_CHENG_BPR_EXTENDED（CHENG interval BP&R，route insertion cost，可超過NmaxTask）";
+            if (key == "NJF_ROUTE_YU_BPR_LIMITED") return "NJF_ROUTE_YU_BPR_LIMITED（YU interval BP&R，route insertion cost，<=NmaxTask）";
+            if (key == "NJF_ROUTE_YU_BPR_EXTENDED") return "NJF_ROUTE_YU_BPR_EXTENDED（YU interval BP&R，route insertion cost，可超過NmaxTask）";
+            if (key == "NJF_BPR_ROUTE_SAFE_LIMITED") return "NJF_BPR_ROUTE_SAFE_LIMITED（CHENG interval BP&R，route insertion cost，<=NmaxTask）";
+            if (key == "NJF_BPR_ROUTE_SAFE_EXTENDED") return "NJF_BPR_ROUTE_SAFE_EXTENDED（CHENG interval BP&R，route insertion cost，可超過NmaxTask）";
             return key;
         }
 

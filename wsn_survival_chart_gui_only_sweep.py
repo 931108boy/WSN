@@ -178,11 +178,13 @@ def normalize_algorithm_name(display_name):
     key = str(display_name).split("（")[0].strip()
 
     mapping = {
-        "NJF_ROUTE_ZHENG_BPR_LIMITED": "ZHENG_LIMITED",
-        "NJF_ROUTE_ZHENG_BPR_EXTENDED": "ZHENG_EXTENDED",
+        "NJF_ROUTE_CHENG_BPR_LIMITED": "CHENG_LIMITED",
+        "NJF_ROUTE_CHENG_BPR_EXTENDED": "CHENG_EXTENDED",
+        "NJF_ROUTE_ZHENG_BPR_LIMITED": "CHENG_LIMITED",
+        "NJF_ROUTE_ZHENG_BPR_EXTENDED": "CHENG_EXTENDED",
         "NJF_ROUTE_YU_BPR_LIMITED": "YU_LIMITED",
         "NJF_ROUTE_YU_BPR_EXTENDED": "YU_EXTENDED",
-        "NJF_ZHENG_BPR": "ZHENG_BPR",
+        "NJF_CHENG_BPR": "CHENG_BPR",
         "NJF_YU_BPR": "YU_BPR",
         "TADP/LIN": "TADP_LIN",
     }

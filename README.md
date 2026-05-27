@@ -121,7 +121,7 @@ C:\Users\931108boy\Desktop\WSN
    - 安全限制觸發。
 5. mission 結束後 WCV 回到 BS。
 
-例外：`NJF_ROUTE_ZHENG_BPR_EXTENDED` 與 `NJF_ROUTE_YU_BPR_EXTENDED` 是容量放寬實驗版，允許 `cplist` 超過 `NmaxTask`，因此不應混入公平比較；公平比較請使用對應的 `*_LIMITED` 版本。
+例外：`NJF_ROUTE_CHENG_BPR_EXTENDED` 與 `NJF_ROUTE_YU_BPR_EXTENDED` 是容量放寬實驗版，允許 `cplist` 超過 `NmaxTask`，因此不應混入公平比較；公平比較請使用對應的 `*_LIMITED` 版本。
 
 ### 能量單位
 
@@ -186,17 +186,14 @@ if random <= Prate_change:
 | EDF | Earliest Deadline First，優先服務 deadline 最早的 request |
 | NJF | Nearest Job First，依目前 WCV 位置選最近的下一個節點 |
 | TADP_LIN | 用 deadline urgency 與距離做線性綜合排序 |
-| RCSS | 加入耗能率因素，偏向高風險、高耗能節點 |
 | NJF_CHENG_BPR | CHENG paper BP&R；使用 persistent STable、deadline danger interval、BottleList 與 seeded random 選點，NJF 只決定 cplist 後的 route ordering |
 | TADP_CHENG_BPR | 同一份 CHENG paper-random cplist，改用 TADP/LIN route ordering |
 | EDF_CHENG_BPR | 同一份 CHENG paper-random cplist，改用 EDF route ordering |
-| NJF_ZHENG_BPR | Legacy deterministic BP&R extension；使用 persistent STable、LatestReportedDeadlineSeconds、BprDeadlineThresholdSeconds、BottleList，BottleList 內以 deadline / NodeId deterministic 選點；不是 CHENG 原文 random |
-| NJF_YU_BPR | YU interval BP&R deterministic；使用 persistent STable 建立 YU-inspired request interval / dangerous interval，dangerous interval 內以 deterministic selection 選點；`cplist.Count <= NmaxTask` |
-| NJF_ROUTE_ZHENG_BPR_LIMITED | Route + ZHENG BP&R；沿用 ZHENG deadline interval 與 BottleList，只把 BottleList 內選點改成 route insertion cost；`cplist.Count <= NmaxTask` |
-| NJF_ROUTE_ZHENG_BPR_EXTENDED | Route + ZHENG BP&R 容量放寬版；同上，但允許 `cplist.Count > NmaxTask` |
-| NJF_ROUTE_YU_BPR_LIMITED | Route + YU interval BP&R；使用 YU-inspired request interval / dangerous interval detector，再以 route insertion cost 選點；`cplist.Count <= NmaxTask` |
+| NJF_YU_BPR | YU interval BP&R；使用 YU dynamic request interval 與 CHENG-style bottleneck window，danger window 內以 seeded random 選點；`cplist.Count <= NmaxTask` |
+| NJF_ROUTE_CHENG_BPR_LIMITED | Route + CHENG BP&R；使用 CHENG deadline interval 與 CHENG bottleneck window，window 內以 route insertion cost 選點；`cplist.Count <= NmaxTask` |
+| NJF_ROUTE_CHENG_BPR_EXTENDED | Route + CHENG BP&R 容量放寬版；同上，但允許 `cplist.Count > NmaxTask` |
+| NJF_ROUTE_YU_BPR_LIMITED | Route + YU interval BP&R；使用 YU dynamic request interval 與 CHENG-style bottleneck window，window 內以 route insertion cost 選點；`cplist.Count <= NmaxTask` |
 | NJF_ROUTE_YU_BPR_EXTENDED | Route + YU interval BP&R 容量放寬版；同上，但允許 `cplist.Count > NmaxTask` |
-| FUZZY | Mamdani fuzzy inference 排程優先度 |
 
 可選演算法：
 
@@ -206,7 +203,7 @@ if random <= Prate_change:
 | PSO | Random-key Particle Swarm Optimization：每個 task 對應 position/velocity，依 position 排序成 route，使用 inertia/cognitive/social 更新 |
 | Cuckoo | Cuckoo Search route optimization：nest 為任務排列，使用 swap/insertion/inversion 擾動與 abandonment probability 淘汰較差 nests |
 
-注意：`NJF` 是沒有 proactive prediction 的 baseline，只等自然 request 並用 nearest-job-first 排路線。`*_CHENG_BPR` 使用 CHENG paper-random BottleList 選點；`NJF_ZHENG_BPR` 是 legacy deterministic extension，不是 CHENG 原文 random。`NJF_ROUTE_ZHENG_BPR_*` 仍使用同一套 ZHENG deadline interval 與 BottleList，只把 BottleList 內選點改成 route insertion cost。`NJF_YU_BPR` / `NJF_ROUTE_YU_BPR_*` 使用 YU-inspired request interval / dangerous interval detector；此版本不是完整 YU WCV+WCD 系統。舊 key `NJF_BPR` 會對應到 `NJF_CHENG_BPR`；舊 route-safe key 仍對應到 ZHENG route extension。GENE、PSO、Cuckoo 目前已改為正式 route optimization baseline，三者共用同一套 route fitness。
+注意：`NJF` 是沒有 proactive prediction 的 baseline，只等自然 request 並用 nearest-job-first 排路線。`*_CHENG_BPR` 使用 CHENG deadline interval（deadline ± `BprDeadlineThresholdSeconds`）、CHENG bottleneck window 與 seeded random 選點。`NJF_YU_BPR` 使用 YU dynamic request interval、CHENG-style bottleneck window 與 seeded random 選點。`NJF_ROUTE_CHENG_BPR_*` / `NJF_ROUTE_YU_BPR_*` 則在相同 danger window 內改用 route insertion cost 選點。舊 key `NJF_BPR` 會對應到 `NJF_CHENG_BPR`；舊 route-safe key 與舊 route zheng key 會 normalize 到 CHENG route extension。GENE、PSO、Cuckoo 目前已改為正式 route optimization baseline，三者共用同一套 route fitness。
 
 主比較預設 `AllowStandaloneProactiveDispatch=false`：BP&R / YU proactive 只會插入已由 natural request 開啟的 mission，不會在 0 秒、沒有 request 時讓 WCV 主動巡邏。若要研究純 proactive 巡邏，請另外設定 `AllowStandaloneProactiveDispatch=true`，不要混入公平主比較。`*_EXTENDED` 是容量放寬實驗版，也不放進預設主比較清單。
 
@@ -351,12 +348,12 @@ C:\Users\931108boy\Desktop\WSN\experiment-last-settings.xml
 | `ProactivePredictionHorizonSeconds` | proactive 預測 horizon；0 表示使用 `TreqSeconds + EstimateBprTjobSeconds(NmaxTask)` | 0 |
 | `ProactiveCandidateMaxEnergyRatio` | proactive candidate 最大能量比例；高於或等於此比例的幾乎滿電節點會被排除 | 0.95 |
 | `ProactiveCooldownSeconds` | 節點充電完成或剛被 proactive 選入後的 cooldown；0 表示使用 `TreqSeconds` | 0 |
-| `YuDangerWindowSeconds` | YU-inspired dangerous interval 掃描視窗；0 表示使用 `EstimateBprTjobSeconds(NmaxTask)` | 0 |
-| `YuDangerThresholdK` | YU-inspired dangerous interval 的重疊門檻；0 表示使用 `NmaxTask + 1` | 0 |
+| `YuDangerWindowSeconds` | legacy/debug/experimental 欄位；正式 YU BP&R 固定使用 `CenterRequestTimeSeconds + EstimateBprTjobSeconds(NmaxTask)` 作為 window end | 0 |
+| `YuDangerThresholdK` | legacy/debug/experimental 欄位；正式 YU BP&R 固定使用 CHENG 等價條件 `overlap count > NmaxTask` | 0 |
 | `YuIntervalUncertaintySeconds` | YU-inspired request interval 半寬；0 表示使用 `BprDeadlineThresholdSeconds` | 0 |
 | `PrateChange` | 動態耗能變動機率 | 0.2 |
 | `RateChangeVariationPercent` | 動態耗能變動幅度百分比，倍率範圍為 `1 ± 此百分比` | 12.5 |
-| `SelectedAlgorithmsCsv` | 選擇演算法 | EDF,NJF,TADP_LIN,RCSS,NJF_CHENG_BPR,TADP_CHENG_BPR,EDF_CHENG_BPR,NJF_ZHENG_BPR,NJF_YU_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_YU_BPR_LIMITED,FUZZY |
+| `SelectedAlgorithmsCsv` | 選擇演算法 | EDF,NJF,TADP_LIN,NJF_CHENG_BPR,TADP_CHENG_BPR,EDF_CHENG_BPR,NJF_YU_BPR,NJF_ROUTE_CHENG_BPR_LIMITED,NJF_ROUTE_CHENG_BPR_EXTENDED,NJF_ROUTE_YU_BPR_LIMITED,NJF_ROUTE_YU_BPR_EXTENDED |
 | `OutputDirectory` | Excel 輸出資料夾 | `C:\Users\931108boy\Desktop\WSN\outputs` |
 
 ---
@@ -434,9 +431,7 @@ CLI 執行會輸出類似：
 執行 EDF run 1/1
 執行 NJF run 1/1
 執行 TADP_LIN run 1/1
-執行 RCSS run 1/1
-執行 NJF_ZHENG_BPR run 1/1
-執行 FUZZY run 1/1
+執行 NJF_CHENG_BPR run 1/1
 Excel 已輸出：C:\Users\931108boy\Desktop\WSN\outputs\...
 WORKBOOK=C:\Users\931108boy\Desktop\WSN\outputs\...
 ```

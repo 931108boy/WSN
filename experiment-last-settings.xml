@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <ExperimentSettings xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <ProjectRoot>C:\Users\寬\Desktop\WSN-main (2)\WSN-main</ProjectRoot>
+  <ProjectRoot>C:\Users\931108boy\Desktop\WSN</ProjectRoot>
   <BaseSeed>45</BaseSeed>
   <RunCount>5</RunCount>
   <SensorCount>2000</SensorCount>
@@ -31,14 +31,14 @@
   <YuIntervalUncertaintySeconds>0</YuIntervalUncertaintySeconds>
   <PrateChange>0</PrateChange>
   <RateChangeVariationPercent>12.5</RateChangeVariationPercent>
-  <SelectedAlgorithmsCsv>EDF,NJF,TADP_LIN,NJF_CHENG_BPR,TADP_CHENG_BPR,EDF_CHENG_BPR,NJF_ZHENG_BPR,NJF_YU_BPR,NJF_ROUTE_ZHENG_BPR_LIMITED,NJF_ROUTE_ZHENG_BPR_EXTENDED,NJF_ROUTE_YU_BPR_LIMITED,NJF_ROUTE_YU_BPR_EXTENDED</SelectedAlgorithmsCsv>
-  <OutputDirectory>C:\Users\寬\Desktop\WSN-main (2)\WSN-main\outputs</OutputDirectory>
-  <LastOutputWorkbookPath />
-  <WriteTaskDetailCsv>true</WriteTaskDetailCsv>
-  <WriteMissionDetailsCsv>true</WriteMissionDetailsCsv>
-  <WriteTaskRecordsCsv>true</WriteTaskRecordsCsv>
-  <WriteBprDebugCsv>true</WriteBprDebugCsv>
-  <WriteYuBprDebugCsv>true</WriteYuBprDebugCsv>
+  <SelectedAlgorithmsCsv>EDF,NJF,TADP_LIN,NJF_CHENG_BPR,TADP_CHENG_BPR,EDF_CHENG_BPR,NJF_YU_BPR,NJF_ROUTE_CHENG_BPR_LIMITED,NJF_ROUTE_CHENG_BPR_EXTENDED,NJF_ROUTE_YU_BPR_LIMITED,NJF_ROUTE_YU_BPR_EXTENDED</SelectedAlgorithmsCsv>
+  <OutputDirectory>C:\Users\931108boy\Desktop\WSN\outputs</OutputDirectory>
+  <LastOutputWorkbookPath>C:\Users\931108boy\Desktop\WSN\outputs\20260527-112149-sweep9-EventRatePerSecond-start0.002-step0.002-seed45-runs5\comparison-seed45-runs5.xlsx</LastOutputWorkbookPath>
+  <WriteTaskDetailCsv>false</WriteTaskDetailCsv>
+  <WriteMissionDetailsCsv>false</WriteMissionDetailsCsv>
+  <WriteTaskRecordsCsv>false</WriteTaskRecordsCsv>
+  <WriteBprDebugCsv>false</WriteBprDebugCsv>
+  <WriteYuBprDebugCsv>false</WriteYuBprDebugCsv>
   <UseFastSimulationScheduling>true</UseFastSimulationScheduling>
   <MaxParallelJobs>0</MaxParallelJobs>
   <SweepEnabled>true</SweepEnabled>
