@@ -34,6 +34,7 @@ namespace WindowsFormsApplication1
         TextBox expWcvCapacityBox;
         TextBox expWcvMoveCostBox;
         TextBox expNmaxTaskBox;
+        TextBox expYuIntervalUncertaintyBox;
         TextBox expOutputDirectoryBox;
         ComboBox expThresholdModeBox;
         ToolTip thresholdModeToolTip;
@@ -153,6 +154,7 @@ namespace WindowsFormsApplication1
             expWcvCapacityBox = add_labeled_textbox(wcvGroup, "WCV 容量(J)", "WCV 可用能量", 18, 98, "");
             expWcvMoveCostBox = add_labeled_textbox(wcvGroup, "移動耗能(J/m)", "WCV 每公尺消耗能量", 18, 132, "");
             expNmaxTaskBox = add_labeled_textbox(wcvGroup, "任務上限", "每趟最多服務節點數", 18, 166, "NmaxTask");
+            expYuIntervalUncertaintyBox = add_labeled_textbox(wcvGroup, "YU半寬(s)", "0=保守預設", 18, 200, "");
             expMapSizeBox.TextChanged += auto_treq_parameter_changed;
             expInitialEnergyBox.TextChanged += auto_treq_parameter_changed;
             expBackgroundLifetimeBox.TextChanged += auto_treq_parameter_changed;
@@ -360,6 +362,7 @@ namespace WindowsFormsApplication1
             expWcvCapacityBox.Text = experimentSettings.WcvCapacityJ.ToString(System.Globalization.CultureInfo.InvariantCulture);
             expWcvMoveCostBox.Text = experimentSettings.WcvMoveCostJPerMeter.ToString(System.Globalization.CultureInfo.InvariantCulture);
             expNmaxTaskBox.Text = experimentSettings.NmaxTask.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            expYuIntervalUncertaintyBox.Text = experimentSettings.YuIntervalUncertaintySeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
             expOutputDirectoryBox.Text = experimentSettings.OutputDirectory;
             if (expWriteMissionDetailsBox != null)
                 expWriteMissionDetailsBox.Checked = experimentSettings.WriteMissionDetailsCsv;
@@ -417,6 +420,7 @@ namespace WindowsFormsApplication1
             experimentSettings.WcvCapacityJ = parse_double(expWcvCapacityBox, experimentSettings.WcvCapacityJ);
             experimentSettings.WcvMoveCostJPerMeter = parse_double(expWcvMoveCostBox, experimentSettings.WcvMoveCostJPerMeter);
             experimentSettings.NmaxTask = parse_int(expNmaxTaskBox, experimentSettings.NmaxTask);
+            experimentSettings.YuIntervalUncertaintySeconds = parse_double(expYuIntervalUncertaintyBox, experimentSettings.YuIntervalUncertaintySeconds);
             experimentSettings.OutputDirectory = expOutputDirectoryBox.Text.Trim();
             if (expWriteMissionDetailsBox != null)
                 experimentSettings.WriteMissionDetailsCsv = expWriteMissionDetailsBox.Checked;
@@ -785,6 +789,37 @@ namespace WindowsFormsApplication1
             }
         }
 
+        string format_experiment_error(Exception error)
+        {
+            if (error == null)
+                return "";
+
+            AggregateException aggregate = error as AggregateException;
+            if (aggregate != null)
+            {
+                aggregate = aggregate.Flatten();
+                List<string> messages = new List<string>();
+                for (int i = 0; i < aggregate.InnerExceptions.Count; i++)
+                {
+                    string message = format_experiment_error(aggregate.InnerExceptions[i]);
+                    if (!String.IsNullOrWhiteSpace(message) && !messages.Contains(message))
+                        messages.Add(message);
+                }
+                if (messages.Count > 0)
+                    return String.Join(Environment.NewLine, messages.ToArray());
+            }
+
+            List<string> chain = new List<string>();
+            Exception current = error;
+            while (current != null)
+            {
+                if (!String.IsNullOrWhiteSpace(current.Message) && !chain.Contains(current.Message))
+                    chain.Add(current.Message);
+                current = current.InnerException;
+            }
+            return chain.Count == 0 ? error.ToString() : String.Join(Environment.NewLine, chain.ToArray());
+        }
+
         void begin_experiment_completed(string workbookPath, Exception error)
         {
             if (IsDisposed)
@@ -801,10 +836,11 @@ namespace WindowsFormsApplication1
                         expFastSchedulingBox.Enabled = true;
                     if (error != null)
                     {
+                        string errorMessage = format_experiment_error(error);
                         if (expProgressLabel != null)
                             expProgressLabel.Text = "進度：執行失敗";
-                        log_experiment_message("執行失敗：" + error.Message);
-                        MessageBox.Show(this, error.Message, "WSN 實驗失敗", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        log_experiment_message("執行失敗：" + errorMessage);
+                        MessageBox.Show(this, errorMessage, "WSN 實驗失敗", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
                     else
                     {

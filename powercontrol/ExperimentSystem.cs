@@ -7612,6 +7612,28 @@ namespace WindowsFormsApplication1
             AssertNear(predictedIntervals[0].IntervalEndSeconds, 74.5, 1e-9,
                 "YU prediction interval end should apply configured uncertainty around the center.");
 
+            ExperimentSettings defaultUncertaintySettings = CreateBprSelfTestSettings(tempDirectory);
+            defaultUncertaintySettings.SimulationTimeSeconds = 120.0;
+            defaultUncertaintySettings.ProactiveCandidateMaxEnergyRatio = 1.0;
+            defaultUncertaintySettings.YuIntervalUncertaintySeconds = 0.0;
+            defaultUncertaintySettings.Normalize();
+            ExperimentSimulation defaultUncertaintySimulation = new ExperimentSimulation(
+                defaultUncertaintySettings,
+                CreateBprSelfTestArtifact(new double[] { 99.0 }),
+                "NJF_YU_BPR",
+                null);
+            simulations.Add(defaultUncertaintySimulation);
+            List<YuPredictedInterval> defaultUncertaintyIntervals = defaultUncertaintySimulation.BuildYuPredictedIntervals(1, new HashSet<int>());
+            double thresholdUncertainty = defaultUncertaintySimulation.GetBprDeadlineThresholdSeconds();
+            double tjobUncertainty = defaultUncertaintySimulation.EstimateBprTjobSeconds(1) * 0.25;
+            double expectedDefaultUncertainty = Math.Max(thresholdUncertainty, tjobUncertainty);
+            AssertSelfTest(tjobUncertainty > thresholdUncertainty,
+                "YU default uncertainty self-test setup should exercise the conservative Tjob quarter fallback.");
+            AssertSelfTest(defaultUncertaintyIntervals.Count == 1,
+                "YU default uncertainty self-test should produce one predicted interval.");
+            AssertNear(defaultUncertaintyIntervals[0].UncertaintySeconds, expectedDefaultUncertainty, 1e-9,
+                "YuIntervalUncertaintySeconds <= 0 should use max(BprDeadlineThresholdSeconds, EstimateBprTjobSeconds(maxTask) * 0.25).");
+
             ExperimentSimulation chengSideEffectSimulation = new ExperimentSimulation(
                 predictionSettings,
                 predictionArtifact,
@@ -8809,9 +8831,7 @@ namespace WindowsFormsApplication1
             rows.Add(Row("ProactivePredictionHorizonSeconds", s.ProactivePredictionHorizonSeconds, "0 = ChengTreq/TreqSeconds time base + EstimateBprTjobSeconds(NmaxTask)"));
             rows.Add(Row("ProactiveCandidateMaxEnergyRatio", s.ProactiveCandidateMaxEnergyRatio, "nodes at or above this capacity ratio are excluded from proactive candidates"));
             rows.Add(Row("ProactiveCooldownSeconds", s.ProactiveCooldownSeconds, "0 = ChengTreq/TreqSeconds time base after charged or proactive-selected"));
-            rows.Add(Row("YU danger window(s)", s.YuDangerWindowSeconds, "legacy/debug only; formal YU uses EstimateBprTjobSeconds(NmaxTask)"));
-            rows.Add(Row("YU danger threshold K", s.YuDangerThresholdK, "legacy/debug only; formal YU uses overlap count > NmaxTask"));
-            rows.Add(Row("YU interval uncertainty(s)", s.YuIntervalUncertaintySeconds, "0 = use BprDeadlineThresholdSeconds"));
+            rows.Add(Row("YU interval uncertainty(s)", s.YuIntervalUncertaintySeconds, "0 = max(BprDeadlineThresholdSeconds, EstimateBprTjobSeconds(NmaxTask) * 0.25)"));
             rows.Add(Row("剩餘能量門檻(%)", s.RequestThresholdPercent, ""));
             rows.Add(Row("Prate_change（耗能率變動機率）", s.PrateChange, "單次測試固定一個值，不跑預設列表"));
             rows.Add(Row("耗能變動幅度(%)", s.RateChangeVariationPercent, "變動時倍率範圍 = 1 ± 此百分比"));
@@ -9592,296 +9612,4 @@ namespace WindowsFormsApplication1
         }
     }
 
-    public class ExperimentSettingsDialog : Form
-    {
-        private readonly Dictionary<string, TextBox> boxes;
-        private readonly CheckedListBox algorithmList;
-        private ExperimentSettings settings;
-
-        public ExperimentSettingsDialog(ExperimentSettings currentSettings)
-        {
-            settings = currentSettings;
-            settings.Normalize();
-            boxes = new Dictionary<string, TextBox>();
-            algorithmList = new CheckedListBox();
-            InitializeDialog();
-            LoadSettingsToControls();
-        }
-
-        public ExperimentSettings Settings
-        {
-            get { return settings; }
-        }
-
-        private void InitializeDialog()
-        {
-            Text = "WSN 實驗設定";
-            Width = 640;
-            Height = 790;
-            StartPosition = FormStartPosition.CenterParent;
-
-            Panel panel = new Panel();
-            panel.Dock = DockStyle.Fill;
-            panel.AutoScroll = true;
-            Controls.Add(panel);
-
-            int y = 14;
-            AddTextBox(panel, "BaseSeed", "基礎亂數種子", y); y += 30;
-            AddTextBox(panel, "RunCount", "Run 次數", y); y += 30;
-            AddTextBox(panel, "SensorCount", "感測器數量", y); y += 30;
-            AddTextBox(panel, "MapWidthMeters", "地圖邊長(m)", y); y += 30;
-            AddTextBox(panel, "SimulationTimeSeconds", "模擬時間(s)", y); y += 30;
-            AddTextBox(panel, "MaxParallelJobs", "最大平行工作數", y); y += 30;
-            AddTextBox(panel, "InitialEnergyJ", "初始能量(J)", y); y += 30;
-            AddTextBox(panel, "SensorBackgroundLifetimeSeconds", "背景壽命(s)", y); y += 30;
-            AddTextBox(panel, "InitialResidualJitterPercent", "初始能量擾動(%)", y); y += 30;
-            AddTextBox(panel, "EventRatePerSecond", "需求頻率 p(次/s)", y); y += 30;
-            AddTextBox(panel, "CriticalDensityRadiusMeters", "Critical density radius(m)", y); y += 30;
-            AddTextBox(panel, "WcvSpeedMetersPerSecond", "WCV 速度(m/s)", y); y += 30;
-            AddTextBox(panel, "WcvChargeRateJPerSecond", "WCV 充電速率(J/s)", y); y += 30;
-            AddTextBox(panel, "WcvCapacityJ", "WCV 容量(J)", y); y += 30;
-            AddTextBox(panel, "WcvMoveCostJPerMeter", "WCV 移動耗能(J/m)", y); y += 30;
-            AddTextBox(panel, "NmaxTask", "每趟任務上限", y); y += 30;
-            AddTextBox(panel, "ThresholdMode", "門檻模式", y); y += 30;
-            AddTextBox(panel, "RequestThresholdPercent", "剩餘能量門檻(%)", y); y += 30;
-            AddTextBox(panel, "TreqSeconds", "Treq 秒數", y); y += 30;
-            AddTextBox(panel, "BprDeadlineThresholdSeconds", "BP&R deadline threshold(s)", y); y += 30;
-            AddTextBox(panel, "AllowStandaloneProactiveDispatch", "Allow standalone proactive", y); y += 30;
-            AddTextBox(panel, "ProactivePredictionHorizonSeconds", "Proactive horizon(s)", y); y += 30;
-            AddTextBox(panel, "ProactiveCandidateMaxEnergyRatio", "Proactive max energy ratio", y); y += 30;
-            AddTextBox(panel, "ProactiveCooldownSeconds", "Proactive cooldown(s)", y); y += 30;
-            AddTextBox(panel, "YuDangerWindowSeconds", "YU danger window(s, legacy)", y); y += 30;
-            AddTextBox(panel, "YuDangerThresholdK", "YU danger threshold K (legacy)", y); y += 30;
-            AddTextBox(panel, "YuIntervalUncertaintySeconds", "YU interval uncertainty(s)", y); y += 30;
-            AddTextBox(panel, "PrateChange", "Prate_change", y); y += 30;
-            AddTextBox(panel, "RateChangeVariationPercent", "耗能變動幅度(%)", y); y += 30;
-            AddTextBox(panel, "OutputDirectory", "輸出資料夾", y); y += 35;
-
-            Label algorithmLabel = new Label();
-            algorithmLabel.Text = "演算法";
-            algorithmLabel.Location = new System.Drawing.Point(20, y);
-            algorithmLabel.AutoSize = true;
-            panel.Controls.Add(algorithmLabel);
-
-            algorithmList.Location = new System.Drawing.Point(160, y);
-            algorithmList.Size = new System.Drawing.Size(420, 130);
-            algorithmList.CheckOnClick = true;
-            panel.Controls.Add(algorithmList);
-            y += 140;
-
-            Button saveButton = new Button();
-            saveButton.Text = "儲存";
-            saveButton.Location = new System.Drawing.Point(160, y);
-            saveButton.Click += delegate
-            {
-                ApplyControlsToSettings();
-                settings.SaveLast();
-                MessageBox.Show(this, "設定已儲存。", "WSN 實驗設定", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            };
-            panel.Controls.Add(saveButton);
-
-            Button okButton = new Button();
-            okButton.Text = "確定";
-            okButton.Location = new System.Drawing.Point(250, y);
-            okButton.Click += delegate
-            {
-                ApplyControlsToSettings();
-                DialogResult = DialogResult.OK;
-                Close();
-            };
-            panel.Controls.Add(okButton);
-
-            Button cancelButton = new Button();
-            cancelButton.Text = "取消";
-            cancelButton.Location = new System.Drawing.Point(340, y);
-            cancelButton.Click += delegate
-            {
-                DialogResult = DialogResult.Cancel;
-                Close();
-            };
-            panel.Controls.Add(cancelButton);
-        }
-
-        private void AddTextBox(Panel panel, string key, string label, int y)
-        {
-            Label l = new Label();
-            l.Text = label;
-            l.Location = new System.Drawing.Point(20, y + 4);
-            l.AutoSize = true;
-            panel.Controls.Add(l);
-
-            TextBox box = new TextBox();
-            box.Location = new System.Drawing.Point(160, y);
-            box.Size = new System.Drawing.Size(420, 22);
-            panel.Controls.Add(box);
-            boxes[key] = box;
-        }
-
-        private void LoadSettingsToControls()
-        {
-            boxes["BaseSeed"].Text = settings.BaseSeed.ToString(CultureInfo.InvariantCulture);
-            boxes["RunCount"].Text = settings.RunCount.ToString(CultureInfo.InvariantCulture);
-            boxes["SensorCount"].Text = settings.SensorCount.ToString(CultureInfo.InvariantCulture);
-            boxes["MapWidthMeters"].Text = settings.MapWidthMeters.ToString(CultureInfo.InvariantCulture);
-            boxes["SimulationTimeSeconds"].Text = settings.SimulationTimeSeconds.ToString(CultureInfo.InvariantCulture);
-            boxes["MaxParallelJobs"].Text = settings.MaxParallelJobs.ToString(CultureInfo.InvariantCulture);
-            boxes["InitialEnergyJ"].Text = settings.InitialEnergyJ.ToString(CultureInfo.InvariantCulture);
-            boxes["SensorBackgroundLifetimeSeconds"].Text = settings.SensorBackgroundLifetimeSeconds.ToString(CultureInfo.InvariantCulture);
-            boxes["InitialResidualJitterPercent"].Text = settings.InitialResidualJitterPercent.ToString(CultureInfo.InvariantCulture);
-            boxes["EventRatePerSecond"].Text = settings.EventRatePerSecond.ToString(CultureInfo.InvariantCulture);
-            boxes["CriticalDensityRadiusMeters"].Text = settings.CriticalDensityRadiusMeters.ToString(CultureInfo.InvariantCulture);
-            boxes["WcvSpeedMetersPerSecond"].Text = settings.WcvSpeedMetersPerSecond.ToString(CultureInfo.InvariantCulture);
-            boxes["WcvChargeRateJPerSecond"].Text = settings.WcvChargeRateJPerSecond.ToString(CultureInfo.InvariantCulture);
-            boxes["WcvCapacityJ"].Text = settings.WcvCapacityJ.ToString(CultureInfo.InvariantCulture);
-            boxes["WcvMoveCostJPerMeter"].Text = settings.WcvMoveCostJPerMeter.ToString(CultureInfo.InvariantCulture);
-            boxes["NmaxTask"].Text = settings.NmaxTask.ToString(CultureInfo.InvariantCulture);
-            boxes["ThresholdMode"].Text = settings.ThresholdMode == "TreqSeconds" ? "Treq 秒數門檻" : "百分比門檻";
-            if (settings.ThresholdMode == "ChengTreq")
-                boxes["ThresholdMode"].Text = "ChengTreq";
-            else if (settings.ThresholdMode == "TreqSeconds")
-                boxes["ThresholdMode"].Text = "TreqSeconds";
-            else
-                boxes["ThresholdMode"].Text = "Percent";
-            boxes["RequestThresholdPercent"].Text = settings.RequestThresholdPercent.ToString(CultureInfo.InvariantCulture);
-            boxes["TreqSeconds"].Text = settings.TreqSeconds.ToString(CultureInfo.InvariantCulture);
-            boxes["BprDeadlineThresholdSeconds"].Text = settings.BprDeadlineThresholdSeconds.ToString(CultureInfo.InvariantCulture);
-            boxes["AllowStandaloneProactiveDispatch"].Text = settings.AllowStandaloneProactiveDispatch.ToString(CultureInfo.InvariantCulture);
-            boxes["ProactivePredictionHorizonSeconds"].Text = settings.ProactivePredictionHorizonSeconds.ToString(CultureInfo.InvariantCulture);
-            boxes["ProactiveCandidateMaxEnergyRatio"].Text = settings.ProactiveCandidateMaxEnergyRatio.ToString(CultureInfo.InvariantCulture);
-            boxes["ProactiveCooldownSeconds"].Text = settings.ProactiveCooldownSeconds.ToString(CultureInfo.InvariantCulture);
-            boxes["YuDangerWindowSeconds"].Text = settings.YuDangerWindowSeconds.ToString(CultureInfo.InvariantCulture);
-            boxes["YuDangerThresholdK"].Text = settings.YuDangerThresholdK.ToString(CultureInfo.InvariantCulture);
-            boxes["YuIntervalUncertaintySeconds"].Text = settings.YuIntervalUncertaintySeconds.ToString(CultureInfo.InvariantCulture);
-            boxes["PrateChange"].Text = settings.PrateChange.ToString(CultureInfo.InvariantCulture);
-            boxes["RateChangeVariationPercent"].Text = settings.RateChangeVariationPercent.ToString(CultureInfo.InvariantCulture);
-            boxes["OutputDirectory"].Text = settings.OutputDirectory;
-
-            algorithmList.Items.Clear();
-            List<string> selected = settings.GetSelectedAlgorithms();
-            string[] all = ExperimentSettings.AllAlgorithms();
-            for (int i = 0; i < all.Length; i++)
-                algorithmList.Items.Add(AlgorithmDisplayName(all[i]), selected.Contains(all[i]));
-        }
-
-        private void ApplyControlsToSettings()
-        {
-            settings.BaseSeed = ParseInt("BaseSeed", settings.BaseSeed);
-            settings.RunCount = ParseInt("RunCount", settings.RunCount);
-            settings.SensorCount = ParseInt("SensorCount", settings.SensorCount);
-            double mapSizeMeters = ParseDouble("MapWidthMeters", settings.MapWidthMeters);
-            settings.MapWidthMeters = mapSizeMeters;
-            settings.MapHeightMeters = mapSizeMeters;
-            settings.SimulationTimeSeconds = ParseDouble("SimulationTimeSeconds", settings.SimulationTimeSeconds);
-            settings.MaxParallelJobs = ParseInt("MaxParallelJobs", settings.MaxParallelJobs);
-            settings.InitialEnergyJ = ParseDouble("InitialEnergyJ", settings.InitialEnergyJ);
-            settings.SensorBackgroundLifetimeSeconds = ParseDouble("SensorBackgroundLifetimeSeconds", settings.SensorBackgroundLifetimeSeconds);
-            settings.InitialResidualJitterPercent = ParseDouble("InitialResidualJitterPercent", settings.InitialResidualJitterPercent);
-            settings.EventRatePerSecond = ParseDouble("EventRatePerSecond", settings.EventRatePerSecond);
-            settings.CriticalDensityRadiusMeters = ParseDouble("CriticalDensityRadiusMeters", settings.CriticalDensityRadiusMeters);
-            settings.WcvSpeedMetersPerSecond = ParseDouble("WcvSpeedMetersPerSecond", settings.WcvSpeedMetersPerSecond);
-            settings.WcvChargeRateJPerSecond = ParseDouble("WcvChargeRateJPerSecond", settings.WcvChargeRateJPerSecond);
-            settings.WcvCapacityJ = ParseDouble("WcvCapacityJ", settings.WcvCapacityJ);
-            settings.WcvMoveCostJPerMeter = ParseDouble("WcvMoveCostJPerMeter", settings.WcvMoveCostJPerMeter);
-            settings.NmaxTask = ParseInt("NmaxTask", settings.NmaxTask);
-            settings.ThresholdMode = ParseThresholdMode(boxes["ThresholdMode"].Text.Trim(), settings.ThresholdMode);
-            settings.RequestThresholdPercent = ParseDouble("RequestThresholdPercent", settings.RequestThresholdPercent);
-            settings.TreqSeconds = ParseDouble("TreqSeconds", settings.TreqSeconds);
-            settings.BprDeadlineThresholdSeconds = ParseDouble("BprDeadlineThresholdSeconds", settings.BprDeadlineThresholdSeconds);
-            settings.AllowStandaloneProactiveDispatch = ParseBool("AllowStandaloneProactiveDispatch", settings.AllowStandaloneProactiveDispatch);
-            settings.ProactivePredictionHorizonSeconds = ParseDouble("ProactivePredictionHorizonSeconds", settings.ProactivePredictionHorizonSeconds);
-            settings.ProactiveCandidateMaxEnergyRatio = ParseDouble("ProactiveCandidateMaxEnergyRatio", settings.ProactiveCandidateMaxEnergyRatio);
-            settings.ProactiveCooldownSeconds = ParseDouble("ProactiveCooldownSeconds", settings.ProactiveCooldownSeconds);
-            settings.YuDangerWindowSeconds = ParseDouble("YuDangerWindowSeconds", settings.YuDangerWindowSeconds);
-            settings.YuDangerThresholdK = ParseInt("YuDangerThresholdK", settings.YuDangerThresholdK);
-            settings.YuIntervalUncertaintySeconds = ParseDouble("YuIntervalUncertaintySeconds", settings.YuIntervalUncertaintySeconds);
-            settings.PrateChange = ParseDouble("PrateChange", settings.PrateChange);
-            settings.RateChangeVariationPercent = ParseDouble("RateChangeVariationPercent", settings.RateChangeVariationPercent);
-            settings.OutputDirectory = boxes["OutputDirectory"].Text.Trim();
-
-            List<string> algorithms = new List<string>();
-            for (int i = 0; i < algorithmList.CheckedItems.Count; i++)
-                algorithms.Add(AlgorithmKeyFromDisplay(Convert.ToString(algorithmList.CheckedItems[i], CultureInfo.InvariantCulture)));
-            settings.SetSelectedAlgorithms(algorithms);
-            settings.Normalize();
-        }
-
-        private string ParseThresholdMode(string value, string fallback)
-        {
-            if (String.IsNullOrWhiteSpace(value))
-                return fallback;
-            if (value.IndexOf("Cheng", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                value.IndexOf("Auto", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                value.IndexOf("自動", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                return "ChengTreq";
-            }
-            if (value.IndexOf("Treq", StringComparison.OrdinalIgnoreCase) >= 0 || value.Contains("秒"))
-                return "TreqSeconds";
-            if (value.IndexOf("Percent", StringComparison.OrdinalIgnoreCase) >= 0 || value.Contains("百分") || value.Contains("%"))
-                return "Percent";
-            return fallback;
-        }
-
-        private string AlgorithmDisplayName(string key)
-        {
-            if (key == "EDF") return "EDF（最早期限優先）";
-            if (key == "NJF") return "NJF（no prediction baseline）";
-            if (key == "TADP_LIN") return "TADP/LIN（時間與距離優先）";
-            if (key == "NJF_CHENG_BPR") return "NJF_CHENG_BPR (CHENG paper BP&R, seeded random)";
-            if (key == "TADP_CHENG_BPR") return "TADP_CHENG_BPR (CHENG paper BP&R, seeded random)";
-            if (key == "EDF_CHENG_BPR") return "EDF_CHENG_BPR (CHENG paper BP&R, seeded random)";
-            if (key == "NJF_YU_BPR") return "NJF_YU_BPR (YU interval BP&R, seeded random)";
-            if (key == "NJF_ROUTE_CHENG_BPR_LIMITED") return "NJF_ROUTE_CHENG_BPR_LIMITED (CHENG interval BP&R, route insertion cost, <=NmaxTask)";
-            if (key == "NJF_ROUTE_CHENG_BPR_EXTENDED") return "NJF_ROUTE_CHENG_BPR_EXTENDED (CHENG interval BP&R, route insertion cost, may exceed NmaxTask)";
-            if (key == "NJF_ROUTE_YU_BPR_LIMITED") return "NJF_ROUTE_YU_BPR_LIMITED (YU interval BP&R, route insertion cost, <=NmaxTask)";
-            if (key == "NJF_ROUTE_YU_BPR_EXTENDED") return "NJF_ROUTE_YU_BPR_EXTENDED (YU interval BP&R, route insertion cost, may exceed NmaxTask)";
-            return key;
-        }
-
-        private string AlgorithmKeyFromDisplay(string display)
-        {
-            if (String.IsNullOrWhiteSpace(display))
-                return "";
-            int index = display.IndexOf('（');
-            if (index < 0)
-                index = display.IndexOf('(');
-            string key = index > 0 ? display.Substring(0, index) : display;
-            return ExperimentSettings.CanonicalAlgorithmKey(key.Replace("TADP/LIN", "TADP_LIN").Replace("NJF+BP&R", "NJF_BPR").Trim());
-        }
-
-        private int ParseInt(string key, int fallback)
-        {
-            int value;
-            if (Int32.TryParse(boxes[key].Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
-                return value;
-            return fallback;
-        }
-
-        private double ParseDouble(string key, double fallback)
-        {
-            double value;
-            if (Double.TryParse(boxes[key].Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out value))
-                return value;
-            if (Double.TryParse(boxes[key].Text.Trim(), out value))
-                return value;
-            return fallback;
-        }
-
-        private bool ParseBool(string key, bool fallback)
-        {
-            string value = boxes[key].Text.Trim();
-            bool parsed;
-            if (Boolean.TryParse(value, out parsed))
-                return parsed;
-            if (String.Equals(value, "1", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(value, "yes", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(value, "y", StringComparison.OrdinalIgnoreCase))
-                return true;
-            if (String.Equals(value, "0", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(value, "no", StringComparison.OrdinalIgnoreCase) ||
-                String.Equals(value, "n", StringComparison.OrdinalIgnoreCase))
-                return false;
-            return fallback;
-        }
-    }
 }

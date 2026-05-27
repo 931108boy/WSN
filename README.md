@@ -54,7 +54,7 @@ C:\Users\931108boy\Desktop\WSN
 └─ powercontrol\
    ├─ powercontrol.csproj            # .NET Framework 4.8 WinForms 專案
    ├─ Program.cs                     # 程式入口，支援 GUI 與 CLI
-   ├─ Form1.cs                       # 原 MyWSN UI + 新實驗系統 UI hook
+   ├─ Form1.cs                       # Run-WSN-Experiment.bat 啟動的新實驗系統 GUI
    ├─ ExperimentSystem.cs            # 新增實驗系統核心
    ├─ common.cs                      # MyWSN 全域參數與既有模型
    ├─ nodemap.cs                     # MyWSN 節點、排程與 routing 相關邏輯
@@ -348,9 +348,7 @@ C:\Users\931108boy\Desktop\WSN\experiment-last-settings.xml
 | `ProactivePredictionHorizonSeconds` | proactive 預測 horizon；0 表示使用 `TreqSeconds + EstimateBprTjobSeconds(NmaxTask)` | 0 |
 | `ProactiveCandidateMaxEnergyRatio` | proactive candidate 最大能量比例；高於或等於此比例的幾乎滿電節點會被排除 | 0.95 |
 | `ProactiveCooldownSeconds` | 節點充電完成或剛被 proactive 選入後的 cooldown；0 表示使用 `TreqSeconds` | 0 |
-| `YuDangerWindowSeconds` | legacy/debug/experimental 欄位；正式 YU BP&R 固定使用 `CenterRequestTimeSeconds + EstimateBprTjobSeconds(NmaxTask)` 作為 window end | 0 |
-| `YuDangerThresholdK` | legacy/debug/experimental 欄位；正式 YU BP&R 固定使用 CHENG 等價條件 `overlap count > NmaxTask` | 0 |
-| `YuIntervalUncertaintySeconds` | YU-inspired request interval 半寬；0 表示使用 `BprDeadlineThresholdSeconds` | 0 |
+| `YuIntervalUncertaintySeconds` | YU-inspired request interval 半寬；0 表示使用 `max(BprDeadlineThresholdSeconds, EstimateBprTjobSeconds(NmaxTask) * 0.25)` | 0 |
 | `PrateChange` | 動態耗能變動機率 | 0.2 |
 | `RateChangeVariationPercent` | 動態耗能變動幅度百分比，倍率範圍為 `1 ± 此百分比` | 12.5 |
 | `SelectedAlgorithmsCsv` | 選擇演算法 | EDF,NJF,TADP_LIN,NJF_CHENG_BPR,TADP_CHENG_BPR,EDF_CHENG_BPR,NJF_YU_BPR,NJF_ROUTE_CHENG_BPR_LIMITED,NJF_ROUTE_CHENG_BPR_EXTENDED,NJF_ROUTE_YU_BPR_LIMITED,NJF_ROUTE_YU_BPR_EXTENDED |
@@ -593,7 +591,7 @@ dotnet build C:\Users\931108boy\Desktop\WSN\powercontrol.sln
 
 - 右下「新實驗系統」面板是否完整顯示。
 - seed / run / nodes / Prate / algorithms 是否和設定檔一致。
-- 設定視窗上下捲動是否正常。
+- 主視窗欄位排版是否正常，包含 `YU半寬(s)`。
 - 演算法 checkbox 是否正確勾選。
 - 按「批次比較」後是否跳出完成訊息。
 - Excel 是否可正常開啟。
@@ -730,7 +728,6 @@ Excel 可能會鎖住正在開啟的 `.xlsx`。若要用工具直接讀 zip / Op
 - `ExperimentSimulation`
 - `ExperimentWorkbookWriter`
 - `SimpleXlsxWriter`
-- `ExperimentSettingsDialog`
 
 ### `Program.cs`
 
@@ -745,13 +742,7 @@ GUI mode
 
 ### `Form1.cs`
 
-在舊 MyWSN UI 右下新增：
-
-- 設定
-- 儲存
-- 批次比較
-- 狀態顯示
-
+`Run-WSN-Experiment.bat` 啟動的新實驗系統主視窗，負責設定、儲存、批次比較與開啟輸出。
 ---
 
 ## 一句話總結
