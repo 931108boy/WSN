@@ -4273,6 +4273,11 @@ namespace WindowsFormsApplication1
             }
         }
 
+        private Random CreateBprSelectionRandom()
+        {
+            return CreateChengBprPaperRandom();
+        }
+
         private List<BprPredictedRequest> SelectChengBprPaperRandomNodes(
             List<BprPredictedRequest> bottleList,
             int addCount,
@@ -4828,6 +4833,9 @@ namespace WindowsFormsApplication1
 
             YuBprDiagnostics baseDiagnostics = new YuBprDiagnostics();
             List<YuPredictedInterval> intervals = BuildYuPredictedIntervals(maxTask, reservedNodeIds, baseDiagnostics);
+            Random bprSelectionRandom = selectionMode == YuProactiveSelectionMode.Random
+                ? CreateBprSelectionRandom()
+                : null;
             int iteration = 0;
             int safety = 0;
             while (safety < sensors.Length * 2 + 4)
@@ -4857,7 +4865,8 @@ namespace WindowsFormsApplication1
                     worstWindow,
                     addCount,
                     cplist,
-                    selectionMode);
+                    selectionMode,
+                    bprSelectionRandom);
                 if (decisions.Count == 0)
                 {
                     WriteYuBprDebug(iteration, worstWindow, null, "NO_SELECTABLE_NODE", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, iterationDiagnostics);
@@ -4934,6 +4943,21 @@ namespace WindowsFormsApplication1
             List<ChargingRequest> cplist,
             YuProactiveSelectionMode selectionMode)
         {
+            return SelectYuRemovalNodes(
+                window,
+                addCount,
+                cplist,
+                selectionMode,
+                selectionMode == YuProactiveSelectionMode.Random ? CreateBprSelectionRandom() : null);
+        }
+
+        private List<YuRemovalDecision> SelectYuRemovalNodes(
+            YuDangerWindow window,
+            int addCount,
+            List<ChargingRequest> cplist,
+            YuProactiveSelectionMode selectionMode,
+            Random random)
+        {
             List<YuRemovalDecision> selected = new List<YuRemovalDecision>();
             if (window == null || addCount <= 0)
                 return selected;
@@ -4969,7 +4993,8 @@ namespace WindowsFormsApplication1
                 }
                 else
                 {
-                    int index = algorithmRandom.Next(selectable.Count);
+                    Random effectiveRandom = random ?? CreateBprSelectionRandom();
+                    int index = effectiveRandom.Next(selectable.Count);
                     picked = selectable[index];
                     selectable.RemoveAt(index);
                     routeInsertionCost = ComputeRouteInsertionCost(picked.NodeId, currentRoute);
@@ -5045,7 +5070,9 @@ namespace WindowsFormsApplication1
             proactive.EffectiveConsumeRateJPerSecond = decision.EffectiveConsumeRateJPerSecond;
             proactive.CriticalDensity = 0.0;
             proactive.IsProactive = true;
-            proactive.ProactiveReason = YuBprDangerIntervalRemovalReason;
+            proactive.ProactiveReason = String.IsNullOrWhiteSpace(decision.Reason)
+                ? YuBprDangerIntervalRemovalReason
+                : decision.Reason;
             return proactive;
         }
 
@@ -6789,8 +6816,8 @@ namespace WindowsFormsApplication1
                     YuProactiveSelectionMode.Random);
                 AssertSelfTest(yuLimited.Count == 1,
                     "YU limited cplist must not exceed NmaxTask.");
-                AssertSelfTest(yuLimited[0].ProactiveReason == YuBprDangerIntervalRemovalReason,
-                    "YU limited proactive request should use the YU_BPR_DANGER_INTERVAL_REMOVAL reason.");
+                AssertSelfTest(yuLimited[0].ProactiveReason == "YU_RANDOM_INTERVAL_REMOVAL",
+                    "YU limited random proactive request should preserve the YU_RANDOM_INTERVAL_REMOVAL reason.");
 
                 ExperimentSimulation yuExtendedSimulation = new ExperimentSimulation(
                     yuSettings,
@@ -6805,8 +6832,8 @@ namespace WindowsFormsApplication1
                     YuProactiveSelectionMode.Random);
                 AssertSelfTest(yuExtended.Count > 1,
                     "YU extended cplist should allow capacity overflow beyond NmaxTask.");
-                AssertSelfTest(yuExtended[0].ProactiveReason == YuBprDangerIntervalRemovalReason,
-                    "YU extended proactive request should use the YU_BPR_DANGER_INTERVAL_REMOVAL reason.");
+                AssertSelfTest(yuExtended[0].ProactiveReason == "YU_RANDOM_INTERVAL_REMOVAL",
+                    "YU extended random proactive request should preserve the YU_RANDOM_INTERVAL_REMOVAL reason.");
 
                 maintenanceSimulation.sensors[2].EnergyJ = 40.0;
                 maintenanceSimulation.CreateRequestsAtCurrentTime();
@@ -7138,7 +7165,7 @@ namespace WindowsFormsApplication1
         private static string[] ExpectedTaskRecordHeader()
         {
             return new string[] { "MissionId", "TaskOrder", "NodeId", "IsProactive", "RequestTimeSeconds",
-                "DeadlineSeconds", "DispatchTimeSeconds", "ArrivalTimeSeconds", "WaitSeconds",
+                "ProactiveReason", "DeadlineSeconds", "DispatchTimeSeconds", "ArrivalTimeSeconds", "WaitSeconds",
                 "ChargeStartSeconds", "ChargeEndSeconds", "EnergyBeforeJ", "ConsumeRateJPerSecond",
                 "EffectiveConsumeRateJPerSecond", "RequestNodeConsumeRateJPerSecond",
                 "ServiceNodeConsumeRateJPerSecond", "NodeConsumeRatePredictionErrorJPerSecond",
@@ -7740,9 +7767,9 @@ namespace WindowsFormsApplication1
         private static void RunActiveRequestProactiveSelfTest(string tempDirectory, List<ExperimentSimulation> simulations)
         {
             AssertActiveRequestProactiveRoute(tempDirectory, simulations, "NJF_CHENG_BPR", ChengBprPaperRandomReason, 2);
-            AssertActiveRequestProactiveRoute(tempDirectory, simulations, "NJF_YU_BPR", YuBprDangerIntervalRemovalReason, 2);
+            AssertActiveRequestProactiveRoute(tempDirectory, simulations, "NJF_YU_BPR", "YU_RANDOM_INTERVAL_REMOVAL", 2);
             AssertActiveRequestProactiveRoute(tempDirectory, simulations, "NJF_ROUTE_CHENG_BPR_LIMITED", ChengBprRouteInsertionReason, 2);
-            AssertActiveRequestProactiveRoute(tempDirectory, simulations, "NJF_ROUTE_YU_BPR_LIMITED", YuBprDangerIntervalRemovalReason, 2);
+            AssertActiveRequestProactiveRoute(tempDirectory, simulations, "NJF_ROUTE_YU_BPR_LIMITED", "YU_ROUTE_COST_INTERVAL_REMOVAL", 2);
 
             ExperimentSettings extendedSettings = CreateBprSelfTestSettings(tempDirectory);
             extendedSettings.NmaxTask = 1;
@@ -7998,10 +8025,45 @@ namespace WindowsFormsApplication1
                 yuRouteDecisions[0].Reason == "YU_ROUTE_COST_INTERVAL_REMOVAL",
                 "ROUTE_YU_BPR should select the lowest route insertion cost candidate.");
             ChargingRequest yuProactive = windowSimulation.CreateYuProactiveRequest(yuDecisions[0]);
-            AssertSelfTest(yuProactive.ProactiveReason == YuBprDangerIntervalRemovalReason,
-                "YU BP&R proactive reason should be YU_BPR_DANGER_INTERVAL_REMOVAL.");
+            AssertSelfTest(yuProactive.ProactiveReason == "YU_RANDOM_INTERVAL_REMOVAL",
+                "NJF_YU_BPR proactive request should preserve the YU_RANDOM_INTERVAL_REMOVAL reason.");
+            ChargingRequest yuRouteProactive = windowSimulation.CreateYuProactiveRequest(yuRouteDecisions[0]);
+            AssertSelfTest(yuRouteProactive.ProactiveReason == "YU_ROUTE_COST_INTERVAL_REMOVAL",
+                "NJF_ROUTE_YU_BPR proactive request should preserve the YU_ROUTE_COST_INTERVAL_REMOVAL reason.");
             AssertNear(yuProactive.DeadlineSeconds, yuDecisions[0].LatestSafeServiceTimeSeconds, 1e-9,
                 "YU BP&R proactive deadline should use the latest safe service time.");
+
+            List<BprPredictedRequest> bprRandomPool = new List<BprPredictedRequest>();
+            List<YuPredictedInterval> yuRandomPool = new List<YuPredictedInterval>();
+            for (int nodeId = 1; nodeId <= 5; nodeId++)
+            {
+                bprRandomPool.Add(CreateManualBprPredictedRequest(nodeId, 100.0 + nodeId, 200.0 + nodeId, 1.0));
+                yuRandomPool.Add(CreateManualYuPredictedInterval(nodeId, 90.0 + nodeId, 100.0 + nodeId, 130.0 + nodeId, 180.0 + nodeId, 1.0, 20.0));
+            }
+            List<BprPredictedRequest> chengPaperRandom = windowSimulation.SelectChengBprPaperRandomNodes(
+                bprRandomPool,
+                3,
+                windowSimulation.CreateChengBprPaperRandom());
+            List<BprPredictedRequest> commonBprRandom = windowSimulation.SelectChengBprPaperRandomNodes(
+                bprRandomPool,
+                3,
+                windowSimulation.CreateBprSelectionRandom());
+            AssertSameBprPredictedNodeOrder(chengPaperRandom, commonBprRandom,
+                "CreateBprSelectionRandom must preserve CHENG_BPR paper random seed and result.");
+            YuDangerWindow yuRandomWindow = new YuDangerWindow();
+            yuRandomWindow.WindowStartSeconds = 100.0;
+            yuRandomWindow.WindowEndSeconds = 140.0;
+            yuRandomWindow.OverlappingIntervals = yuRandomPool;
+            yuRandomWindow.DangerCount = yuRandomPool.Count;
+            yuRandomWindow.KStar = 3;
+            yuRandomWindow.RemovalNeededCount = 3;
+            List<YuRemovalDecision> yuPaperRandom = windowSimulation.SelectYuRemovalNodes(
+                yuRandomWindow,
+                3,
+                new List<ChargingRequest>(),
+                YuProactiveSelectionMode.Random);
+            AssertSameBprPredictedAndYuDecisionNodeOrder(chengPaperRandom, yuPaperRandom,
+                "YU_BPR random proactive selection must use the common BP&R paper-style random stream instead of algorithmRandom.");
 
             ExperimentSettings predictionSettings = CreateBprSelfTestSettings(tempDirectory);
             predictionSettings.SimulationTimeSeconds = 120.0;
@@ -8607,6 +8669,19 @@ namespace WindowsFormsApplication1
                     message + " Route insertion cost mismatch.");
                 AssertSelfTest(String.Equals(actual[i].Reason, expected[i].Reason, StringComparison.Ordinal),
                     message + " Reason mismatch.");
+            }
+        }
+
+        private static void AssertSameBprPredictedAndYuDecisionNodeOrder(
+            List<BprPredictedRequest> expected,
+            List<YuRemovalDecision> actual,
+            string message)
+        {
+            AssertSelfTest(expected.Count == actual.Count, message + " Count mismatch.");
+            for (int i = 0; i < expected.Count; i++)
+            {
+                AssertSelfTest(expected[i].NodeId == actual[i].NodeId,
+                    message + " Node order mismatch at " + i.ToString(CultureInfo.InvariantCulture) + ".");
             }
         }
 
@@ -9553,6 +9628,7 @@ namespace WindowsFormsApplication1
                 record.NodeId,
                 record.IsProactive,
                 record.RequestTimeSeconds,
+                record.ProactiveReason,
                 record.DeadlineSeconds,
                 record.DispatchTimeSeconds,
                 record.ArrivalTimeSeconds,
@@ -9813,7 +9889,7 @@ namespace WindowsFormsApplication1
         private static string[] ExpectedTaskRecordHeader()
         {
             return new string[] { "MissionId", "TaskOrder", "NodeId", "IsProactive", "RequestTimeSeconds",
-                "DeadlineSeconds", "DispatchTimeSeconds", "ArrivalTimeSeconds", "WaitSeconds",
+                "ProactiveReason", "DeadlineSeconds", "DispatchTimeSeconds", "ArrivalTimeSeconds", "WaitSeconds",
                 "ChargeStartSeconds", "ChargeEndSeconds", "EnergyBeforeJ", "ConsumeRateJPerSecond",
                 "EffectiveConsumeRateJPerSecond", "RequestNodeConsumeRateJPerSecond",
                 "ServiceNodeConsumeRateJPerSecond", "NodeConsumeRatePredictionErrorJPerSecond",
