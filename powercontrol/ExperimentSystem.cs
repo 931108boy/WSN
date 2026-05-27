@@ -2499,6 +2499,28 @@ namespace WindowsFormsApplication1
             public List<YuPredictedInterval> Intervals;
         }
 
+        private sealed class YuBprDiagnostics
+        {
+            public int YuPredictedIntervalCount;
+            public int YuWindowStartCount;
+            public int YuMaxDangerCount;
+            public int YuMaxRemovalNeededCount;
+            public double YuPredictionHorizonEndSeconds;
+            public double YuPredictionHorizonSeconds;
+            public int YuNoRequestCrossingCount;
+            public int YuExcludedReservedCount;
+            public int YuExcludedPendingRequestCount;
+            public int YuExcludedInactiveCount;
+            public int YuExcludedDeadCount;
+            public int YuEligibleNodeCount;
+            public double YuCurrentTimeSeconds;
+
+            public YuBprDiagnostics Clone()
+            {
+                return (YuBprDiagnostics)MemberwiseClone();
+            }
+        }
+
         public ExperimentSimulation(ExperimentSettings experimentSettings, ExperimentArtifact sharedArtifact, string schedulerName)
             : this(experimentSettings, sharedArtifact, schedulerName, null)
         {
@@ -3746,14 +3768,9 @@ namespace WindowsFormsApplication1
 
         private List<ChargingRequest> BuildRouteAwareYuBpr(List<ChargingRequest> requiredRequests, int maxTask, bool enforceTaskLimit)
         {
-            List<ChargingRequest> clist = enforceTaskLimit
-                ? BuildNearestRoute(requiredRequests, maxTask)
-                : new List<ChargingRequest>();
-            if (!enforceTaskLimit)
-            {
-                for (int i = 0; i < requiredRequests.Count; i++)
-                    clist.Add(requiredRequests[i].Clone());
-            }
+            List<ChargingRequest> clist = new List<ChargingRequest>();
+            for (int i = 0; i < requiredRequests.Count; i++)
+                clist.Add(requiredRequests[i].Clone());
 
             List<ChargingRequest> cplist = BuildYuBprCplist(
                 clist,
@@ -4375,8 +4392,17 @@ namespace WindowsFormsApplication1
 
         private List<YuPredictedInterval> BuildYuPredictedIntervals(int maxTask, HashSet<int> reservedNodeIds)
         {
+            return BuildYuPredictedIntervals(maxTask, reservedNodeIds, null);
+        }
+
+        private List<YuPredictedInterval> BuildYuPredictedIntervals(
+            int maxTask,
+            HashSet<int> reservedNodeIds,
+            YuBprDiagnostics diagnostics)
+        {
             string reservedSignature = BuildReservedNodeSignature(reservedNodeIds);
-            if (yuPredictedIntervalCache != null &&
+            if (diagnostics == null &&
+                yuPredictedIntervalCache != null &&
                 Math.Abs(yuPredictedIntervalCache.CurrentTimeSeconds - currentTime) <= Epsilon &&
                 yuPredictedIntervalCache.MissionId == missionId &&
                 yuPredictedIntervalCache.MaxTask == maxTask &&
@@ -4388,12 +4414,20 @@ namespace WindowsFormsApplication1
 
             List<YuPredictedInterval> intervals = new List<YuPredictedInterval>();
             double horizonEnd = GetYuPredictionHorizonEndSeconds(maxTask);
+            if (diagnostics != null)
+            {
+                diagnostics.YuCurrentTimeSeconds = currentTime;
+                diagnostics.YuPredictionHorizonEndSeconds = horizonEnd;
+                diagnostics.YuPredictionHorizonSeconds = Math.Max(0.0, horizonEnd - currentTime);
+            }
             for (int nodeId = 1; nodeId < sensors.Length; nodeId++)
             {
                 BprSTableEntry entry;
                 bool reserved = reservedNodeIds != null && reservedNodeIds.Contains(nodeId);
-                if (!IsPredictionEligibleNode(nodeId, reservedNodeIds, out entry))
+                if (!IsYuPredictionEligibleNode(nodeId, reservedNodeIds, diagnostics, out entry))
                     continue;
+                if (diagnostics != null)
+                    diagnostics.YuEligibleNodeCount++;
 
                 List<YuPredictionSegment> timeline = BuildYuPredictionTimeline(nodeId, horizonEnd, reservedNodeIds);
                 YuPredictionSegment requestSegment = null;
@@ -4406,7 +4440,11 @@ namespace WindowsFormsApplication1
                         requestSegment = timeline[i];
                 }
                 if (requestSegment == null)
+                {
+                    if (diagnostics != null)
+                        diagnostics.YuNoRequestCrossingCount++;
                     continue;
+                }
 
                 double uncertainty = ResolveYuPredictionUncertaintySeconds(requestSegment, maxTask);
                 double center = requestSegment.RequestTimeSeconds;
@@ -4432,14 +4470,77 @@ namespace WindowsFormsApplication1
             }
 
             intervals.Sort(CompareYuPredictedIntervalByStart);
-            yuPredictedIntervalCache = new YuPredictedIntervalCache();
-            yuPredictedIntervalCache.CurrentTimeSeconds = currentTime;
-            yuPredictedIntervalCache.MissionId = missionId;
-            yuPredictedIntervalCache.MaxTask = maxTask;
-            yuPredictedIntervalCache.ReservedSignature = reservedSignature;
-            yuPredictedIntervalCache.Version = predictionCacheVersion;
-            yuPredictedIntervalCache.Intervals = new List<YuPredictedInterval>(intervals);
+            if (diagnostics != null)
+            {
+                diagnostics.YuPredictedIntervalCount = intervals.Count;
+            }
+            else
+            {
+                yuPredictedIntervalCache = new YuPredictedIntervalCache();
+                yuPredictedIntervalCache.CurrentTimeSeconds = currentTime;
+                yuPredictedIntervalCache.MissionId = missionId;
+                yuPredictedIntervalCache.MaxTask = maxTask;
+                yuPredictedIntervalCache.ReservedSignature = reservedSignature;
+                yuPredictedIntervalCache.Version = predictionCacheVersion;
+                yuPredictedIntervalCache.Intervals = new List<YuPredictedInterval>(intervals);
+            }
             return intervals;
+        }
+
+        private bool IsYuPredictionEligibleNode(
+            int nodeId,
+            HashSet<int> reservedNodeIds,
+            YuBprDiagnostics diagnostics,
+            out BprSTableEntry entry)
+        {
+            entry = null;
+            if (nodeId <= 0 || nodeId >= sensors.Length)
+                return false;
+            if (reservedNodeIds != null && reservedNodeIds.Contains(nodeId))
+            {
+                if (diagnostics != null)
+                    diagnostics.YuExcludedReservedCount++;
+                return false;
+            }
+            if (bprSTableByNodeId == null || !bprSTableByNodeId.TryGetValue(nodeId, out entry) || entry == null)
+                return false;
+
+            SensorState sensor = sensors[nodeId];
+            if (sensor == null || !sensor.Alive || !entry.IsAlive)
+            {
+                if (diagnostics != null)
+                    diagnostics.YuExcludedDeadCount++;
+                return false;
+            }
+            if (!sensor.IsActive)
+            {
+                if (diagnostics != null)
+                    diagnostics.YuExcludedInactiveCount++;
+                return false;
+            }
+            if (sensor.HasPendingRequest || HasActiveRequestForNode(nodeId) ||
+                entry.IsPendingRequest)
+            {
+                if (diagnostics != null)
+                    diagnostics.YuExcludedPendingRequestCount++;
+                return false;
+            }
+            if (entry.IsScheduledInCurrentMission || IsNodeReservedForCurrentMission(nodeId))
+            {
+                if (diagnostics != null)
+                    diagnostics.YuExcludedReservedCount++;
+                return false;
+            }
+            if (sensor.EnergyJ >= sensor.CapacityJ * settings.ProactiveCandidateMaxEnergyRatio - Epsilon)
+                return false;
+
+            double cooldownSeconds = ResolveProactiveCooldownSeconds();
+            if (currentTime - entry.LastChargedTimeSeconds < cooldownSeconds - Epsilon)
+                return false;
+            if (currentTime - entry.LastProactiveSelectedTimeSeconds < cooldownSeconds - Epsilon)
+                return false;
+
+            return true;
         }
 
         private static int CompareYuPredictedIntervalByStart(YuPredictedInterval a, YuPredictedInterval b)
@@ -4455,9 +4556,25 @@ namespace WindowsFormsApplication1
 
         private List<YuDangerWindow> BuildYuDangerWindows(List<YuPredictedInterval> intervals, int maxTask)
         {
+            return BuildYuDangerWindows(intervals, maxTask, null);
+        }
+
+        private List<YuDangerWindow> BuildYuDangerWindows(
+            List<YuPredictedInterval> intervals,
+            int maxTask,
+            YuBprDiagnostics diagnostics)
+        {
             List<YuDangerWindow> windows = new List<YuDangerWindow>();
             if (intervals == null || intervals.Count == 0)
+            {
+                if (diagnostics != null)
+                {
+                    diagnostics.YuWindowStartCount = 0;
+                    diagnostics.YuMaxDangerCount = 0;
+                    diagnostics.YuMaxRemovalNeededCount = 0;
+                }
                 return windows;
+            }
 
             maxTask = Math.Max(1, maxTask);
             double windowSize = EstimateBprTjobSeconds(maxTask);
@@ -4467,6 +4584,8 @@ namespace WindowsFormsApplication1
                 AddUniqueBreakpoint(windowStarts, intervals[i].CenterRequestTimeSeconds);
             }
             windowStarts.Sort();
+            if (diagnostics != null)
+                diagnostics.YuWindowStartCount = windowStarts.Count;
 
             int[] deltas = new int[windowStarts.Count + 1];
             for (int i = 0; i < intervals.Count; i++)
@@ -4488,6 +4607,13 @@ namespace WindowsFormsApplication1
             {
                 dangerCount += deltas[i];
                 int removalNeededCount = Math.Max(0, dangerCount - maxTask);
+                if (diagnostics != null)
+                {
+                    if (dangerCount > diagnostics.YuMaxDangerCount)
+                        diagnostics.YuMaxDangerCount = dangerCount;
+                    if (removalNeededCount > diagnostics.YuMaxRemovalNeededCount)
+                        diagnostics.YuMaxRemovalNeededCount = removalNeededCount;
+                }
                 if (removalNeededCount <= 0)
                     continue;
 
@@ -4595,8 +4721,6 @@ namespace WindowsFormsApplication1
                 {
                     if (clist[i] == null)
                         continue;
-                    if (!allowCapacityOverflow && cplist.Count >= maxTask)
-                        break;
                     ChargingRequest copy = clist[i].Clone();
                     cplist.Add(copy);
                     reservedNodeIds.Add(copy.NodeId);
@@ -4606,17 +4730,19 @@ namespace WindowsFormsApplication1
             if (!allowCapacityOverflow && cplist.Count >= maxTask)
                 return cplist;
 
-            List<YuPredictedInterval> intervals = BuildYuPredictedIntervals(maxTask, reservedNodeIds);
+            YuBprDiagnostics baseDiagnostics = new YuBprDiagnostics();
+            List<YuPredictedInterval> intervals = BuildYuPredictedIntervals(maxTask, reservedNodeIds, baseDiagnostics);
             int iteration = 0;
             int safety = 0;
             while (safety < sensors.Length * 2 + 4)
             {
                 safety++;
                 iteration++;
-                List<YuDangerWindow> windows = BuildYuDangerWindows(intervals, maxTask);
+                YuBprDiagnostics iterationDiagnostics = CloneYuBprDiagnosticsForIntervals(baseDiagnostics, intervals);
+                List<YuDangerWindow> windows = BuildYuDangerWindows(intervals, maxTask, iterationDiagnostics);
                 if (windows.Count == 0)
                 {
-                    WriteYuBprDebug(iteration, null, null, "NO_DANGER_WINDOW", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
+                    WriteYuBprDebug(iteration, null, null, "NO_DANGER_WINDOW", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, iterationDiagnostics);
                     break;
                 }
 
@@ -4627,7 +4753,7 @@ namespace WindowsFormsApplication1
                 int addCount = Math.Min(worstWindow.RemovalNeededCount, capacityLeft);
                 if (addCount <= 0)
                 {
-                    WriteYuBprDebug(iteration, worstWindow, null, "LIMITED_CAPACITY_FULL", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
+                    WriteYuBprDebug(iteration, worstWindow, null, "LIMITED_CAPACITY_FULL", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, iterationDiagnostics);
                     return cplist;
                 }
 
@@ -4638,7 +4764,7 @@ namespace WindowsFormsApplication1
                     selectionMode);
                 if (decisions.Count == 0)
                 {
-                    WriteYuBprDebug(iteration, worstWindow, null, "NO_SELECTABLE_NODE", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow);
+                    WriteYuBprDebug(iteration, worstWindow, null, "NO_SELECTABLE_NODE", cplist.Count, cplist.Count, maxTask, allowCapacityOverflow, iterationDiagnostics);
                     break;
                 }
 
@@ -4649,7 +4775,7 @@ namespace WindowsFormsApplication1
                     cplist.Add(CreateYuProactiveRequest(decision));
                     reservedNodeIds.Add(decision.NodeId);
                     RemoveYuPredictedIntervalByNodeId(intervals, decision.NodeId);
-                    WriteYuBprDebug(iteration, worstWindow, decision, decision.Reason, before, cplist.Count, maxTask, allowCapacityOverflow);
+                    WriteYuBprDebug(iteration, worstWindow, decision, decision.Reason, before, cplist.Count, maxTask, allowCapacityOverflow, iterationDiagnostics);
                 }
 
                 if (!allowCapacityOverflow && cplist.Count >= maxTask)
@@ -4657,6 +4783,20 @@ namespace WindowsFormsApplication1
             }
 
             return cplist;
+        }
+
+        private static YuBprDiagnostics CloneYuBprDiagnosticsForIntervals(
+            YuBprDiagnostics diagnostics,
+            List<YuPredictedInterval> intervals)
+        {
+            if (diagnostics == null)
+                return null;
+            YuBprDiagnostics clone = diagnostics.Clone();
+            clone.YuPredictedIntervalCount = intervals == null ? 0 : intervals.Count;
+            clone.YuWindowStartCount = 0;
+            clone.YuMaxDangerCount = 0;
+            clone.YuMaxRemovalNeededCount = 0;
+            return clone;
         }
 
         private static void RemoveYuPredictedIntervalByNodeId(List<YuPredictedInterval> intervals, int nodeId)
@@ -4870,10 +5010,13 @@ namespace WindowsFormsApplication1
             int cplistCountBefore,
             int cplistCountAfter,
             int maxTask,
-            bool allowCapacityOverflow)
+            bool allowCapacityOverflow,
+            YuBprDiagnostics diagnostics)
         {
             if (csvWriter == null)
                 return;
+            if (diagnostics == null)
+                diagnostics = new YuBprDiagnostics();
             csvWriter.WriteYuBprDebug(
                 artifact.RunIndex,
                 artifact.Seed,
@@ -4900,7 +5043,20 @@ namespace WindowsFormsApplication1
                 cplistCountBefore,
                 cplistCountAfter,
                 maxTask,
-                allowCapacityOverflow);
+                allowCapacityOverflow,
+                diagnostics.YuPredictedIntervalCount,
+                diagnostics.YuWindowStartCount,
+                diagnostics.YuMaxDangerCount,
+                diagnostics.YuMaxRemovalNeededCount,
+                diagnostics.YuPredictionHorizonEndSeconds,
+                diagnostics.YuPredictionHorizonSeconds,
+                diagnostics.YuNoRequestCrossingCount,
+                diagnostics.YuExcludedReservedCount,
+                diagnostics.YuExcludedPendingRequestCount,
+                diagnostics.YuExcludedInactiveCount,
+                diagnostics.YuExcludedDeadCount,
+                diagnostics.YuEligibleNodeCount,
+                diagnostics.YuCurrentTimeSeconds);
         }
 
         private double ResolveYuPredictionUncertaintySeconds(YuPredictionSegment segment, int maxTask)
@@ -6405,6 +6561,7 @@ namespace WindowsFormsApplication1
                 RunDeathReasonSelfTest(tempDirectory, simulations);
                 RunCompleteBprYuPredictionSelfTest(tempDirectory, simulations);
                 RunBprPerformanceEquivalenceSelfTest(tempDirectory, simulations);
+                RunYuBprRegressionSelfTest(tempDirectory, simulations);
 
                 ExperimentArtifact maintenanceArtifact = CreateBprSelfTestArtifact(new double[] { 100.0, 100.0, 100.0 });
                 ExperimentSimulation maintenanceSimulation = new ExperimentSimulation(
@@ -6706,7 +6863,8 @@ namespace WindowsFormsApplication1
                 writer.WriteYuBprDebug(artifact.RunIndex, artifact.Seed, "EDF", 1, 0.0, 0,
                     0.0, 0.0, 0, 0, 0, -1, Double.NaN, Double.NaN, Double.NaN,
                     Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN,
-                    Double.NaN, "test", 0, 0, 1, false);
+                    Double.NaN, "test", 0, 0, 1, false,
+                    0, 0, 0, 0, Double.NaN, Double.NaN, 0, 0, 0, 0, 0, 0, Double.NaN);
             }
 
             string taskOnlyPath = Path.Combine(selectionDirectory, "run001-seed777-EDF-task-records.csv");
@@ -6841,7 +6999,8 @@ namespace WindowsFormsApplication1
                 "test", 1, 2, 3, false);
             writer.WriteYuBprDebug(artifact.RunIndex, artifact.Seed, algorithm, 1, 1.0, 1,
                 1.0, 2.0, 3, 4, 1, 1, 1.0, 1.5, 2.0, 4.0, 3.5,
-                2.5, 0.5, 0.2, 10.0, "test", 1, 2, 3, true);
+                2.5, 0.5, 0.2, 10.0, "test", 1, 2, 3, true,
+                3, 3, 4, 1, 90.0, 89.0, 1, 0, 0, 0, 0, 3, 1.0);
         }
 
         private static void AssertCsvHeaderEquals(string path, string[] expected, string message)
@@ -6899,8 +7058,12 @@ namespace WindowsFormsApplication1
                 "危險門檻", "危險數量", "需要移除數量", "選中節點編號", "選中區間開始時間秒",
                 "選中中心請求時間秒", "選中區間結束時間秒", "選中最早死亡時間秒",
                 "選中最晚安全服務時間秒", "選中安全餘裕秒", "選中不確定範圍秒",
-                "選中有效耗電率J每秒", "選中路線插入成本", "加入前候選任務數",
-                "加入後候選任務數", "單趟任務上限", "是否允許超出容量" };
+                "選中有效耗電率J每秒", "選中路線插入成本", "選擇原因", "加入前候選任務數",
+                "加入後候選任務數", "單趟任務上限", "是否允許超出容量",
+                "YuPredictedIntervalCount", "YuWindowStartCount", "YuMaxDangerCount", "YuMaxRemovalNeededCount",
+                "YuPredictionHorizonEndSeconds", "YuPredictionHorizonSeconds", "YuNoRequestCrossingCount",
+                "YuExcludedReservedCount", "YuExcludedPendingRequestCount", "YuExcludedInactiveCount",
+                "YuExcludedDeadCount", "YuEligibleNodeCount", "YuCurrentTimeSeconds" };
         }
 
         private static void RunNormalizeThenValidateOrderingSelfTest(string tempDirectory)
@@ -7981,6 +8144,103 @@ namespace WindowsFormsApplication1
                 "Same seed and settings should keep the main run summary deterministic after BP&R performance optimizations.");
         }
 
+        private static void RunYuBprRegressionSelfTest(string tempDirectory, List<ExperimentSimulation> simulations)
+        {
+            ExperimentSettings noProactiveSettings = CreateBprSelfTestSettings(tempDirectory);
+            noProactiveSettings.NmaxTask = 2;
+            noProactiveSettings.YuIntervalUncertaintySeconds = 10.0;
+            noProactiveSettings.ProactiveCandidateMaxEnergyRatio = 1.0;
+            noProactiveSettings.ProactiveCooldownSeconds = 1.0;
+            noProactiveSettings.Normalize();
+
+            ExperimentArtifact noProactiveArtifact = CreateBprSelfTestArtifact(new double[] { 80.0, 80.0, 80.0, 80.0 });
+            noProactiveArtifact.Sensors[1].X = 10.0;
+            noProactiveArtifact.Sensors[2].X = 20.0;
+            noProactiveArtifact.Sensors[3].X = 300.0;
+            noProactiveArtifact.Sensors[4].X = 400.0;
+
+            ExperimentSimulation njfSimulation = new ExperimentSimulation(noProactiveSettings, noProactiveArtifact, "NJF", null);
+            ExperimentSimulation yuSimulation = new ExperimentSimulation(noProactiveSettings, noProactiveArtifact, "NJF_YU_BPR", null);
+            ExperimentSimulation routeYuSimulation = new ExperimentSimulation(noProactiveSettings, noProactiveArtifact, "NJF_ROUTE_YU_BPR_LIMITED", null);
+            simulations.Add(njfSimulation);
+            simulations.Add(yuSimulation);
+            simulations.Add(routeYuSimulation);
+            AddManualActiveRequest(njfSimulation, 4, 400.0);
+            AddManualActiveRequest(njfSimulation, 3, 300.0);
+            AddManualActiveRequest(njfSimulation, 1, 100.0);
+            AddManualActiveRequest(njfSimulation, 2, 200.0);
+            AddManualActiveRequest(yuSimulation, 4, 400.0);
+            AddManualActiveRequest(yuSimulation, 3, 300.0);
+            AddManualActiveRequest(yuSimulation, 1, 100.0);
+            AddManualActiveRequest(yuSimulation, 2, 200.0);
+            AddManualActiveRequest(routeYuSimulation, 4, 400.0);
+            AddManualActiveRequest(routeYuSimulation, 3, 300.0);
+            AddManualActiveRequest(routeYuSimulation, 1, 100.0);
+            AddManualActiveRequest(routeYuSimulation, 2, 200.0);
+
+            List<ChargingRequest> njfRoute = njfSimulation.BuildMissionRoute();
+            List<ChargingRequest> yuRoute = yuSimulation.BuildMissionRoute();
+            List<ChargingRequest> routeYuRoute = routeYuSimulation.BuildMissionRoute();
+            AssertSameChargingNodeOrder(njfRoute, yuRoute,
+                "NJF_YU_BPR without proactive requests must route exactly like NJF.");
+            AssertSameChargingNodeOrder(njfRoute, routeYuRoute,
+                "NJF_ROUTE_YU_BPR_LIMITED without proactive requests must preserve the NJF on-demand route.");
+            AssertSelfTest(CountProactiveChargingRequests(yuRoute) == 0 &&
+                CountProactiveChargingRequests(routeYuRoute) == 0,
+                "YU no-proactive regression setup should not add proactive requests.");
+
+            ExperimentSettings proactiveSettings = CreateBprSelfTestSettings(tempDirectory);
+            proactiveSettings.NmaxTask = 2;
+            proactiveSettings.WcvSpeedMetersPerSecond = 100.0;
+            proactiveSettings.WcvChargeRateJPerSecond = 100.0;
+            proactiveSettings.YuIntervalUncertaintySeconds = 10.0;
+            proactiveSettings.ProactiveCandidateMaxEnergyRatio = 1.0;
+            proactiveSettings.ProactiveCooldownSeconds = 1.0;
+            proactiveSettings.Normalize();
+            ExperimentArtifact proactiveArtifact = CreateBprSelfTestArtifact(new double[] { 40.0, 60.0, 60.0, 60.0 });
+            ExperimentSimulation proactiveNjf = new ExperimentSimulation(proactiveSettings, proactiveArtifact, "NJF", null);
+            ExperimentSimulation proactiveYu = new ExperimentSimulation(proactiveSettings, proactiveArtifact, "NJF_YU_BPR", null);
+            simulations.Add(proactiveNjf);
+            simulations.Add(proactiveYu);
+            proactiveNjf.CreateRequestsAtCurrentTime();
+            proactiveYu.CreateRequestsAtCurrentTime();
+            List<ChargingRequest> proactiveNjfRoute = proactiveNjf.BuildMissionRoute();
+            List<ChargingRequest> proactiveYuRoute = proactiveYu.BuildMissionRoute();
+            AssertSelfTest(CountProactiveChargingRequests(proactiveYuRoute) > 0,
+                "YU proactive regression setup should add at least one proactive request.");
+            AssertSelfTest(!SameChargingNodeOrder(proactiveNjfRoute, proactiveYuRoute),
+                "NJF_YU_BPR may differ from NJF when the difference comes from proactive requests.");
+
+            ExperimentArtifact debugArtifact = CreateBprSelfTestArtifact(new double[] { 80.0, 80.0, 80.0 });
+            string debugDirectory = Path.Combine(tempDirectory, "yu-debug-fields");
+            MissionDetailCsvOutputOptions debugOptions = new MissionDetailCsvOutputOptions();
+            debugOptions.WriteMissionDetails = false;
+            debugOptions.WriteTaskRecords = false;
+            debugOptions.WriteBprDebug = false;
+            debugOptions.WriteYuBprDebug = true;
+            using (MissionDetailCsvWriter writer = new MissionDetailCsvWriter(
+                debugDirectory,
+                debugArtifact,
+                "NJF_YU_BPR",
+                debugOptions))
+            {
+                writer.WriteYuBprDebug(1, 777, "NJF_YU_BPR", 1, 0.0, 1,
+                    Double.NaN, Double.NaN, 3, 0, 0, -1,
+                    Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN,
+                    Double.NaN, Double.NaN, Double.NaN, Double.NaN, "NO_DANGER_WINDOW",
+                    4, 4, 2, false, 3, 3, 2, 0, 100.0, 100.0, 1, 2, 0, 0, 0, 3, 0.0);
+            }
+            string debugPath = Path.Combine(debugDirectory, "run001-seed777-NJF_YU_BPR-yu-bpr-debug.csv");
+            AssertCsvHeaderContains(debugPath, "YuPredictedIntervalCount");
+            AssertCsvHeaderContains(debugPath, "YuWindowStartCount");
+            AssertCsvHeaderContains(debugPath, "YuMaxDangerCount");
+            AssertCsvHeaderContains(debugPath, "YuMaxRemovalNeededCount");
+            AssertCsvHeaderContains(debugPath, "YuPredictionHorizonEndSeconds");
+            AssertCsvHeaderContains(debugPath, "YuPredictionHorizonSeconds");
+            AssertCsvHeaderContains(debugPath, "YuNoRequestCrossingCount");
+            AssertCsvHeaderContains(debugPath, "YuEligibleNodeCount");
+        }
+
         private void AssertDistanceCacheMatchesArtifactDistance()
         {
             for (int fromNodeId = 0; fromNodeId < sensors.Length; fromNodeId++)
@@ -8414,6 +8674,16 @@ namespace WindowsFormsApplication1
             return request;
         }
 
+        private static void AddManualActiveRequest(ExperimentSimulation simulation, int nodeId, double deadlineSeconds)
+        {
+            ChargingRequest request = CreateManualChargingRequest(nodeId, deadlineSeconds);
+            request.RequestId = nodeId;
+            simulation.activeRequests.Add(request);
+            simulation.sensors[nodeId].HasPendingRequest = true;
+            BprSTableEntry entry = simulation.GetOrCreateBprSTableEntry(nodeId);
+            entry.IsPendingRequest = true;
+        }
+
         private static void SetBprReportedDeadline(ExperimentSimulation simulation, int nodeId, double deadlineSeconds)
         {
             BprSTableEntry entry = simulation.GetOrCreateBprSTableEntry(nodeId);
@@ -8546,6 +8816,26 @@ namespace WindowsFormsApplication1
             return SameSortedNodeIds(leftIds, rightIds);
         }
 
+        private static bool SameChargingNodeOrder(List<ChargingRequest> left, List<ChargingRequest> right)
+        {
+            if (left == null || right == null)
+                return left == right;
+            if (left.Count != right.Count)
+                return false;
+            for (int i = 0; i < left.Count; i++)
+            {
+                if (left[i].NodeId != right[i].NodeId ||
+                    left[i].IsProactive != right[i].IsProactive)
+                    return false;
+            }
+            return true;
+        }
+
+        private static void AssertSameChargingNodeOrder(List<ChargingRequest> expected, List<ChargingRequest> actual, string message)
+        {
+            AssertSelfTest(SameChargingNodeOrder(expected, actual), message);
+        }
+
         private static List<int> GetChargingNodeIds(List<ChargingRequest> requests, bool proactiveOnly)
         {
             List<int> nodeIds = new List<int>();
@@ -8603,6 +8893,20 @@ namespace WindowsFormsApplication1
         {
             if (!condition)
                 throw new InvalidOperationException(message);
+        }
+
+        private static void AssertCsvHeaderContains(string path, string expectedHeader)
+        {
+            AssertSelfTest(File.Exists(path), "Expected CSV was not written: " + path);
+            string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+            AssertSelfTest(lines.Length > 0, "CSV should contain a header: " + path);
+            string[] headers = lines[0].Split(',');
+            for (int i = 0; i < headers.Length; i++)
+            {
+                if (String.Equals(headers[i], expectedHeader, StringComparison.Ordinal))
+                    return;
+            }
+            throw new InvalidOperationException("CSV header missing " + expectedHeader + ": " + path);
         }
 
         private static Dictionary<string, int> BuildCsvHeaderMap(string[] headers)
@@ -9188,7 +9492,20 @@ namespace WindowsFormsApplication1
             int cplistCountBefore,
             int cplistCountAfter,
             int maxTask,
-            bool allowCapacityOverflow)
+            bool allowCapacityOverflow,
+            int yuPredictedIntervalCount,
+            int yuWindowStartCount,
+            int yuMaxDangerCount,
+            int yuMaxRemovalNeededCount,
+            double yuPredictionHorizonEndSeconds,
+            double yuPredictionHorizonSeconds,
+            int yuNoRequestCrossingCount,
+            int yuExcludedReservedCount,
+            int yuExcludedPendingRequestCount,
+            int yuExcludedInactiveCount,
+            int yuExcludedDeadCount,
+            int yuEligibleNodeCount,
+            double yuCurrentTimeSeconds)
         {
             string effectiveAlgorithm = String.IsNullOrWhiteSpace(algorithm) ? algorithmKey : ExperimentSettings.CanonicalAlgorithmKey(algorithm);
             if (disposed || !IsYuBprAlgorithm(effectiveAlgorithm) || String.IsNullOrWhiteSpace(yuBprDebugPath))
@@ -9214,10 +9531,24 @@ namespace WindowsFormsApplication1
                 selectedUncertaintySeconds,
                 selectedEffectiveRateJPerSecond,
                 selectedRouteInsertionCost,
+                selectionReason,
                 cplistCountBefore,
                 cplistCountAfter,
                 maxTask,
-                allowCapacityOverflow));
+                allowCapacityOverflow,
+                yuPredictedIntervalCount,
+                yuWindowStartCount,
+                yuMaxDangerCount,
+                yuMaxRemovalNeededCount,
+                yuPredictionHorizonEndSeconds,
+                yuPredictionHorizonSeconds,
+                yuNoRequestCrossingCount,
+                yuExcludedReservedCount,
+                yuExcludedPendingRequestCount,
+                yuExcludedInactiveCount,
+                yuExcludedDeadCount,
+                yuEligibleNodeCount,
+                yuCurrentTimeSeconds));
         }
 
         private void EnsureBprDebugWriter()
@@ -9311,8 +9642,12 @@ namespace WindowsFormsApplication1
                 "危險門檻", "危險數量", "需要移除數量", "選中節點編號", "選中區間開始時間秒",
                 "選中中心請求時間秒", "選中區間結束時間秒", "選中最早死亡時間秒",
                 "選中最晚安全服務時間秒", "選中安全餘裕秒", "選中不確定範圍秒",
-                "選中有效耗電率J每秒", "選中路線插入成本", "加入前候選任務數",
-                "加入後候選任務數", "單趟任務上限", "是否允許超出容量"));
+                "選中有效耗電率J每秒", "選中路線插入成本", "選擇原因", "加入前候選任務數",
+                "加入後候選任務數", "單趟任務上限", "是否允許超出容量",
+                "YuPredictedIntervalCount", "YuWindowStartCount", "YuMaxDangerCount", "YuMaxRemovalNeededCount",
+                "YuPredictionHorizonEndSeconds", "YuPredictionHorizonSeconds", "YuNoRequestCrossingCount",
+                "YuExcludedReservedCount", "YuExcludedPendingRequestCount", "YuExcludedInactiveCount",
+                "YuExcludedDeadCount", "YuEligibleNodeCount", "YuCurrentTimeSeconds"));
         }
 
         private static object SafeArrayValue(int[] values, int index)
