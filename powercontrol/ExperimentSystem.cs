@@ -1905,6 +1905,9 @@ namespace WindowsFormsApplication1
         public string SweepParameterName;
         public double SweepValue;
         private int rateChangeIndexSourceCount;
+        private readonly object nodeDistanceCacheLock;
+        private double[,] nodeDistanceMeters;
+        private int nodeDistanceSensorCount;
 
         public ExperimentArtifact()
         {
@@ -1913,6 +1916,9 @@ namespace WindowsFormsApplication1
             RateChanges = new List<RateChangeTemplate>();
             RateChangesByNodeId = new Dictionary<int, List<RateChangeTemplate>>();
             rateChangeIndexSourceCount = -1;
+            nodeDistanceCacheLock = new object();
+            nodeDistanceSensorCount = -1;
+            nodeDistanceMeters = null;
             ArtifactHash = "";
             SweepParameterKey = "";
             SweepParameterName = "";
@@ -2187,6 +2193,74 @@ namespace WindowsFormsApplication1
             return Math.Sqrt(dx * dx + dy * dy);
         }
 
+        public double DistanceBetweenNodes(int fromNodeId, int toNodeId)
+        {
+            EnsureNodeDistanceCache();
+            if (nodeDistanceMeters == null ||
+                fromNodeId < 0 || toNodeId < 0 ||
+                fromNodeId >= nodeDistanceMeters.GetLength(0) ||
+                toNodeId >= nodeDistanceMeters.GetLength(1))
+            {
+                return Double.MaxValue;
+            }
+
+            return nodeDistanceMeters[fromNodeId, toNodeId];
+        }
+
+        private void EnsureNodeDistanceCache()
+        {
+            int sensorCount = Sensors == null ? 0 : Sensors.Count;
+            if (nodeDistanceMeters != null && nodeDistanceSensorCount == sensorCount)
+                return;
+
+            lock (nodeDistanceCacheLock)
+            {
+                sensorCount = Sensors == null ? 0 : Sensors.Count;
+                if (nodeDistanceMeters != null && nodeDistanceSensorCount == sensorCount)
+                    return;
+
+                double[,] distances = new double[sensorCount, sensorCount];
+                for (int i = 0; i < sensorCount; i++)
+                {
+                    double ix;
+                    double iy;
+                    GetNodeCoordinates(i, out ix, out iy);
+                    for (int j = i; j < sensorCount; j++)
+                    {
+                        double jx;
+                        double jy;
+                        GetNodeCoordinates(j, out jx, out jy);
+                        double distance = Distance(ix, iy, jx, jy);
+                        distances[i, j] = distance;
+                        distances[j, i] = distance;
+                    }
+                }
+
+                nodeDistanceMeters = distances;
+                nodeDistanceSensorCount = sensorCount;
+            }
+        }
+
+        private void GetNodeCoordinates(int nodeId, out double x, out double y)
+        {
+            if (nodeId == 0)
+            {
+                x = BaseX;
+                y = BaseY;
+                return;
+            }
+
+            SensorTemplate sensor = Sensors[nodeId];
+            x = sensor.X;
+            y = sensor.Y;
+        }
+
+        internal double[,] DistanceCacheForSelfTest()
+        {
+            EnsureNodeDistanceCache();
+            return nodeDistanceMeters;
+        }
+
         public ExperimentArtifactSummary CreateSummary()
         {
             ExperimentArtifactSummary summary = new ExperimentArtifactSummary();
@@ -2238,7 +2312,6 @@ namespace WindowsFormsApplication1
         private readonly string algorithm;
         private readonly Random algorithmRandom;
         private readonly SensorState[] sensors;
-        private readonly double[,] nodeDistanceMeters;
         private readonly List<ChargingRequest> activeRequests;
         private readonly List<ExperimentDeathRecord> deaths;
         private Dictionary<int, BprSTableEntry> bprSTableByNodeId;
@@ -2383,6 +2456,8 @@ namespace WindowsFormsApplication1
             public double WindowStartSeconds;
             public double WindowEndSeconds;
             public List<YuPredictedInterval> OverlappingIntervals;
+            public List<YuPredictedInterval> SourceIntervals;
+            public bool OverlapsPopulated;
             public int DangerCount;
             public int KStar;
             public int RemovalNeededCount;
@@ -2464,7 +2539,7 @@ namespace WindowsFormsApplication1
 
             for (int i = 0; i < artifact.Sensors.Count; i++)
                 sensors[i] = new SensorState(artifact.Sensors[i], settings, artifact.UsesActivationSchedule);
-            nodeDistanceMeters = BuildNodeDistanceCache();
+            artifact.DistanceBetweenNodes(0, 0);
             artifact.GetRateChangesForNode(0);
             InitializeBprSTable();
 
@@ -2494,54 +2569,9 @@ namespace WindowsFormsApplication1
             summary.FirstDeadSchedulingCauseZh = "";
         }
 
-        private double[,] BuildNodeDistanceCache()
-        {
-            int count = sensors == null ? 0 : sensors.Length;
-            double[,] distances = new double[count, count];
-            for (int i = 0; i < count; i++)
-            {
-                double ix;
-                double iy;
-                GetNodeCoordinates(i, out ix, out iy);
-                for (int j = i; j < count; j++)
-                {
-                    double jx;
-                    double jy;
-                    GetNodeCoordinates(j, out jx, out jy);
-                    double distance = ExperimentArtifact.Distance(ix, iy, jx, jy);
-                    distances[i, j] = distance;
-                    distances[j, i] = distance;
-                }
-            }
-
-            return distances;
-        }
-
-        private void GetNodeCoordinates(int nodeId, out double x, out double y)
-        {
-            if (nodeId == 0)
-            {
-                x = artifact.BaseX;
-                y = artifact.BaseY;
-                return;
-            }
-
-            SensorState sensor = sensors[nodeId];
-            x = sensor.X;
-            y = sensor.Y;
-        }
-
         private double DistanceBetweenNodes(int fromNodeId, int toNodeId)
         {
-            if (nodeDistanceMeters == null ||
-                fromNodeId < 0 || toNodeId < 0 ||
-                fromNodeId >= nodeDistanceMeters.GetLength(0) ||
-                toNodeId >= nodeDistanceMeters.GetLength(1))
-            {
-                return Double.MaxValue;
-            }
-
-            return nodeDistanceMeters[fromNodeId, toNodeId];
+            return artifact.DistanceBetweenNodes(fromNodeId, toNodeId);
         }
 
         private void CopySweepFieldsTo(ExperimentRunSummary record)
@@ -4468,23 +4498,42 @@ namespace WindowsFormsApplication1
                 window.WindowEndSeconds = windowEnd;
                 window.KStar = maxTask + 1;
                 window.OverlappingIntervals = new List<YuPredictedInterval>();
-                for (int j = 0; j < intervals.Count; j++)
-                {
-                    YuPredictedInterval interval = intervals[j];
-                    if (interval.IntervalEndSeconds >= windowStart - Epsilon &&
-                        interval.IntervalStartSeconds <= windowEnd + Epsilon)
-                    {
-                        window.OverlappingIntervals.Add(interval);
-                    }
-                }
-                window.DangerCount = window.OverlappingIntervals.Count;
-                window.RemovalNeededCount = Math.Max(0, window.DangerCount - maxTask);
-                if (window.RemovalNeededCount > 0)
-                    windows.Add(window);
+                window.SourceIntervals = intervals;
+                window.OverlapsPopulated = false;
+                window.DangerCount = dangerCount;
+                window.RemovalNeededCount = removalNeededCount;
+                windows.Add(window);
             }
 
             windows.Sort(CompareYuDangerWindowBySeverity);
             return windows;
+        }
+
+        private void PopulateYuDangerWindowOverlaps(YuDangerWindow window)
+        {
+            if (window == null || window.OverlapsPopulated)
+                return;
+
+            if (window.SourceIntervals == null)
+            {
+                if (window.OverlappingIntervals == null)
+                    window.OverlappingIntervals = new List<YuPredictedInterval>();
+                window.OverlapsPopulated = true;
+                return;
+            }
+
+            List<YuPredictedInterval> overlaps = new List<YuPredictedInterval>();
+            for (int i = 0; i < window.SourceIntervals.Count; i++)
+            {
+                YuPredictedInterval interval = window.SourceIntervals[i];
+                if (interval.IntervalEndSeconds >= window.WindowStartSeconds - Epsilon &&
+                    interval.IntervalStartSeconds <= window.WindowEndSeconds + Epsilon)
+                {
+                    overlaps.Add(interval);
+                }
+            }
+            window.OverlappingIntervals = overlaps;
+            window.OverlapsPopulated = true;
         }
 
         private static int LowerBound(List<double> sortedValues, double value)
@@ -4650,7 +4699,11 @@ namespace WindowsFormsApplication1
             YuProactiveSelectionMode selectionMode)
         {
             List<YuRemovalDecision> selected = new List<YuRemovalDecision>();
-            if (window == null || window.OverlappingIntervals == null || addCount <= 0)
+            if (window == null || addCount <= 0)
+                return selected;
+
+            PopulateYuDangerWindowOverlaps(window);
+            if (window.OverlappingIntervals == null)
                 return selected;
 
             List<YuPredictedInterval> selectable = new List<YuPredictedInterval>(window.OverlappingIntervals);
@@ -7793,6 +7846,16 @@ namespace WindowsFormsApplication1
                 null);
             simulations.Add(routeSimulation);
             routeSimulation.AssertDistanceCacheMatchesArtifactDistance();
+            ExperimentSimulation routeSimulationSharingCheck = new ExperimentSimulation(
+                routeSettings,
+                routeArtifact,
+                "NJF_ROUTE_CHENG_BPR_LIMITED",
+                null);
+            simulations.Add(routeSimulationSharingCheck);
+            AssertSelfTest(Object.ReferenceEquals(
+                    routeSimulation.DistanceCacheForSelfTest(),
+                    routeSimulationSharingCheck.DistanceCacheForSelfTest()),
+                "Distance cache should be shared by simulations that use the same ExperimentArtifact.");
 
             List<ChargingRequest> previewCplist = new List<ChargingRequest>();
             previewCplist.Add(CreateManualChargingRequest(4, 90.0));
@@ -7828,6 +7891,20 @@ namespace WindowsFormsApplication1
             AssertSameYuRemovalDecisionNodeOrder(yuSortSelected, yuScanSelected,
                 "ROUTE_YU single-scan route insertion selection must match the old sort-comparator order.");
 
+            ExperimentSettings reservedIntervalSettings = CreateBprSelfTestSettings(tempDirectory);
+            reservedIntervalSettings.YuIntervalUncertaintySeconds = 10.0;
+            reservedIntervalSettings.ProactiveCooldownSeconds = 1.0;
+            reservedIntervalSettings.ProactiveCandidateMaxEnergyRatio = 1.0;
+            reservedIntervalSettings.Normalize();
+            ExperimentSimulation reservedIntervalSimulation = new ExperimentSimulation(
+                reservedIntervalSettings,
+                CreateBprSelfTestArtifact(new double[] { 80.0, 80.0, 80.0 }),
+                "NJF_YU_BPR",
+                null);
+            simulations.Add(reservedIntervalSimulation);
+            AssertYuReservedNodeOnlyExcludesThatInterval(reservedIntervalSimulation,
+                "YU interval reuse requires reservedNodeIds to exclude only the reserved node.");
+
             ExperimentSettings windowSettings = CreateBprSelfTestSettings(tempDirectory);
             windowSettings.NmaxTask = 2;
             windowSettings.WcvSpeedMetersPerSecond = 10.0;
@@ -7847,7 +7924,9 @@ namespace WindowsFormsApplication1
             boundaryIntervals.Add(CreateManualYuPredictedInterval(4, 100.0 + tjob + Epsilon + 0.001, 102.0, 100.0 + tjob + 5.0, 180.0, 1.0, 10.0));
             List<YuDangerWindow> naiveWindows = windowSimulation.BuildYuDangerWindowsNaiveForSelfTest(boundaryIntervals, 2);
             List<YuDangerWindow> fastWindows = windowSimulation.BuildYuDangerWindows(boundaryIntervals, 2);
-            AssertYuDangerWindowsEquivalent(naiveWindows, fastWindows,
+            AssertSelfTest(!AnyYuDangerWindowOverlapsPopulated(fastWindows),
+                "Optimized YU danger-window detection should not populate overlaps until a window is used.");
+            windowSimulation.AssertYuDangerWindowsEquivalent(naiveWindows, fastWindows,
                 "Optimized YU danger-window detection must match the naive O(n^2) detection.");
             YuDangerWindow boundaryWindow = FindYuWindowByStart(fastWindows, 100.0);
             AssertSelfTest(boundaryWindow != null &&
@@ -7906,19 +7985,22 @@ namespace WindowsFormsApplication1
         {
             for (int fromNodeId = 0; fromNodeId < sensors.Length; fromNodeId++)
             {
-                double fromX;
-                double fromY;
-                GetNodeCoordinates(fromNodeId, out fromX, out fromY);
+                double fromX = fromNodeId == 0 ? artifact.BaseX : artifact.Sensors[fromNodeId].X;
+                double fromY = fromNodeId == 0 ? artifact.BaseY : artifact.Sensors[fromNodeId].Y;
                 for (int toNodeId = 0; toNodeId < sensors.Length; toNodeId++)
                 {
-                    double toX;
-                    double toY;
-                    GetNodeCoordinates(toNodeId, out toX, out toY);
+                    double toX = toNodeId == 0 ? artifact.BaseX : artifact.Sensors[toNodeId].X;
+                    double toY = toNodeId == 0 ? artifact.BaseY : artifact.Sensors[toNodeId].Y;
                     double expected = ExperimentArtifact.Distance(fromX, fromY, toX, toY);
                     AssertNear(DistanceBetweenNodes(fromNodeId, toNodeId), expected, 1e-12,
                         "Distance cache should match ExperimentArtifact.Distance().");
                 }
             }
+        }
+
+        private double[,] DistanceCacheForSelfTest()
+        {
+            return artifact.DistanceCacheForSelfTest();
         }
 
         private List<BprPredictedRequest> SelectChengBprRouteInsertionNodesBySortForSelfTest(
@@ -8099,7 +8181,39 @@ namespace WindowsFormsApplication1
             }
         }
 
-        private static void AssertYuDangerWindowsEquivalent(
+        private static void AssertYuReservedNodeOnlyExcludesThatInterval(
+            ExperimentSimulation simulation,
+            string message)
+        {
+            List<YuPredictedInterval> allIntervals = simulation.BuildYuPredictedIntervals(1, new HashSet<int>());
+            AssertSelfTest(allIntervals.Count >= 2, message + " Self-test setup should produce at least two intervals.");
+            int reservedNodeId = allIntervals[0].NodeId;
+            HashSet<int> reserved = new HashSet<int>();
+            reserved.Add(reservedNodeId);
+            List<YuPredictedInterval> reservedIntervals = simulation.BuildYuPredictedIntervals(1, reserved);
+            AssertSelfTest(!ContainsYuInterval(reservedIntervals, reservedNodeId),
+                message + " Reserved node should be excluded.");
+
+            for (int i = 0; i < allIntervals.Count; i++)
+            {
+                YuPredictedInterval original = allIntervals[i];
+                if (original.NodeId == reservedNodeId)
+                    continue;
+                YuPredictedInterval afterReserve = FindYuIntervalByNodeId(reservedIntervals, original.NodeId);
+                AssertSelfTest(afterReserve != null,
+                    message + " Non-reserved interval disappeared.");
+                AssertNear(afterReserve.CenterRequestTimeSeconds, original.CenterRequestTimeSeconds, 1e-12,
+                    message + " Center changed for a non-reserved node.");
+                AssertNear(afterReserve.IntervalStartSeconds, original.IntervalStartSeconds, 1e-12,
+                    message + " Interval start changed for a non-reserved node.");
+                AssertNear(afterReserve.IntervalEndSeconds, original.IntervalEndSeconds, 1e-12,
+                    message + " Interval end changed for a non-reserved node.");
+                AssertNear(afterReserve.LatestSafeServiceTimeSeconds, original.LatestSafeServiceTimeSeconds, 1e-12,
+                    message + " Latest safe service time changed for a non-reserved node.");
+            }
+        }
+
+        private void AssertYuDangerWindowsEquivalent(
             List<YuDangerWindow> expected,
             List<YuDangerWindow> actual,
             string message)
@@ -8107,6 +8221,7 @@ namespace WindowsFormsApplication1
             AssertSelfTest(expected.Count == actual.Count, message + " Count mismatch.");
             for (int i = 0; i < expected.Count; i++)
             {
+                PopulateYuDangerWindowOverlaps(actual[i]);
                 AssertNear(actual[i].WindowStartSeconds, expected[i].WindowStartSeconds, 1e-12,
                     message + " WindowStart mismatch.");
                 AssertNear(actual[i].WindowEndSeconds, expected[i].WindowEndSeconds, 1e-12,
@@ -8123,6 +8238,18 @@ namespace WindowsFormsApplication1
                         message + " Overlapping interval order mismatch.");
                 }
             }
+        }
+
+        private static bool AnyYuDangerWindowOverlapsPopulated(List<YuDangerWindow> windows)
+        {
+            if (windows == null)
+                return false;
+            for (int i = 0; i < windows.Count; i++)
+            {
+                if (windows[i] != null && windows[i].OverlapsPopulated)
+                    return true;
+            }
+            return false;
         }
 
         private static YuDangerWindow FindYuWindowByStart(List<YuDangerWindow> windows, double windowStartSeconds)
@@ -8145,6 +8272,18 @@ namespace WindowsFormsApplication1
                     return true;
             }
             return false;
+        }
+
+        private static YuPredictedInterval FindYuIntervalByNodeId(List<YuPredictedInterval> intervals, int nodeId)
+        {
+            if (intervals == null)
+                return null;
+            for (int i = 0; i < intervals.Count; i++)
+            {
+                if (intervals[i].NodeId == nodeId)
+                    return intervals[i];
+            }
+            return null;
         }
 
         private static void AssertNoDuplicateProactiveNodes(List<ChargingRequest> requests, string message)
