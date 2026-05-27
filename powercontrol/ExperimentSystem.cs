@@ -4405,8 +4405,34 @@ namespace WindowsFormsApplication1
             double horizonEnd,
             HashSet<int> reservedNodeIds)
         {
+            if (nodeId <= 0 || nodeId >= sensors.Length)
+                return new List<YuPredictionSegment>();
+
+            SensorState sensor = sensors[nodeId];
+            if (sensor == null)
+                return new List<YuPredictionSegment>();
+
+            BprSTableEntry entry = null;
+            if (bprSTableByNodeId != null)
+                bprSTableByNodeId.TryGetValue(nodeId, out entry);
+            double startEnergy = entry == null || Double.IsNaN(entry.EnergyJ)
+                ? sensor.EnergyJ
+                : entry.EnergyJ;
+            return BuildYuPredictionTimeline(nodeId, horizonEnd, startEnergy, sensor.RateScale);
+        }
+
+        private List<YuPredictionSegment> BuildYuPredictionTimeline(
+            int nodeId,
+            double horizonEnd,
+            double startEnergyJ,
+            double startRateScale)
+        {
             List<YuPredictionSegment> timeline = new List<YuPredictionSegment>();
-            List<BprPredictionSegment> bprTimeline = BuildBprPredictionTimeline(nodeId, horizonEnd, reservedNodeIds);
+            List<BprPredictionSegment> bprTimeline = BuildBprPredictionTimelineFromState(
+                nodeId,
+                horizonEnd,
+                startEnergyJ,
+                startRateScale);
             for (int i = 0; i < bprTimeline.Count; i++)
             {
                 BprPredictionSegment source = bprTimeline[i];
@@ -4463,8 +4489,19 @@ namespace WindowsFormsApplication1
                 BprPredictedRequest candidate = candidates[i];
                 int nodeId = candidate.NodeId;
                 BprSTableEntry entry = GetOrCreateBprSTableEntry(nodeId);
+                SensorState sensor = nodeId > 0 && nodeId < sensors.Length ? sensors[nodeId] : null;
+                double startEnergy = candidate.EnergyAtPredictionStartJ;
+                if (Double.IsNaN(startEnergy))
+                    startEnergy = entry == null || Double.IsNaN(entry.EnergyJ)
+                        ? (sensor == null ? Double.NaN : sensor.EnergyJ)
+                        : entry.EnergyJ;
+                double startRateScale = sensor == null ? 1.0 : sensor.RateScale;
 
-                List<YuPredictionSegment> timeline = BuildYuPredictionTimeline(nodeId, horizonEnd, reservedNodeIds);
+                List<YuPredictionSegment> timeline = BuildYuPredictionTimeline(
+                    nodeId,
+                    horizonEnd,
+                    startEnergy,
+                    startRateScale);
                 YuPredictionSegment requestSegment = null;
                 double deathTime = candidate.DeathTimeSeconds;
                 for (int segmentIndex = 0; segmentIndex < timeline.Count; segmentIndex++)
@@ -8249,6 +8286,29 @@ namespace WindowsFormsApplication1
                 "YU dynamic-center setup should create one common-candidate interval.");
             AssertNear(dynamicIntervals[0].CenterRequestTimeSeconds, 10.0, 1e-9,
                 "YU should prefer the dynamic request-threshold crossing as center when it exists.");
+
+            ExperimentSettings filteredTimelineSettings = CreateBprSelfTestSettings(tempDirectory);
+            filteredTimelineSettings.NmaxTask = 2;
+            filteredTimelineSettings.ProactivePredictionHorizonSeconds = 1000.0;
+            filteredTimelineSettings.YuIntervalUncertaintySeconds = 10.0;
+            filteredTimelineSettings.ProactiveCandidateMaxEnergyRatio = 0.95;
+            filteredTimelineSettings.ProactiveCooldownSeconds = 1000.0;
+            filteredTimelineSettings.Normalize();
+            ExperimentSimulation filteredTimelineSimulation = new ExperimentSimulation(
+                filteredTimelineSettings,
+                CreateBprSelfTestArtifact(new double[] { 96.0 }),
+                "NJF_YU_BPR",
+                null);
+            simulations.Add(filteredTimelineSimulation);
+            SetBprReportedDeadline(filteredTimelineSimulation, 1, 200.0);
+            BprSTableEntry filteredEntry = filteredTimelineSimulation.GetOrCreateBprSTableEntry(1);
+            filteredEntry.LastChargedTimeSeconds = filteredTimelineSimulation.currentTime;
+            filteredEntry.LastProactiveSelectedTimeSeconds = filteredTimelineSimulation.currentTime;
+            List<YuPredictedInterval> filteredTimelineIntervals = filteredTimelineSimulation.BuildYuPredictedIntervals(2, new HashSet<int>());
+            AssertSelfTest(filteredTimelineIntervals.Count == 1,
+                "YU filtered-timeline setup should still create one common-candidate interval.");
+            AssertNear(filteredTimelineIntervals[0].CenterRequestTimeSeconds, 46.0, 1e-9,
+                "YU dynamic timeline must not be blocked by high-energy or cooldown filters after the common candidate basis is selected.");
 
             ExperimentSettings noProactiveSettings = CreateBprSelfTestSettings(tempDirectory);
             noProactiveSettings.NmaxTask = 2;
