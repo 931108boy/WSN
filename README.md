@@ -358,6 +358,24 @@ C:\Users\931108boy\Desktop\WSN\experiment-last-settings.xml
 
 ## 執行方法
 
+### 正式大量實驗效能建議：使用 Release x64
+
+正式大量實驗請使用 Release x64，不建議用 Visual Studio Debug / F5 跑正式實驗。Debug 模式主要用於小規模除錯，會讓大量 simulation loop、YU danger window detection、route insertion cost selection 明顯變慢。
+
+本專案的 `Run-WSN-Experiment.bat` 會建置並啟動 Release x64 的 `powercontrol\bin\HighCpu64\powercontrol.exe`，適合正式批次比較：
+
+```powershell
+.\Run-WSN-Experiment.bat
+```
+
+若用 Visual Studio 執行正式實驗，建議選擇：
+
+- Configuration: Release
+- Platform: x64
+- 使用 Ctrl + F5，或直接執行 `bin\x64\Release` / `bin\HighCpu64` 裡的 exe
+
+x64 較適合 SensorCount、RunCount、Sweep、Algorithm 數量較大的實驗。Debug 模式只建議用於小規模除錯與單步追蹤。
+
 ### 方法 1：用 WinForms 圖形介面執行
 
 1. 開啟 PowerShell。

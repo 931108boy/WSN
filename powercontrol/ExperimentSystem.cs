@@ -2238,6 +2238,7 @@ namespace WindowsFormsApplication1
         private readonly string algorithm;
         private readonly Random algorithmRandom;
         private readonly SensorState[] sensors;
+        private readonly double[,] nodeDistanceMeters;
         private readonly List<ChargingRequest> activeRequests;
         private readonly List<ExperimentDeathRecord> deaths;
         private Dictionary<int, BprSTableEntry> bprSTableByNodeId;
@@ -2463,6 +2464,7 @@ namespace WindowsFormsApplication1
 
             for (int i = 0; i < artifact.Sensors.Count; i++)
                 sensors[i] = new SensorState(artifact.Sensors[i], settings, artifact.UsesActivationSchedule);
+            nodeDistanceMeters = BuildNodeDistanceCache();
             artifact.GetRateChangesForNode(0);
             InitializeBprSTable();
 
@@ -2490,6 +2492,56 @@ namespace WindowsFormsApplication1
             summary.FirstDeadDirectEnergyCauseZh = "";
             summary.FirstDeadSchedulingCause = "";
             summary.FirstDeadSchedulingCauseZh = "";
+        }
+
+        private double[,] BuildNodeDistanceCache()
+        {
+            int count = sensors == null ? 0 : sensors.Length;
+            double[,] distances = new double[count, count];
+            for (int i = 0; i < count; i++)
+            {
+                double ix;
+                double iy;
+                GetNodeCoordinates(i, out ix, out iy);
+                for (int j = i; j < count; j++)
+                {
+                    double jx;
+                    double jy;
+                    GetNodeCoordinates(j, out jx, out jy);
+                    double distance = ExperimentArtifact.Distance(ix, iy, jx, jy);
+                    distances[i, j] = distance;
+                    distances[j, i] = distance;
+                }
+            }
+
+            return distances;
+        }
+
+        private void GetNodeCoordinates(int nodeId, out double x, out double y)
+        {
+            if (nodeId == 0)
+            {
+                x = artifact.BaseX;
+                y = artifact.BaseY;
+                return;
+            }
+
+            SensorState sensor = sensors[nodeId];
+            x = sensor.X;
+            y = sensor.Y;
+        }
+
+        private double DistanceBetweenNodes(int fromNodeId, int toNodeId)
+        {
+            if (nodeDistanceMeters == null ||
+                fromNodeId < 0 || toNodeId < 0 ||
+                fromNodeId >= nodeDistanceMeters.GetLength(0) ||
+                toNodeId >= nodeDistanceMeters.GetLength(1))
+            {
+                return Double.MaxValue;
+            }
+
+            return nodeDistanceMeters[fromNodeId, toNodeId];
         }
 
         private void CopySweepFieldsTo(ExperimentRunSummary record)
@@ -2941,8 +2993,7 @@ namespace WindowsFormsApplication1
                 RefreshBprSTableEntry(nodeId, "mission_scheduled", true);
             MarkProactiveNodesSelected(route);
             double wcvEnergy = settings.WcvCapacityJ;
-            double posX = artifact.BaseX;
-            double posY = artifact.BaseY;
+            int currentWcvNodeId = 0;
             int order = 0;
 
             for (int i = 0; i < route.Count && !stopForFirstDeath; i++)
@@ -2956,8 +3007,8 @@ namespace WindowsFormsApplication1
                     continue;
                 }
 
-                double distance = ExperimentArtifact.Distance(posX, posY, sensor.X, sensor.Y);
-                double returnDistance = ExperimentArtifact.Distance(sensor.X, sensor.Y, artifact.BaseX, artifact.BaseY);
+                double distance = DistanceBetweenNodes(currentWcvNodeId, request.NodeId);
+                double returnDistance = DistanceBetweenNodes(request.NodeId, 0);
                 double moveEnergy = distance * settings.WcvMoveCostJPerMeter;
                 double returnEnergy = returnDistance * settings.WcvMoveCostJPerMeter;
                 if (wcvEnergy < moveEnergy + returnEnergy)
@@ -3111,11 +3162,10 @@ namespace WindowsFormsApplication1
                 }
 
                 CompleteRequestForTask(request);
-                posX = sensor.X;
-                posY = sensor.Y;
+                currentWcvNodeId = request.NodeId;
             }
 
-            double backDistance = ExperimentArtifact.Distance(posX, posY, artifact.BaseX, artifact.BaseY);
+            double backDistance = DistanceBetweenNodes(currentWcvNodeId, 0);
             double backMoveEnergy = backDistance * settings.WcvMoveCostJPerMeter;
             if (wcvEnergy >= backMoveEnergy)
             {
@@ -4175,30 +4225,45 @@ namespace WindowsFormsApplication1
             while (selectable.Count > 0 && selected.Count < addCount)
             {
                 List<ChargingRequest> currentRoute = BuildNearestRoute(previewCplist, previewCplist.Count);
-                selectable.Sort(delegate (BprPredictedRequest a, BprPredictedRequest b)
+                int bestIndex = -1;
+                double bestCost = Double.MaxValue;
+                for (int i = 0; i < selectable.Count; i++)
                 {
-                    double da = ComputeRouteInsertionCost(a.NodeId, currentRoute);
-                    double db = ComputeRouteInsertionCost(b.NodeId, currentRoute);
-                    int compare = da.CompareTo(db);
-                    if (compare != 0)
-                        return compare;
-                    compare = a.RequestTimeSeconds.CompareTo(b.RequestTimeSeconds);
-                    if (compare != 0)
-                        return compare;
-                    compare = a.DeathTimeSeconds.CompareTo(b.DeathTimeSeconds);
-                    if (compare != 0)
-                        return compare;
-                    return a.NodeId.CompareTo(b.NodeId);
-                });
+                    double cost = ComputeRouteInsertionCost(selectable[i].NodeId, currentRoute);
+                    if (bestIndex < 0 ||
+                        IsBetterChengRouteInsertionCandidate(selectable[i], cost, selectable[bestIndex], bestCost))
+                    {
+                        bestIndex = i;
+                        bestCost = cost;
+                    }
+                }
 
-                BprPredictedRequest picked = selectable[0];
-                selectable.RemoveAt(0);
-                picked.RouteInsertionCost = ComputeRouteInsertionCost(picked.NodeId, currentRoute);
+                BprPredictedRequest picked = selectable[bestIndex];
+                selectable.RemoveAt(bestIndex);
+                picked.RouteInsertionCost = bestCost;
                 selected.Add(picked);
                 previewCplist.Add(CreateChengBprPaperProactiveRequest(picked, ChengBprRouteInsertionReason));
             }
 
             return selected;
+        }
+
+        private static bool IsBetterChengRouteInsertionCandidate(
+            BprPredictedRequest candidate,
+            double candidateCost,
+            BprPredictedRequest best,
+            double bestCost)
+        {
+            int compare = candidateCost.CompareTo(bestCost);
+            if (compare != 0)
+                return compare < 0;
+            compare = candidate.RequestTimeSeconds.CompareTo(best.RequestTimeSeconds);
+            if (compare != 0)
+                return compare < 0;
+            compare = candidate.DeathTimeSeconds.CompareTo(best.DeathTimeSeconds);
+            if (compare != 0)
+                return compare < 0;
+            return candidate.NodeId.CompareTo(best.NodeId) < 0;
         }
 
         private void RemoveBprPredictedRequestByNodeId(List<BprPredictedRequest> requests, int nodeId)
@@ -4373,8 +4438,29 @@ namespace WindowsFormsApplication1
             }
             windowStarts.Sort();
 
+            int[] deltas = new int[windowStarts.Count + 1];
+            for (int i = 0; i < intervals.Count; i++)
+            {
+                YuPredictedInterval interval = intervals[i];
+                double overlapStart = interval.IntervalStartSeconds - windowSize - Epsilon;
+                double overlapEnd = interval.IntervalEndSeconds + Epsilon;
+                int startIndex = LowerBound(windowStarts, overlapStart);
+                int endIndexExclusive = UpperBound(windowStarts, overlapEnd);
+                if (startIndex < endIndexExclusive)
+                {
+                    deltas[startIndex]++;
+                    deltas[endIndexExclusive]--;
+                }
+            }
+
+            int dangerCount = 0;
             for (int i = 0; i < windowStarts.Count; i++)
             {
+                dangerCount += deltas[i];
+                int removalNeededCount = Math.Max(0, dangerCount - maxTask);
+                if (removalNeededCount <= 0)
+                    continue;
+
                 double windowStart = windowStarts[i];
                 double windowEnd = windowStart + windowSize;
                 YuDangerWindow window = new YuDangerWindow();
@@ -4399,6 +4485,36 @@ namespace WindowsFormsApplication1
 
             windows.Sort(CompareYuDangerWindowBySeverity);
             return windows;
+        }
+
+        private static int LowerBound(List<double> sortedValues, double value)
+        {
+            int low = 0;
+            int high = sortedValues.Count;
+            while (low < high)
+            {
+                int mid = low + (high - low) / 2;
+                if (sortedValues[mid] < value)
+                    low = mid + 1;
+                else
+                    high = mid;
+            }
+            return low;
+        }
+
+        private static int UpperBound(List<double> sortedValues, double value)
+        {
+            int low = 0;
+            int high = sortedValues.Count;
+            while (low < high)
+            {
+                int mid = low + (high - low) / 2;
+                if (sortedValues[mid] <= value)
+                    low = mid + 1;
+                else
+                    high = mid;
+            }
+            return low;
         }
 
         private static int CompareYuDangerWindowBySeverity(YuDangerWindow a, YuDangerWindow b)
@@ -4441,13 +4557,13 @@ namespace WindowsFormsApplication1
             if (!allowCapacityOverflow && cplist.Count >= maxTask)
                 return cplist;
 
+            List<YuPredictedInterval> intervals = BuildYuPredictedIntervals(maxTask, reservedNodeIds);
             int iteration = 0;
             int safety = 0;
             while (safety < sensors.Length * 2 + 4)
             {
                 safety++;
                 iteration++;
-                List<YuPredictedInterval> intervals = BuildYuPredictedIntervals(maxTask, reservedNodeIds);
                 List<YuDangerWindow> windows = BuildYuDangerWindows(intervals, maxTask);
                 if (windows.Count == 0)
                 {
@@ -4483,6 +4599,7 @@ namespace WindowsFormsApplication1
                     int before = cplist.Count;
                     cplist.Add(CreateYuProactiveRequest(decision));
                     reservedNodeIds.Add(decision.NodeId);
+                    RemoveYuPredictedIntervalByNodeId(intervals, decision.NodeId);
                     WriteYuBprDebug(iteration, worstWindow, decision, decision.Reason, before, cplist.Count, maxTask, allowCapacityOverflow);
                 }
 
@@ -4491,6 +4608,17 @@ namespace WindowsFormsApplication1
             }
 
             return cplist;
+        }
+
+        private static void RemoveYuPredictedIntervalByNodeId(List<YuPredictedInterval> intervals, int nodeId)
+        {
+            if (intervals == null)
+                return;
+            for (int i = intervals.Count - 1; i >= 0; i--)
+            {
+                if (intervals[i].NodeId == nodeId)
+                    intervals.RemoveAt(i);
+            }
         }
 
         private BprRemovalDecision CreateChengRemovalDecision(
@@ -4531,36 +4659,32 @@ namespace WindowsFormsApplication1
             {
                 List<ChargingRequest> currentRoute = BuildNearestRoute(previewCplist, previewCplist.Count);
                 YuPredictedInterval picked;
+                double routeInsertionCost;
                 if (selectionMode == YuProactiveSelectionMode.RouteInsertionCost)
                 {
-                    selectable.Sort(delegate (YuPredictedInterval a, YuPredictedInterval b)
+                    int bestIndex = -1;
+                    double bestCost = Double.MaxValue;
+                    for (int i = 0; i < selectable.Count; i++)
                     {
-                        double da = ComputeRouteInsertionCost(a.NodeId, currentRoute);
-                        double db = ComputeRouteInsertionCost(b.NodeId, currentRoute);
-                        int compare = da.CompareTo(db);
-                        if (compare != 0)
-                            return compare;
-                        compare = a.CenterRequestTimeSeconds.CompareTo(b.CenterRequestTimeSeconds);
-                        if (compare != 0)
-                            return compare;
-                        compare = a.IntervalStartSeconds.CompareTo(b.IntervalStartSeconds);
-                        if (compare != 0)
-                            return compare;
-                        compare = a.IntervalEndSeconds.CompareTo(b.IntervalEndSeconds);
-                        if (compare != 0)
-                            return compare;
-                        return a.NodeId.CompareTo(b.NodeId);
-                    });
-                    picked = selectable[0];
-                    selectable.RemoveAt(0);
+                        double cost = ComputeRouteInsertionCost(selectable[i].NodeId, currentRoute);
+                        if (bestIndex < 0 ||
+                            IsBetterYuRouteInsertionCandidate(selectable[i], cost, selectable[bestIndex], bestCost))
+                        {
+                            bestIndex = i;
+                            bestCost = cost;
+                        }
+                    }
+                    picked = selectable[bestIndex];
+                    selectable.RemoveAt(bestIndex);
+                    routeInsertionCost = bestCost;
                 }
                 else
                 {
                     int index = algorithmRandom.Next(selectable.Count);
                     picked = selectable[index];
                     selectable.RemoveAt(index);
+                    routeInsertionCost = ComputeRouteInsertionCost(picked.NodeId, currentRoute);
                 }
-                double routeInsertionCost = ComputeRouteInsertionCost(picked.NodeId, currentRoute);
                 YuRemovalDecision decision = CreateYuRemovalDecision(
                     picked,
                     routeInsertionCost,
@@ -4572,6 +4696,27 @@ namespace WindowsFormsApplication1
             }
 
             return selected;
+        }
+
+        private static bool IsBetterYuRouteInsertionCandidate(
+            YuPredictedInterval candidate,
+            double candidateCost,
+            YuPredictedInterval best,
+            double bestCost)
+        {
+            int compare = candidateCost.CompareTo(bestCost);
+            if (compare != 0)
+                return compare < 0;
+            compare = candidate.CenterRequestTimeSeconds.CompareTo(best.CenterRequestTimeSeconds);
+            if (compare != 0)
+                return compare < 0;
+            compare = candidate.IntervalStartSeconds.CompareTo(best.IntervalStartSeconds);
+            if (compare != 0)
+                return compare < 0;
+            compare = candidate.IntervalEndSeconds.CompareTo(best.IntervalEndSeconds);
+            if (compare != 0)
+                return compare < 0;
+            return candidate.NodeId.CompareTo(best.NodeId) < 0;
         }
 
         private YuRemovalDecision CreateYuRemovalDecision(
@@ -4804,36 +4949,18 @@ namespace WindowsFormsApplication1
             if (nodeId <= 0 || nodeId >= sensors.Length)
                 return Double.MaxValue;
 
-            SensorState candidate = sensors[nodeId];
             int routeCount = route == null ? 0 : route.Count;
             if (routeCount == 0)
-                return 2.0 * ExperimentArtifact.Distance(artifact.BaseX, artifact.BaseY, candidate.X, candidate.Y);
+                return 2.0 * DistanceBetweenNodes(0, nodeId);
 
             double best = Double.MaxValue;
             for (int position = 0; position <= routeCount; position++)
             {
-                double prevX = artifact.BaseX;
-                double prevY = artifact.BaseY;
-                if (position > 0)
-                {
-                    SensorState prev = sensors[route[position - 1].NodeId];
-                    prevX = prev.X;
-                    prevY = prev.Y;
-                }
-
-                double nextX = artifact.BaseX;
-                double nextY = artifact.BaseY;
-                if (position < routeCount)
-                {
-                    SensorState next = sensors[route[position].NodeId];
-                    nextX = next.X;
-                    nextY = next.Y;
-                }
-
-                double original = ExperimentArtifact.Distance(prevX, prevY, nextX, nextY);
-                double inserted =
-                    ExperimentArtifact.Distance(prevX, prevY, candidate.X, candidate.Y) +
-                    ExperimentArtifact.Distance(candidate.X, candidate.Y, nextX, nextY);
+                int prevNodeId = position > 0 ? route[position - 1].NodeId : 0;
+                int nextNodeId = position < routeCount ? route[position].NodeId : 0;
+                double original = DistanceBetweenNodes(prevNodeId, nextNodeId);
+                double inserted = DistanceBetweenNodes(prevNodeId, nodeId) +
+                    DistanceBetweenNodes(nodeId, nextNodeId);
                 best = Math.Min(best, inserted - original);
             }
 
@@ -4861,16 +4988,14 @@ namespace WindowsFormsApplication1
         {
             List<ChargingRequest> remaining = new List<ChargingRequest>(pool);
             List<ChargingRequest> route = new List<ChargingRequest>();
-            double x = artifact.BaseX;
-            double y = artifact.BaseY;
+            int currentNodeId = 0;
             while (remaining.Count > 0 && route.Count < maxTask)
             {
                 int bestIndex = 0;
                 double bestDistance = Double.MaxValue;
                 for (int i = 0; i < remaining.Count; i++)
                 {
-                    SensorState sensor = sensors[remaining[i].NodeId];
-                    double distance = ExperimentArtifact.Distance(x, y, sensor.X, sensor.Y);
+                    double distance = DistanceBetweenNodes(currentNodeId, remaining[i].NodeId);
                     if (distance < bestDistance)
                     {
                         bestDistance = distance;
@@ -4880,8 +5005,7 @@ namespace WindowsFormsApplication1
                 ChargingRequest next = remaining[bestIndex];
                 route.Add(next);
                 remaining.RemoveAt(bestIndex);
-                x = sensors[next.NodeId].X;
-                y = sensors[next.NodeId].Y;
+                currentNodeId = next.NodeId;
             }
             return route;
         }
@@ -4890,8 +5014,7 @@ namespace WindowsFormsApplication1
         {
             List<ChargingRequest> remaining = new List<ChargingRequest>(pool);
             List<ChargingRequest> route = new List<ChargingRequest>();
-            double x = artifact.BaseX;
-            double y = artifact.BaseY;
+            int currentNodeId = 0;
             while (remaining.Count > 0 && route.Count < maxTask)
             {
                 double maxSlack = 1.0;
@@ -4900,7 +5023,7 @@ namespace WindowsFormsApplication1
                 for (int i = 0; i < remaining.Count; i++)
                 {
                     maxSlack = Math.Max(maxSlack, Math.Max(0.0, remaining[i].DeadlineSeconds - currentTime));
-                    maxDistance = Math.Max(maxDistance, DistanceFrom(x, y, remaining[i].NodeId));
+                    maxDistance = Math.Max(maxDistance, DistanceBetweenNodes(currentNodeId, remaining[i].NodeId));
                     maxRate = Math.Max(maxRate, GetRequestEffectiveConsumeRate(remaining[i]));
                 }
 
@@ -4909,7 +5032,7 @@ namespace WindowsFormsApplication1
                 for (int i = 0; i < remaining.Count; i++)
                 {
                     double urgency = Math.Max(0.0, remaining[i].DeadlineSeconds - currentTime) / maxSlack;
-                    double distance = DistanceFrom(x, y, remaining[i].NodeId) / maxDistance;
+                    double distance = DistanceBetweenNodes(currentNodeId, remaining[i].NodeId) / maxDistance;
                     double rate = 1.0 - GetRequestEffectiveConsumeRate(remaining[i]) / maxRate;
                     double score = urgencyWeight * urgency + distanceWeight * distance + rateWeight * rate;
                     if (score < bestScore)
@@ -4922,8 +5045,7 @@ namespace WindowsFormsApplication1
                 ChargingRequest next = remaining[bestIndex];
                 route.Add(next);
                 remaining.RemoveAt(bestIndex);
-                x = sensors[next.NodeId].X;
-                y = sensors[next.NodeId].Y;
+                currentNodeId = next.NodeId;
             }
 
             return route;
@@ -4933,8 +5055,7 @@ namespace WindowsFormsApplication1
         {
             List<ChargingRequest> remaining = new List<ChargingRequest>(pool);
             List<ChargingRequest> route = new List<ChargingRequest>();
-            double x = artifact.BaseX;
-            double y = artifact.BaseY;
+            int currentNodeId = 0;
 
             while (remaining.Count > 0 && route.Count < maxTask)
             {
@@ -4945,7 +5066,7 @@ namespace WindowsFormsApplication1
                     ChargingRequest request = remaining[i];
                     SensorState sensor = sensors[request.NodeId];
                     double residualRatio = sensor.CapacityJ <= 0.0 ? 0.0 : sensor.EnergyJ / sensor.CapacityJ;
-                    double distanceRatio = DistanceFrom(x, y, request.NodeId) /
+                    double distanceRatio = DistanceBetweenNodes(currentNodeId, request.NodeId) /
                         Math.Max(1.0, Math.Sqrt(settings.MapWidthMeters * settings.MapWidthMeters + settings.MapHeightMeters * settings.MapHeightMeters));
                     double baseRate = Math.Max(1e-9, settings.InitialEnergyJ / settings.SensorBackgroundLifetimeSeconds);
                     double rateRatio = GetEffectiveConsumeRateJPerSecond(sensor) / baseRate;
@@ -4962,8 +5083,7 @@ namespace WindowsFormsApplication1
                 ChargingRequest next = remaining[bestIndex];
                 route.Add(next);
                 remaining.RemoveAt(bestIndex);
-                x = sensors[next.NodeId].X;
-                y = sensors[next.NodeId].Y;
+                currentNodeId = next.NodeId;
             }
 
             return route;
@@ -5156,8 +5276,7 @@ namespace WindowsFormsApplication1
 
             double trialTime = currentTime;
             double wcvEnergy = settings.WcvCapacityJ;
-            double x = artifact.BaseX;
-            double y = artifact.BaseY;
+            int currentNodeId = 0;
             double totalDistance = 0.0;
             double totalLateness = 0.0;
             double energyPenalty = 0.0;
@@ -5172,8 +5291,8 @@ namespace WindowsFormsApplication1
                     continue;
 
                 SensorState sensor = sensors[request.NodeId];
-                double distance = ExperimentArtifact.Distance(x, y, sensor.X, sensor.Y);
-                double returnDistance = ExperimentArtifact.Distance(sensor.X, sensor.Y, artifact.BaseX, artifact.BaseY);
+                double distance = DistanceBetweenNodes(currentNodeId, request.NodeId);
+                double returnDistance = DistanceBetweenNodes(request.NodeId, 0);
                 double moveEnergy = distance * settings.WcvMoveCostJPerMeter;
                 double returnEnergy = returnDistance * settings.WcvMoveCostJPerMeter;
                 if (wcvEnergy < moveEnergy + returnEnergy)
@@ -5194,8 +5313,7 @@ namespace WindowsFormsApplication1
                 {
                     deathPenalty += 1.0e8;
                     pendingEnergy.Remove(request.NodeId);
-                    x = sensor.X;
-                    y = sensor.Y;
+                    currentNodeId = request.NodeId;
                     continue;
                 }
 
@@ -5206,8 +5324,7 @@ namespace WindowsFormsApplication1
                 {
                     energyPenalty += 1.0e8;
                     pendingEnergy.Remove(request.NodeId);
-                    x = sensor.X;
-                    y = sensor.Y;
+                    currentNodeId = request.NodeId;
                     continue;
                 }
 
@@ -5229,11 +5346,10 @@ namespace WindowsFormsApplication1
                     successfulTasks++;
 
                 pendingEnergy.Remove(request.NodeId);
-                x = sensor.X;
-                y = sensor.Y;
+                currentNodeId = request.NodeId;
             }
 
-            double backDistance = ExperimentArtifact.Distance(x, y, artifact.BaseX, artifact.BaseY);
+            double backDistance = DistanceBetweenNodes(currentNodeId, 0);
             totalDistance += backDistance;
             double backEnergy = backDistance * settings.WcvMoveCostJPerMeter;
             if (wcvEnergy < backEnergy)
@@ -5699,15 +5815,11 @@ namespace WindowsFormsApplication1
 
         private double RouteSegmentCost(List<ChargingRequest> route, int i, int k)
         {
-            double x0 = i == 0 ? artifact.BaseX : sensors[route[i].NodeId].X;
-            double y0 = i == 0 ? artifact.BaseY : sensors[route[i].NodeId].Y;
-            double x1 = sensors[route[i + 1].NodeId].X;
-            double y1 = sensors[route[i + 1].NodeId].Y;
-            double x2 = sensors[route[k].NodeId].X;
-            double y2 = sensors[route[k].NodeId].Y;
-            double x3 = k + 1 >= route.Count ? artifact.BaseX : sensors[route[k + 1].NodeId].X;
-            double y3 = k + 1 >= route.Count ? artifact.BaseY : sensors[route[k + 1].NodeId].Y;
-            return ExperimentArtifact.Distance(x0, y0, x1, y1) + ExperimentArtifact.Distance(x2, y2, x3, y3);
+            int node0 = i == 0 ? 0 : route[i].NodeId;
+            int node1 = route[i + 1].NodeId;
+            int node2 = route[k].NodeId;
+            int node3 = k + 1 >= route.Count ? 0 : route[k + 1].NodeId;
+            return DistanceBetweenNodes(node0, node1) + DistanceBetweenNodes(node2, node3);
         }
 
         private double FuzzyPriority(double residualRatio, double distanceRatio, double rateRatio, double densityRatio, double routingRatio)
@@ -6239,6 +6351,7 @@ namespace WindowsFormsApplication1
                 RunSimulationEndBeforeFullSelfTest(tempDirectory, simulations);
                 RunDeathReasonSelfTest(tempDirectory, simulations);
                 RunCompleteBprYuPredictionSelfTest(tempDirectory, simulations);
+                RunBprPerformanceEquivalenceSelfTest(tempDirectory, simulations);
 
                 ExperimentArtifact maintenanceArtifact = CreateBprSelfTestArtifact(new double[] { 100.0, 100.0, 100.0 });
                 ExperimentSimulation maintenanceSimulation = new ExperimentSimulation(
@@ -7649,6 +7762,431 @@ namespace WindowsFormsApplication1
                 null);
             simulations.Add(yuSideEffectSimulation);
             AssertPredictionHelpersHaveNoSideEffects(yuSideEffectSimulation, 1);
+        }
+
+        private static void RunBprPerformanceEquivalenceSelfTest(string tempDirectory, List<ExperimentSimulation> simulations)
+        {
+            ExperimentSettings routeSettings = CreateBprSelfTestSettings(tempDirectory);
+            routeSettings.NmaxTask = 3;
+            routeSettings.WcvMoveCostJPerMeter = 1.0;
+            routeSettings.WcvSpeedMetersPerSecond = 10.0;
+            routeSettings.ProactiveCooldownSeconds = 0.0;
+            routeSettings.ProactiveCandidateMaxEnergyRatio = 1.0;
+            routeSettings.Normalize();
+
+            ExperimentArtifact routeArtifact = CreateBprSelfTestArtifact(new double[] { 80.0, 80.0, 80.0, 80.0, 80.0 });
+            routeArtifact.Sensors[1].X = 3.0;
+            routeArtifact.Sensors[1].Y = 4.0;
+            routeArtifact.Sensors[2].X = 6.0;
+            routeArtifact.Sensors[2].Y = 8.0;
+            routeArtifact.Sensors[3].X = 12.0;
+            routeArtifact.Sensors[3].Y = 5.0;
+            routeArtifact.Sensors[4].X = 18.0;
+            routeArtifact.Sensors[4].Y = 9.0;
+            routeArtifact.Sensors[5].X = 21.0;
+            routeArtifact.Sensors[5].Y = 2.0;
+
+            ExperimentSimulation routeSimulation = new ExperimentSimulation(
+                routeSettings,
+                routeArtifact,
+                "NJF_ROUTE_YU_BPR_LIMITED",
+                null);
+            simulations.Add(routeSimulation);
+            routeSimulation.AssertDistanceCacheMatchesArtifactDistance();
+
+            List<ChargingRequest> previewCplist = new List<ChargingRequest>();
+            previewCplist.Add(CreateManualChargingRequest(4, 90.0));
+            previewCplist.Add(CreateManualChargingRequest(5, 95.0));
+
+            List<BprPredictedRequest> chengSortSelected = routeSimulation.SelectChengBprRouteInsertionNodesBySortForSelfTest(
+                CreateRouteSelectionBprCandidates(),
+                3,
+                previewCplist);
+            List<BprPredictedRequest> chengScanSelected = routeSimulation.SelectChengBprRouteInsertionNodes(
+                CreateRouteSelectionBprCandidates(),
+                3,
+                previewCplist);
+            AssertSameBprPredictedNodeOrder(chengSortSelected, chengScanSelected,
+                "ROUTE_CHENG single-scan route insertion selection must match the old sort-comparator order.");
+
+            YuDangerWindow yuRouteWindow = new YuDangerWindow();
+            yuRouteWindow.WindowStartSeconds = 100.0;
+            yuRouteWindow.WindowEndSeconds = 140.0;
+            yuRouteWindow.OverlappingIntervals = CreateRouteSelectionYuIntervals();
+            yuRouteWindow.DangerCount = yuRouteWindow.OverlappingIntervals.Count;
+            yuRouteWindow.KStar = routeSettings.NmaxTask + 1;
+            yuRouteWindow.RemovalNeededCount = yuRouteWindow.DangerCount - routeSettings.NmaxTask;
+            List<YuRemovalDecision> yuSortSelected = routeSimulation.SelectYuRemovalNodesBySortForSelfTest(
+                yuRouteWindow,
+                3,
+                previewCplist);
+            List<YuRemovalDecision> yuScanSelected = routeSimulation.SelectYuRemovalNodes(
+                yuRouteWindow,
+                3,
+                previewCplist,
+                YuProactiveSelectionMode.RouteInsertionCost);
+            AssertSameYuRemovalDecisionNodeOrder(yuSortSelected, yuScanSelected,
+                "ROUTE_YU single-scan route insertion selection must match the old sort-comparator order.");
+
+            ExperimentSettings windowSettings = CreateBprSelfTestSettings(tempDirectory);
+            windowSettings.NmaxTask = 2;
+            windowSettings.WcvSpeedMetersPerSecond = 10.0;
+            windowSettings.WcvChargeRateJPerSecond = 10.0;
+            windowSettings.Normalize();
+            ExperimentSimulation windowSimulation = new ExperimentSimulation(
+                windowSettings,
+                CreateBprSelfTestArtifact(new double[] { 80.0, 80.0, 80.0, 80.0 }),
+                "NJF_YU_BPR",
+                null);
+            simulations.Add(windowSimulation);
+            double tjob = windowSimulation.EstimateBprTjobSeconds(2);
+            List<YuPredictedInterval> boundaryIntervals = new List<YuPredictedInterval>();
+            boundaryIntervals.Add(CreateManualYuPredictedInterval(1, 90.0, 100.0, 110.0, 150.0, 1.0, 10.0));
+            boundaryIntervals.Add(CreateManualYuPredictedInterval(2, 100.0 + tjob + Epsilon, 100.5, 100.0 + tjob + 2.0, 160.0, 1.0, 10.0));
+            boundaryIntervals.Add(CreateManualYuPredictedInterval(3, 80.0, 101.0, 100.0 - Epsilon, 170.0, 1.0, 10.0));
+            boundaryIntervals.Add(CreateManualYuPredictedInterval(4, 100.0 + tjob + Epsilon + 0.001, 102.0, 100.0 + tjob + 5.0, 180.0, 1.0, 10.0));
+            List<YuDangerWindow> naiveWindows = windowSimulation.BuildYuDangerWindowsNaiveForSelfTest(boundaryIntervals, 2);
+            List<YuDangerWindow> fastWindows = windowSimulation.BuildYuDangerWindows(boundaryIntervals, 2);
+            AssertYuDangerWindowsEquivalent(naiveWindows, fastWindows,
+                "Optimized YU danger-window detection must match the naive O(n^2) detection.");
+            YuDangerWindow boundaryWindow = FindYuWindowByStart(fastWindows, 100.0);
+            AssertSelfTest(boundaryWindow != null &&
+                ContainsYuInterval(boundaryWindow.OverlappingIntervals, 1) &&
+                ContainsYuInterval(boundaryWindow.OverlappingIntervals, 2) &&
+                ContainsYuInterval(boundaryWindow.OverlappingIntervals, 3) &&
+                !ContainsYuInterval(boundaryWindow.OverlappingIntervals, 4),
+                "YU danger-window overlap must preserve both Epsilon boundary inclusions.");
+
+            ExperimentSettings duplicateSettings = CreateBprSelfTestSettings(tempDirectory);
+            duplicateSettings.NmaxTask = 1;
+            duplicateSettings.YuIntervalUncertaintySeconds = 10.0;
+            duplicateSettings.ProactiveCooldownSeconds = 1.0;
+            duplicateSettings.ProactiveCandidateMaxEnergyRatio = 1.0;
+            duplicateSettings.AllowStandaloneProactiveDispatch = true;
+            duplicateSettings.Normalize();
+            ExperimentArtifact duplicateArtifact = CreateBprSelfTestArtifact(new double[] { 80.0, 80.0, 80.0, 80.0 });
+            ExperimentSimulation duplicateSimulation = new ExperimentSimulation(
+                duplicateSettings,
+                duplicateArtifact,
+                "NJF_ROUTE_YU_BPR_EXTENDED",
+                null);
+            simulations.Add(duplicateSimulation);
+            List<ChargingRequest> duplicateCplist = duplicateSimulation.BuildYuBprCplist(
+                new List<ChargingRequest>(),
+                1,
+                true,
+                YuProactiveSelectionMode.RouteInsertionCost);
+            AssertNoDuplicateProactiveNodes(duplicateCplist,
+                "BuildYuBprCplist must not select the same proactive node twice while reusing predicted intervals.");
+
+            ExperimentSettings summarySettings = duplicateSettings.Copy();
+            summarySettings.SelectedAlgorithmsCsv = "NJF_ROUTE_YU_BPR_LIMITED";
+            summarySettings.SimulationTimeSeconds = 120.0;
+            summarySettings.Normalize();
+            ExperimentArtifact summaryArtifact = CreateBprSelfTestArtifact(new double[] { 80.0, 80.0, 80.0 });
+            ExperimentSimulation firstSummarySimulation = new ExperimentSimulation(
+                summarySettings,
+                summaryArtifact,
+                "NJF_ROUTE_YU_BPR_LIMITED",
+                null);
+            ExperimentSimulation secondSummarySimulation = new ExperimentSimulation(
+                summarySettings,
+                summaryArtifact,
+                "NJF_ROUTE_YU_BPR_LIMITED",
+                null);
+            simulations.Add(firstSummarySimulation);
+            simulations.Add(secondSummarySimulation);
+            ExperimentRunSummary firstSummary = firstSummarySimulation.Run().Summary;
+            ExperimentRunSummary secondSummary = secondSummarySimulation.Run().Summary;
+            AssertMainSummaryEquivalent(firstSummary, secondSummary,
+                "Same seed and settings should keep the main run summary deterministic after BP&R performance optimizations.");
+        }
+
+        private void AssertDistanceCacheMatchesArtifactDistance()
+        {
+            for (int fromNodeId = 0; fromNodeId < sensors.Length; fromNodeId++)
+            {
+                double fromX;
+                double fromY;
+                GetNodeCoordinates(fromNodeId, out fromX, out fromY);
+                for (int toNodeId = 0; toNodeId < sensors.Length; toNodeId++)
+                {
+                    double toX;
+                    double toY;
+                    GetNodeCoordinates(toNodeId, out toX, out toY);
+                    double expected = ExperimentArtifact.Distance(fromX, fromY, toX, toY);
+                    AssertNear(DistanceBetweenNodes(fromNodeId, toNodeId), expected, 1e-12,
+                        "Distance cache should match ExperimentArtifact.Distance().");
+                }
+            }
+        }
+
+        private List<BprPredictedRequest> SelectChengBprRouteInsertionNodesBySortForSelfTest(
+            List<BprPredictedRequest> bottleList,
+            int addCount,
+            List<ChargingRequest> cplist)
+        {
+            List<BprPredictedRequest> selected = new List<BprPredictedRequest>();
+            if (bottleList == null || addCount <= 0)
+                return selected;
+
+            List<BprPredictedRequest> selectable = new List<BprPredictedRequest>(bottleList);
+            List<ChargingRequest> previewCplist = CloneRequestList(cplist);
+            while (selectable.Count > 0 && selected.Count < addCount)
+            {
+                List<ChargingRequest> currentRoute = BuildNearestRoute(previewCplist, previewCplist.Count);
+                selectable.Sort(delegate (BprPredictedRequest a, BprPredictedRequest b)
+                {
+                    double da = ComputeRouteInsertionCost(a.NodeId, currentRoute);
+                    double db = ComputeRouteInsertionCost(b.NodeId, currentRoute);
+                    int compare = da.CompareTo(db);
+                    if (compare != 0)
+                        return compare;
+                    compare = a.RequestTimeSeconds.CompareTo(b.RequestTimeSeconds);
+                    if (compare != 0)
+                        return compare;
+                    compare = a.DeathTimeSeconds.CompareTo(b.DeathTimeSeconds);
+                    if (compare != 0)
+                        return compare;
+                    return a.NodeId.CompareTo(b.NodeId);
+                });
+
+                BprPredictedRequest picked = selectable[0];
+                selectable.RemoveAt(0);
+                picked.RouteInsertionCost = ComputeRouteInsertionCost(picked.NodeId, currentRoute);
+                selected.Add(picked);
+                previewCplist.Add(CreateChengBprPaperProactiveRequest(picked, ChengBprRouteInsertionReason));
+            }
+
+            return selected;
+        }
+
+        private List<YuRemovalDecision> SelectYuRemovalNodesBySortForSelfTest(
+            YuDangerWindow window,
+            int addCount,
+            List<ChargingRequest> cplist)
+        {
+            List<YuRemovalDecision> selected = new List<YuRemovalDecision>();
+            if (window == null || window.OverlappingIntervals == null || addCount <= 0)
+                return selected;
+
+            List<YuPredictedInterval> selectable = new List<YuPredictedInterval>(window.OverlappingIntervals);
+            List<ChargingRequest> previewCplist = CloneRequestList(cplist);
+            while (selectable.Count > 0 && selected.Count < addCount)
+            {
+                List<ChargingRequest> currentRoute = BuildNearestRoute(previewCplist, previewCplist.Count);
+                selectable.Sort(delegate (YuPredictedInterval a, YuPredictedInterval b)
+                {
+                    double da = ComputeRouteInsertionCost(a.NodeId, currentRoute);
+                    double db = ComputeRouteInsertionCost(b.NodeId, currentRoute);
+                    int compare = da.CompareTo(db);
+                    if (compare != 0)
+                        return compare;
+                    compare = a.CenterRequestTimeSeconds.CompareTo(b.CenterRequestTimeSeconds);
+                    if (compare != 0)
+                        return compare;
+                    compare = a.IntervalStartSeconds.CompareTo(b.IntervalStartSeconds);
+                    if (compare != 0)
+                        return compare;
+                    compare = a.IntervalEndSeconds.CompareTo(b.IntervalEndSeconds);
+                    if (compare != 0)
+                        return compare;
+                    return a.NodeId.CompareTo(b.NodeId);
+                });
+
+                YuPredictedInterval picked = selectable[0];
+                selectable.RemoveAt(0);
+                double routeInsertionCost = ComputeRouteInsertionCost(picked.NodeId, currentRoute);
+                YuRemovalDecision decision = CreateYuRemovalDecision(
+                    picked,
+                    routeInsertionCost,
+                    "YU_ROUTE_COST_INTERVAL_REMOVAL");
+                selected.Add(decision);
+                previewCplist.Add(CreateYuProactiveRequest(decision));
+            }
+
+            return selected;
+        }
+
+        private List<YuDangerWindow> BuildYuDangerWindowsNaiveForSelfTest(List<YuPredictedInterval> intervals, int maxTask)
+        {
+            List<YuDangerWindow> windows = new List<YuDangerWindow>();
+            if (intervals == null || intervals.Count == 0)
+                return windows;
+
+            maxTask = Math.Max(1, maxTask);
+            double windowSize = EstimateBprTjobSeconds(maxTask);
+            List<double> windowStarts = new List<double>();
+            for (int i = 0; i < intervals.Count; i++)
+                AddUniqueBreakpoint(windowStarts, intervals[i].CenterRequestTimeSeconds);
+            windowStarts.Sort();
+
+            for (int i = 0; i < windowStarts.Count; i++)
+            {
+                double windowStart = windowStarts[i];
+                double windowEnd = windowStart + windowSize;
+                YuDangerWindow window = new YuDangerWindow();
+                window.WindowStartSeconds = windowStart;
+                window.WindowEndSeconds = windowEnd;
+                window.KStar = maxTask + 1;
+                window.OverlappingIntervals = new List<YuPredictedInterval>();
+                for (int j = 0; j < intervals.Count; j++)
+                {
+                    YuPredictedInterval interval = intervals[j];
+                    if (interval.IntervalEndSeconds >= windowStart - Epsilon &&
+                        interval.IntervalStartSeconds <= windowEnd + Epsilon)
+                    {
+                        window.OverlappingIntervals.Add(interval);
+                    }
+                }
+                window.DangerCount = window.OverlappingIntervals.Count;
+                window.RemovalNeededCount = Math.Max(0, window.DangerCount - maxTask);
+                if (window.RemovalNeededCount > 0)
+                    windows.Add(window);
+            }
+
+            windows.Sort(CompareYuDangerWindowBySeverity);
+            return windows;
+        }
+
+        private static List<BprPredictedRequest> CreateRouteSelectionBprCandidates()
+        {
+            List<BprPredictedRequest> candidates = new List<BprPredictedRequest>();
+            candidates.Add(CreateManualBprPredictedRequest(1, 100.0, 200.0, 1.0));
+            candidates.Add(CreateManualBprPredictedRequest(2, 100.0, 190.0, 1.0));
+            candidates.Add(CreateManualBprPredictedRequest(3, 95.0, 195.0, 1.0));
+            return candidates;
+        }
+
+        private static List<YuPredictedInterval> CreateRouteSelectionYuIntervals()
+        {
+            List<YuPredictedInterval> intervals = new List<YuPredictedInterval>();
+            intervals.Add(CreateManualYuPredictedInterval(1, 90.0, 100.0, 130.0, 180.0, 1.0, 20.0));
+            intervals.Add(CreateManualYuPredictedInterval(2, 88.0, 100.0, 128.0, 175.0, 1.0, 20.0));
+            intervals.Add(CreateManualYuPredictedInterval(3, 92.0, 98.0, 132.0, 170.0, 1.0, 20.0));
+            return intervals;
+        }
+
+        private static void AssertSameBprPredictedNodeOrder(
+            List<BprPredictedRequest> expected,
+            List<BprPredictedRequest> actual,
+            string message)
+        {
+            AssertSelfTest(expected.Count == actual.Count, message + " Count mismatch.");
+            for (int i = 0; i < expected.Count; i++)
+            {
+                AssertSelfTest(expected[i].NodeId == actual[i].NodeId,
+                    message + " Node order mismatch at " + i.ToString(CultureInfo.InvariantCulture) + ".");
+                AssertNear(actual[i].RouteInsertionCost, expected[i].RouteInsertionCost, 1e-12,
+                    message + " Route insertion cost mismatch.");
+            }
+        }
+
+        private static void AssertSameYuRemovalDecisionNodeOrder(
+            List<YuRemovalDecision> expected,
+            List<YuRemovalDecision> actual,
+            string message)
+        {
+            AssertSelfTest(expected.Count == actual.Count, message + " Count mismatch.");
+            for (int i = 0; i < expected.Count; i++)
+            {
+                AssertSelfTest(expected[i].NodeId == actual[i].NodeId,
+                    message + " Node order mismatch at " + i.ToString(CultureInfo.InvariantCulture) + ".");
+                AssertNear(actual[i].RouteInsertionCost, expected[i].RouteInsertionCost, 1e-12,
+                    message + " Route insertion cost mismatch.");
+                AssertSelfTest(String.Equals(actual[i].Reason, expected[i].Reason, StringComparison.Ordinal),
+                    message + " Reason mismatch.");
+            }
+        }
+
+        private static void AssertYuDangerWindowsEquivalent(
+            List<YuDangerWindow> expected,
+            List<YuDangerWindow> actual,
+            string message)
+        {
+            AssertSelfTest(expected.Count == actual.Count, message + " Count mismatch.");
+            for (int i = 0; i < expected.Count; i++)
+            {
+                AssertNear(actual[i].WindowStartSeconds, expected[i].WindowStartSeconds, 1e-12,
+                    message + " WindowStart mismatch.");
+                AssertNear(actual[i].WindowEndSeconds, expected[i].WindowEndSeconds, 1e-12,
+                    message + " WindowEnd mismatch.");
+                AssertSelfTest(actual[i].DangerCount == expected[i].DangerCount,
+                    message + " DangerCount mismatch.");
+                AssertSelfTest(actual[i].RemovalNeededCount == expected[i].RemovalNeededCount,
+                    message + " RemovalNeededCount mismatch.");
+                AssertSelfTest(actual[i].OverlappingIntervals.Count == expected[i].OverlappingIntervals.Count,
+                    message + " Overlapping interval count mismatch.");
+                for (int j = 0; j < expected[i].OverlappingIntervals.Count; j++)
+                {
+                    AssertSelfTest(actual[i].OverlappingIntervals[j].NodeId == expected[i].OverlappingIntervals[j].NodeId,
+                        message + " Overlapping interval order mismatch.");
+                }
+            }
+        }
+
+        private static YuDangerWindow FindYuWindowByStart(List<YuDangerWindow> windows, double windowStartSeconds)
+        {
+            for (int i = 0; i < windows.Count; i++)
+            {
+                if (Math.Abs(windows[i].WindowStartSeconds - windowStartSeconds) <= Epsilon)
+                    return windows[i];
+            }
+            return null;
+        }
+
+        private static bool ContainsYuInterval(List<YuPredictedInterval> intervals, int nodeId)
+        {
+            if (intervals == null)
+                return false;
+            for (int i = 0; i < intervals.Count; i++)
+            {
+                if (intervals[i].NodeId == nodeId)
+                    return true;
+            }
+            return false;
+        }
+
+        private static void AssertNoDuplicateProactiveNodes(List<ChargingRequest> requests, string message)
+        {
+            HashSet<int> proactiveNodeIds = new HashSet<int>();
+            for (int i = 0; i < requests.Count; i++)
+            {
+                if (!requests[i].IsProactive)
+                    continue;
+                AssertSelfTest(!proactiveNodeIds.Contains(requests[i].NodeId), message);
+                proactiveNodeIds.Add(requests[i].NodeId);
+            }
+        }
+
+        private static void AssertMainSummaryEquivalent(
+            ExperimentRunSummary expected,
+            ExperimentRunSummary actual,
+            string message)
+        {
+            AssertSelfTest(expected.RunIndex == actual.RunIndex &&
+                expected.Seed == actual.Seed &&
+                expected.Algorithm == actual.Algorithm &&
+                expected.FirstDeadNodeId == actual.FirstDeadNodeId &&
+                expected.SuccessfulCharges == actual.SuccessfulCharges &&
+                expected.FailedOrLateTasks == actual.FailedOrLateTasks &&
+                expected.NaturalRequestCount == actual.NaturalRequestCount &&
+                expected.ProactiveTaskCount == actual.ProactiveTaskCount &&
+                expected.MissionCount == actual.MissionCount &&
+                expected.TotalChargingTaskCount == actual.TotalChargingTaskCount,
+                message + " Integer/string summary fields mismatch.");
+            AssertNear(actual.NetworkLifetimeSeconds, expected.NetworkLifetimeSeconds, 1e-9,
+                message + " Network lifetime mismatch.");
+            AssertNear(actual.FirstDeadTimeSeconds, expected.FirstDeadTimeSeconds, 1e-9,
+                message + " First dead time mismatch.");
+            AssertNear(actual.MovementDistanceMeters, expected.MovementDistanceMeters, 1e-9,
+                message + " Movement distance mismatch.");
+            AssertNear(actual.MoveEnergyJ, expected.MoveEnergyJ, 1e-9,
+                message + " Move energy mismatch.");
+            AssertNear(actual.DeliveredEnergyJ, expected.DeliveredEnergyJ, 1e-9,
+                message + " Delivered energy mismatch.");
+            AssertNear(actual.TotalWaitSeconds, expected.TotalWaitSeconds, 1e-9,
+                message + " Total wait mismatch.");
         }
 
         private static void AssertPredictionHelpersHaveNoSideEffects(ExperimentSimulation simulation, int maxTask)
