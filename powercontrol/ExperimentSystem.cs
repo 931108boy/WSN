@@ -3753,13 +3753,14 @@ namespace WindowsFormsApplication1
 
         private List<ChargingRequest> BuildRouteAwareChengBpr(List<ChargingRequest> requiredRequests, int maxTask, bool enforceTaskLimit)
         {
-            List<ChargingRequest> clist = enforceTaskLimit
-                ? BuildNearestRoute(requiredRequests, maxTask)
-                : new List<ChargingRequest>();
-            if (!enforceTaskLimit)
+            List<ChargingRequest> clist = new List<ChargingRequest>();
+            if (requiredRequests != null)
             {
                 for (int i = 0; i < requiredRequests.Count; i++)
-                    clist.Add(requiredRequests[i].Clone());
+                {
+                    if (requiredRequests[i] != null)
+                        clist.Add(requiredRequests[i].Clone());
+                }
             }
 
             List<ChargingRequest> cplist = BuildChengBprPaperCplist(
@@ -7631,6 +7632,33 @@ namespace WindowsFormsApplication1
             List<ChargingRequest> fullCplist = dangerSimulation.BuildChengBprPaperCplist(fullClist, scheduleSettings.NmaxTask);
             AssertSelfTest(CountProactiveChargingRequests(fullCplist) == 0,
                 "CHENG paper-random must not add proactive tasks when clist is already full.");
+
+            List<ChargingRequest> overfullClist = new List<ChargingRequest>();
+            for (int nodeId = 1; nodeId <= scheduleSettings.NmaxTask + 2; nodeId++)
+                overfullClist.Add(CreateManualChargingRequest(nodeId, 100.0 + nodeId));
+            List<ChargingRequest> overfullCplist = dangerSimulation.BuildChengBprPaperCplist(
+                overfullClist,
+                scheduleSettings.NmaxTask,
+                BprProactiveSelectionMode.RouteInsertionCost,
+                false);
+            AssertSelfTest(overfullCplist.Count == overfullClist.Count &&
+                CountProactiveChargingRequests(overfullCplist) == 0 &&
+                SameChargingNodeOrder(overfullClist, overfullCplist),
+                "CHENG BP&R cplist must preserve a full or overfull on-demand clist without adding proactive tasks.");
+
+            List<ChargingRequest> routeChengLimited = dangerSimulation.BuildRouteAwareChengBpr(
+                overfullClist,
+                scheduleSettings.NmaxTask,
+                true);
+            List<ChargingRequest> routeYuLimited = dangerSimulation.BuildRouteAwareYuBpr(
+                overfullClist,
+                scheduleSettings.NmaxTask,
+                true);
+            AssertSelfTest(routeChengLimited.Count == scheduleSettings.NmaxTask &&
+                routeYuLimited.Count == scheduleSettings.NmaxTask,
+                "ROUTE_CHENG_BPR_LIMITED and ROUTE_YU_BPR_LIMITED should apply maxTask only to the final route.");
+            AssertSameChargingNodeOrder(routeYuLimited, routeChengLimited,
+                "ROUTE_CHENG_BPR_LIMITED should use the same full on-demand basis as ROUTE_YU_BPR_LIMITED before final route truncation.");
 
             ExperimentSimulation noDangerSimulation = new ExperimentSimulation(
                 scheduleSettings,
